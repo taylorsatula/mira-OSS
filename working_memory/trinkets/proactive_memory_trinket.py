@@ -74,7 +74,13 @@ class ProactiveMemoryTrinket(EventAwareTrinket):
         lines.append(f"Importance: {memory.get('importance_score', 0):.2f}")
 
         if memory.get('created_at'):
-            lines.append(f"Created: {memory['created_at'][:10]}")  # Just date
+            from datetime import datetime
+            from utils.timezone_utils import format_relative_time
+
+            # Parse ISO timestamp and format as relative time
+            created_dt = datetime.fromisoformat(memory['created_at'])
+            relative_time = format_relative_time(created_dt)
+            lines.append(f"Created: {relative_time}")
 
         # Format temporal info if present
         temporal_info = self._format_temporal_info(memory)

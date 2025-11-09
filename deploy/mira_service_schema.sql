@@ -69,13 +69,15 @@ GRANT ALL ON SCHEMA public TO mira_admin;
 CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     email VARCHAR(255) UNIQUE NOT NULL,
+    first_name VARCHAR(100),
+    last_name VARCHAR(100),
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     last_login_at TIMESTAMP WITH TIME ZONE,
-    webauthn_credentials JSONB DEFAULT '{}',
-    memory_manipulation_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    memory_enabled BOOLEAN NOT NULL DEFAULT TRUE,
     daily_manipulation_last_run TIMESTAMP WITH TIME ZONE,
     timezone VARCHAR(100) NOT NULL DEFAULT 'America/Chicago',
+    overarching_knowledge TEXT,
 
     -- Activity-based time tracking (vacation-proof scoring)
     cumulative_activity_days INT DEFAULT 0,
@@ -84,36 +86,6 @@ CREATE TABLE IF NOT EXISTS users (
 
 COMMENT ON COLUMN users.cumulative_activity_days IS 'Total number of days user has sent at least one message (activity-based time metric)';
 COMMENT ON COLUMN users.last_activity_date IS 'Last date user sent a message (prevents double-counting same day)';
-
--- NOTE: Currently unused - reserved for future soft delete implementation
-CREATE TABLE IF NOT EXISTS users_trash (
-    id UUID PRIMARY KEY,
-    email VARCHAR(255),
-    is_active BOOLEAN,
-    created_at TIMESTAMP WITH TIME ZONE,
-    last_login_at TIMESTAMP WITH TIME ZONE,
-    webauthn_credentials JSONB,
-    memory_manipulation_enabled BOOLEAN,
-    daily_manipulation_last_run TIMESTAMP WITH TIME ZONE,
-    timezone VARCHAR(100),
-    cumulative_activity_days INT,
-    last_activity_date DATE,
-    deleted_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
-COMMENT ON TABLE users_trash IS 'Soft delete storage for deleted users (currently unused - users are hard-deleted via CASCADE)';
-
-CREATE TABLE IF NOT EXISTS magic_links (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    email VARCHAR(255) NOT NULL,
-    token_hash VARCHAR(255) NOT NULL UNIQUE,
-    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
-    used_at TIMESTAMP WITH TIME ZONE,
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
-);
-
-COMMENT ON TABLE magic_links IS 'Passwordless authentication tokens for magic link login flow';
 
 -- =====================================================================
 -- ACTIVITY TRACKING (for vacation-proof scoring)
@@ -425,7 +397,7 @@ DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'mira_dbuser') THEN
         GRANT SELECT, INSERT, UPDATE, DELETE ON
-            users, users_trash, magic_links,
+            users,
             user_activity_days, domain_knowledge_blocks, domain_knowledge_block_content,
             continuums, messages,
             memories, entities, extraction_batches, post_processing_batches
@@ -451,12 +423,7 @@ GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO mira_admin;
 -- ROW LEVEL SECURITY (user isolation)
 -- =====================================================================
 
--- Note: Authentication tables (users, magic_links) do NOT have RLS
--- These are accessed during authentication flow before user context is established
--- Application code handles access control via token validation
---
--- Note: Sessions are stored in Valkey (not PostgreSQL) - see auth/session.py
--- Note: User credentials stored via UserDataManager (SQLite) - see auth/user_credentials.py
+-- Note: Users table does NOT have RLS - single-user mode with context set at startup
 
 ALTER TABLE user_activity_days ENABLE ROW LEVEL SECURITY;
 CREATE POLICY user_activity_days_user_policy ON user_activity_days

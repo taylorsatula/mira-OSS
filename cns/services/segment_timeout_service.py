@@ -52,39 +52,49 @@ class SegmentTimeoutService:
             Exception: If timeout detection fails (database errors, infrastructure failures).
                       Scheduled job will fail visibly and alert operators.
         """
-        logger.debug("Starting segment timeout check")
+        try:
+            logger.debug("Starting segment timeout check")
 
-        # Clear timezone cache for fresh data
-        self._user_timezone_cache.clear()
+            # Clear timezone cache for fresh data
+            self._user_timezone_cache.clear()
 
-        # Find all active segment sentinels (raises on database failure)
-        active_segments = self._get_active_segments()
+            # Find all active segment sentinels (raises on database failure)
+            active_segments = self._get_active_segments()
 
-        if not active_segments:
-            logger.debug("No active segments found")
-            return {'segments_checked': 0, 'timeouts_published': 0}
+            if not active_segments:
+                logger.debug("No active segments found")
+                return {'segments_checked': 0, 'timeouts_published': 0}
 
-        logger.debug(f"Checking {len(active_segments)} active segments")
+            logger.debug(f"Checking {len(active_segments)} active segments")
 
-        timeouts_published = 0
-        current_time = utc_now()
+            timeouts_published = 0
+            current_time = utc_now()
 
-        for segment in active_segments:
-            # Check if segment has timed out
-            if self._is_timed_out(segment, current_time):
-                # Publish timeout event
-                self._publish_timeout_event(segment, current_time)
-                timeouts_published += 1
+            for segment in active_segments:
+                # Check if segment has timed out
+                if self._is_timed_out(segment, current_time):
+                    # Publish timeout event
+                    self._publish_timeout_event(segment, current_time)
+                    timeouts_published += 1
 
-        logger.info(
-            f"Timeout check complete: {len(active_segments)} segments checked, "
-            f"{timeouts_published} timeouts published"
-        )
+            logger.info(
+                f"Timeout check complete: {len(active_segments)} segments checked, "
+                f"{timeouts_published} timeouts published"
+            )
 
-        return {
-            'segments_checked': len(active_segments),
-            'timeouts_published': timeouts_published
-        }
+            return {
+                'segments_checked': len(active_segments),
+                'timeouts_published': timeouts_published
+            }
+
+        except Exception as e:
+            # Explicitly log full exception details before re-raising
+            # (journalctl may suppress APScheduler's traceback)
+            logger.error(
+                f"Segment timeout check failed: {type(e).__name__}: {e}",
+                exc_info=True
+            )
+            raise
 
     def _get_active_segments(self) -> List[Dict[str, Any]]:
         """
@@ -157,10 +167,13 @@ class SegmentTimeoutService:
         )
 
         if not end_time:
-            raise RuntimeError(
-                f"Segment {segment['id']} has no messages - this violates segment invariants. "
-                f"Active segments are only created after the second message in a continuum."
+            # Empty segment - likely from prepopulation before messages were added
+            # Log warning and skip timeout check rather than crash the job
+            logger.warning(
+                f"Segment {segment['id']} has no messages (empty segment from brand new account). "
+                f"Skipping timeout check for this segment."
             )
+            return False
 
         # Calculate inactive duration
         inactive_duration = current_time - end_time
@@ -255,10 +268,12 @@ class SegmentTimeoutService:
         )
 
         if not end_time:
-            raise RuntimeError(
+            # Empty segment - should have been caught by _is_timed_out, but handle defensively
+            logger.warning(
                 f"Cannot publish timeout event for segment {segment_id} - no messages found. "
-                f"This violates segment invariants: active segments must have messages."
+                f"This is an empty segment from a brand new account."
             )
+            return
 
         # Calculate inactive duration
         inactive_duration = current_time - end_time
@@ -273,6 +288,7 @@ class SegmentTimeoutService:
         # Publish event
         event = SegmentTimeoutEvent.create(
             continuum_id=segment['continuum_id'],
+            user_id=user_id,
             segment_id=segment_id,
             inactive_duration_minutes=inactive_minutes,
             local_hour=local_hour

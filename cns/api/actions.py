@@ -12,6 +12,8 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field, field_validator
+
+from utils.user_context import get_current_user_id
 from .base import BaseHandler, ValidationError, NotFoundError
 from tools.repo import ToolRepository
 from utils.timezone_utils import utc_now, format_utc_iso
@@ -29,6 +31,7 @@ class DomainType(str, Enum):
     USER = "user"
     CONTACTS = "contacts"
     DOMAIN_KNOWLEDGE = "domain_knowledge"
+    CONTINUUM = "continuum"
 
 
 class ActionRequest(BaseModel):
@@ -846,6 +849,76 @@ class DomainKnowledgeDomainHandler(BaseDomainHandler):
             raise ValidationError(str(e))
 
 
+class ContinuumDomainHandler(BaseDomainHandler):
+    """Handler for continuum-level configuration actions."""
+
+    ACTIONS = {
+        "set_thinking_budget_preference": {
+            "required": [],
+            "optional": ["budget"],
+            "types": {
+                "budget": (int, type(None))
+            }
+        },
+        "get_thinking_budget_preference": {
+            "required": [],
+            "optional": [],
+            "types": {}
+        }
+    }
+
+    def execute_action(self, action: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute continuum configuration actions."""
+        if action == "set_thinking_budget_preference":
+            from cns.infrastructure.continuum_pool import get_continuum_pool
+
+            budget = data.get("budget")
+
+            # Validate budget if provided
+            if budget is not None:
+                if not isinstance(budget, int):
+                    raise ValidationError("Budget must be an integer or null")
+                if budget < 0:
+                    raise ValidationError("Budget must be None, 0, or a positive integer")
+                # Validate against allowed values
+                valid_budgets = [0, 1024, 4096, 32000]
+                if budget not in valid_budgets:
+                    raise ValidationError(
+                        f"Budget must be one of {valid_budgets} or null. Got: {budget}"
+                    )
+
+            pool = get_continuum_pool()
+            continuum = pool.get_or_create()
+
+            # Set the preference in Valkey
+            pool.set_thinking_budget_preference(budget)
+
+            return {
+                "success": True,
+                "continuum_id": str(continuum.id),
+                "budget": budget,
+                "message": f"Thinking budget preference set to {budget}"
+            }
+
+        elif action == "get_thinking_budget_preference":
+            from cns.infrastructure.continuum_pool import get_continuum_pool
+
+            pool = get_continuum_pool()
+            continuum = pool.get_or_create()
+
+            # Get the preference from Valkey
+            budget = pool.get_thinking_budget_preference()
+
+            return {
+                "success": True,
+                "continuum_id": str(continuum.id),
+                "budget": budget
+            }
+
+        else:
+            raise ValidationError(f"Unknown action: {action}")
+
+
 class ActionsEndpoint(BaseHandler):
     """Main actions endpoint handler with domain-based routing."""
 
@@ -856,13 +929,12 @@ class ActionsEndpoint(BaseHandler):
             DomainType.MEMORY: MemoryDomainHandler,
             DomainType.USER: UserDomainHandler,
             DomainType.CONTACTS: ContactsDomainHandler,
-            DomainType.DOMAIN_KNOWLEDGE: DomainKnowledgeDomainHandler
+            DomainType.DOMAIN_KNOWLEDGE: DomainKnowledgeDomainHandler,
+            DomainType.CONTINUUM: ContinuumDomainHandler
         }
     
     def process_request(self, **params) -> Dict[str, Any]:
         """Route request to appropriate domain handler."""
-        from utils.user_context import get_current_user_id
-
         request_data = params['request_data']
         user_id = get_current_user_id()
         

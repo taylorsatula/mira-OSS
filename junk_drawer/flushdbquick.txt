@@ -1,1 +1,0 @@
-psql -U taylut -d mira_service -c "DELETE FROM memories; DELETE FROM extraction_batches; DELETE FROM post_processing_batches; UPDATE users SET daily_manipulation_last_run = NULL WHERE memory_manipulation_enabled = TRUE;" && echo "✓ Flushed all memory data and reset timestamps"

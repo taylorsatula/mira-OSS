@@ -34,18 +34,18 @@ def register_lt_memory_jobs(scheduler_service, lt_memory_factory) -> bool:
     batching = lt_memory_factory.batching
     refinement = lt_memory_factory.refinement
 
-    # Register daily extraction job (6-hour intervals)
+    # Register failed extraction retry job (6-hour intervals)
     success_extraction = scheduler_service.register_job(
-        job_id="lt_memory_daily_extraction",
-        func=batching.run_daily_extraction,
+        job_id="lt_memory_retry_failed_extractions",
+        func=batching.retry_failed_extractions,
         trigger=IntervalTrigger(hours=6),
         component="lt_memory",
-        description="Extract memories from conversations every 6 hours"
+        description="Retry failed segment extractions every 6 hours (safety net)"
     )
 
     if not success_extraction:
-        raise RuntimeError("Failed to register daily extraction job - scheduler job registration is critical")
-    logger.info("Successfully registered daily extraction job (6-hour interval)")
+        raise RuntimeError("Failed to register failed extraction retry job - scheduler job registration is critical")
+    logger.info("Successfully registered failed extraction retry job (6-hour interval)")
 
     # Register extraction batch polling job (1-minute intervals)
     success_extraction_poll = scheduler_service.register_job(
@@ -91,15 +91,20 @@ def register_lt_memory_jobs(scheduler_service, lt_memory_factory) -> bool:
         """Run consolidation for all users with consolidation enabled."""
         try:
             from auth.database import AuthDatabase
+            from utils.user_context import set_current_user_id, clear_user_context
             auth_db = AuthDatabase()
             users = auth_db.get_users_with_memory_enabled()
 
             total_submitted = 0
             for user in users:
                 user_id = str(user["id"])
-                batch_id = batching.submit_consolidation_batch(user_id)
-                if batch_id:
-                    total_submitted += 1
+                set_current_user_id(user_id)
+                try:
+                    batch_id = batching.submit_consolidation_batch(user_id)
+                    if batch_id:
+                        total_submitted += 1
+                finally:
+                    clear_user_context()
 
             logger.info(f"Consolidation sweep: submitted batches for {total_submitted} users")
             return {"users_processed": total_submitted}
@@ -124,15 +129,20 @@ def register_lt_memory_jobs(scheduler_service, lt_memory_factory) -> bool:
         """Recalculate scores for temporal memories across all users."""
         try:
             from auth.database import AuthDatabase
+            from utils.user_context import set_current_user_id, clear_user_context
             auth_db = AuthDatabase()
             users = auth_db.get_users_with_memory_enabled()
 
             total_updated = 0
             for user in users:
                 user_id = str(user["id"])
-                db = lt_memory_factory.db
-                updated = db.recalculate_temporal_scores(user_id=user_id, batch_size=1000)
-                total_updated += updated
+                set_current_user_id(user_id)
+                try:
+                    db = lt_memory_factory.db
+                    updated = db.recalculate_temporal_scores(user_id=user_id, batch_size=1000)
+                    total_updated += updated
+                finally:
+                    clear_user_context()
 
             logger.info(f"Temporal score sweep: updated {total_updated} memories across all users")
             return {"memories_updated": total_updated}
@@ -157,6 +167,7 @@ def register_lt_memory_jobs(scheduler_service, lt_memory_factory) -> bool:
         """Run entity garbage collection for all users."""
         try:
             from auth.database import AuthDatabase
+            from utils.user_context import set_current_user_id, clear_user_context
             auth_db = AuthDatabase()
             users = auth_db.get_users_with_memory_enabled()
 
@@ -166,13 +177,15 @@ def register_lt_memory_jobs(scheduler_service, lt_memory_factory) -> bool:
 
             for user in users:
                 user_id = str(user["id"])
-                from utils.user_context import set_current_user_id
                 set_current_user_id(user_id)
-                entity_gc = lt_memory_factory.entity_gc
-                results = entity_gc.run_entity_gc_for_user()
-                total_merged += results.get("merged", 0)
-                total_deleted += results.get("deleted", 0)
-                total_kept += results.get("kept", 0)
+                try:
+                    entity_gc = lt_memory_factory.entity_gc
+                    results = entity_gc.run_entity_gc_for_user()
+                    total_merged += results.get("merged", 0)
+                    total_deleted += results.get("deleted", 0)
+                    total_kept += results.get("kept", 0)
+                finally:
+                    clear_user_context()
 
             logger.info(
                 f"Entity GC sweep: {total_merged} merged, {total_deleted} deleted, "

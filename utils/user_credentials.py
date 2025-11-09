@@ -17,14 +17,14 @@ class UserCredentialService:
     Bridge class that provides the expected credential interface
     while using the existing UserDataManager infrastructure.
     """
-
+    
     def __init__(self, user_id: Optional[str] = None):
         """Initialize with optional user_id, defaults to current user."""
         self.user_id = user_id or get_current_user_id()
         if not self.user_id:
             raise RuntimeError("No user context set. Ensure authentication is properly initialized.")
         self.data_manager = get_user_data_manager(self.user_id)
-
+    
     def store_credential(
         self,
         credential_type: str,
@@ -63,7 +63,7 @@ class UserCredentialService:
             credential_data['id'] = str(uuid.uuid4())
             credential_data['created_at'] = now
             dm.insert('credentials', credential_data)
-
+    
     def get_credential(
         self,
         credential_type: str,
@@ -80,7 +80,7 @@ class UserCredentialService:
         )
 
         return results[0]['credential_value'] if results else None
-
+    
     def delete_credential(
         self,
         credential_type: str,

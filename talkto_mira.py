@@ -48,7 +48,7 @@ from clients.vault_client import get_api_key
 # Configuration
 MIRA_API_URL = os.getenv("MIRA_API_URL", "http://localhost:1993")
 REQUEST_TIMEOUT = 120  # seconds
-SERVER_STARTUP_TIMEOUT = 30  # seconds to wait for server to start
+SERVER_STARTUP_TIMEOUT = 60  # seconds to wait for server to start
 
 # Global server process tracker
 _server_process = None

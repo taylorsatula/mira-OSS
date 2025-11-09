@@ -10,6 +10,7 @@ import logging
 import sys
 import os
 import signal
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -200,19 +201,25 @@ async def lifespan(app: FastAPI):
 
     scheduler_service.start()
 
-    # Run on-boot memory extraction sweep using new lt_memory system
-    logger.info("Running on-boot memory extraction sweep...")
-    try:
-        boot_results = lt_memory_factory.batching.run_boot_extraction()
-        logger.info(
-            f"Boot extraction complete: {boot_results['batches_submitted']} batches submitted "
-            f"for {boot_results['users_checked']} users checked, "
-            f"{boot_results['users_skipped']} users skipped"
-        )
-    except Exception as e:
-        logger.error(f"Boot extraction failed: {e}")
-        # Boot extraction failure is non-critical - system can continue
-        logger.warning("MIRA will continue but memory extraction may be delayed")
+    # Run on-boot memory extraction sweep in background thread to avoid blocking startup
+    def run_boot_extraction():
+        """Run boot extraction in background thread - one-time task on startup."""
+        logger.info("Running on-boot memory extraction sweep...")
+        try:
+            boot_results = lt_memory_factory.batching.run_boot_extraction()
+            logger.info(
+                f"Boot extraction complete: {boot_results['batches_submitted']} batches submitted "
+                f"for {boot_results['users_checked']} users checked, "
+                f"{boot_results['users_skipped']} users skipped"
+            )
+        except Exception as e:
+            logger.error(f"Boot extraction failed: {e}")
+            logger.warning("Memory extraction may be delayed")
+
+    # Start boot extraction in daemon thread (terminates automatically when function completes)
+    boot_thread = threading.Thread(target=run_boot_extraction, daemon=True, name="boot-extraction")
+    boot_thread.start()
+    logger.info("Boot extraction started in background thread (non-blocking, will auto-terminate)")
 
     # Verify Vault connection (non-blocking)
     from clients.vault_client import test_vault_connection
@@ -399,7 +406,7 @@ def create_app() -> FastAPI:
     app.include_router(chat_api.router, prefix="/v0/api", tags=["chat"])
     app.include_router(data.router, prefix="/v0/api", tags=["data"])
     app.include_router(actions.router, prefix="/v0/api", tags=["actions"])
-    
+
     return app
 
 
@@ -457,6 +464,10 @@ def main():
         hypercorn_config.bind = [f"{config.api_server.host}:{config.api_server.port}"]
         hypercorn_config.alpn_protocols = ["h2", "http/1.1"]  # Prefer HTTP/2, fallback to HTTP/1.1
         hypercorn_config.log_level = config.api_server.log_level
+
+        # Trust proxy headers from nginx (localhost only)
+        # This allows proper client IP logging from X-Forwarded-For header
+        hypercorn_config.forwarded_allow_ips = ["127.0.0.1", "::1"]
         
         if dev_mode:
             logger.info("Development mode enabled")

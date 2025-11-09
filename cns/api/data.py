@@ -153,8 +153,10 @@ class DataEndpoint(BaseHandler):
         })
     
     def _get_dashboard(self, **params) -> Dict[str, Any]:
-        """Get dashboard data - system health, context usage placeholder."""
+        """Get dashboard data - system health and context usage metrics."""
         from clients.postgres_client import PostgresClient
+        from cns.infrastructure.continuum_repository import get_continuum_repository
+        from config.config import get_config
 
         user_id = get_current_user_id()
 
@@ -166,35 +168,66 @@ class DataEndpoint(BaseHandler):
         except Exception:
             db_healthy = False
 
+        # Get context usage from continuum runtime metrics
+        repo = get_continuum_repository()
+        continuum = repo.get_continuum(user_id)
+        config = get_config()
+
+        current_tokens = 0
+        cached_tokens = 0
+        max_tokens = config.context_window_tokens
+
+        if continuum:
+            current_tokens = continuum._cumulative_tokens
+            cached_tokens = continuum._cached_up_to_tokens
+
+        # Calculate percentage used
+        percentage_used = (current_tokens / max_tokens * 100) if max_tokens > 0 else 0
+
         return {
             "system_health": "healthy" if db_healthy else "degraded",
-            "context_usage": "placeholder",  # TODO: implement actual context length calculation
+            "context_usage": {
+                "current_tokens": current_tokens,
+                "cached_tokens": cached_tokens,
+                "max_tokens": max_tokens,
+                "percentage_used": round(percentage_used, 2)
+            },
             "meta": {
                 "timestamp": format_utc_iso(utc_now())
             }
         }
     
     def _get_user(self, **params) -> Dict[str, Any]:
-        """Get user preferences using AuthDB."""
+        """Get user profile and preferences."""
+        from auth.database import AuthDatabase
+
         user_id = get_current_user_id()
 
-        # TODO: Fix broken auth database integration
-        # These functions don't exist in the auth module
-        user_profile = {"id": user_id, "email": "placeholder@example.com"}
-        preferences = {}
+        # Fetch real user data from database
+        auth_db = AuthDatabase()
+        user = auth_db.get_user_by_id(str(user_id))
+
+        if not user:
+            raise NotFoundError("user", str(user_id))
+
+        # Build full name if available
+        name = None
+        if user.get('first_name') or user.get('last_name'):
+            name = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip()
 
         return {
             "profile": {
-                "id": user_profile["id"],
-                "email": user_profile["email"],
-                "name": None,
-                "created_at": None,
-                "last_login": None
+                "id": str(user["id"]),
+                "email": user["email"],
+                "name": name,
+                "created_at": format_utc_iso(user["created_at"]) if user.get("created_at") else None,
+                "last_login": format_utc_iso(user["last_login_at"]) if user.get("last_login_at") else None
             },
             "preferences": {
-                "theme": preferences.get('theme', 'light'),
-                "timezone": preferences.get('timezone', 'UTC'),
-                "display_preferences": preferences.get('display_preferences', {})
+                # Note: Preferences system not implemented yet - only timezone stored in users table
+                "theme": None,
+                "timezone": user.get("timezone", "UTC"),
+                "display_preferences": None
             },
             "meta": {
                 "loaded_at": format_utc_iso(utc_now())
@@ -301,7 +334,7 @@ async def data_endpoint(
         response = handler.handle_request(
             data_type=type,
             request_params=request_params,
-            user_id=current_user["user_id"]
+            user_id=get_current_user_id()
         )
         
         return response.to_dict()

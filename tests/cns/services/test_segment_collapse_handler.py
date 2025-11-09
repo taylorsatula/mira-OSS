@@ -89,6 +89,7 @@ class TestRealCollapseOrchestration:
         # Fire timeout event
         event = SegmentTimeoutEvent.create(
             continuum_id=continuum_id,
+            user_id=user_id,
             segment_id=segment_id,
             inactive_duration_minutes=60,
             local_hour=14
@@ -146,6 +147,7 @@ class TestRealCollapseOrchestration:
         # Fire event
         event = SegmentTimeoutEvent.create(
             continuum_id=continuum_id,
+            user_id=user_id,
             segment_id=segment_id,
             inactive_duration_minutes=60,
             local_hour=14
@@ -215,6 +217,7 @@ class TestRealCollapseOrchestration:
         # Fire event
         event = SegmentTimeoutEvent.create(
             continuum_id=continuum_id,
+            user_id=user_id,
             segment_id=segment_id,
             inactive_duration_minutes=60,
             local_hour=14
@@ -282,6 +285,7 @@ class TestRealCollapseOrchestration:
         # Fire event
         event = SegmentTimeoutEvent.create(
             continuum_id=continuum_id,
+            user_id=user_id,
             segment_id=segment_id,
             inactive_duration_minutes=60,
             local_hour=14
@@ -332,6 +336,7 @@ class TestRealCollapseOrchestration:
         # Fire event for nonexistent segment
         event = SegmentTimeoutEvent.create(
             continuum_id=continuum_id,
+            user_id=user_id,
             segment_id="nonexistent-segment-id",
             inactive_duration_minutes=60,
             local_hour=14
@@ -387,6 +392,7 @@ class TestRealCollapseOrchestration:
         # Fire event
         event = SegmentTimeoutEvent.create(
             continuum_id=continuum_id,
+            user_id=user_id,
             segment_id=segment_id,
             inactive_duration_minutes=60,
             local_hour=14
@@ -439,6 +445,7 @@ class TestRealCollapseOrchestration:
         # Fire event
         event = SegmentTimeoutEvent.create(
             continuum_id=continuum_id,
+            user_id=user_id,
             segment_id=segment_id,
             inactive_duration_minutes=60,
             local_hour=14
@@ -500,6 +507,7 @@ class TestDownstreamOrchestration:
         # Fire event
         event = SegmentTimeoutEvent.create(
             continuum_id=continuum_id,
+            user_id=user_id,
             segment_id=segment_id,
             inactive_duration_minutes=60,
             local_hour=14
@@ -552,6 +560,7 @@ class TestDownstreamOrchestration:
         # Fire event
         event = SegmentTimeoutEvent.create(
             continuum_id=continuum_id,
+            user_id=user_id,
             segment_id=segment_id,
             inactive_duration_minutes=60,
             local_hour=14

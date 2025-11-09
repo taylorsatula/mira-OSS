@@ -238,7 +238,7 @@ contacts = self.db.select('contacts')  # Returns {'id': ..., 'name': 'John Doe',
 Store and retrieve user API keys, passwords, and other credentials securely using UserCredentialService:
 
 ```python
-from auth.user_credentials import UserCredentialService
+from utils.user_credentials import UserCredentialService
 
 # Initialize service (auto-detects current user)
 cred_service = UserCredentialService()

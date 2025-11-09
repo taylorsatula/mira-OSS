@@ -54,9 +54,8 @@ class SegmentCacheLoader:
         set_current_user_id(user_id)
 
         # Step 1: Load collapsed segment summaries (past conversations)
-        segment_summaries = self._load_segment_summaries(
-            continuum_id, limit=config.system.session_summary_count
-        )
+        # Uses complexity-based selection for optimal information density
+        segment_summaries = self._load_segment_summaries(continuum_id)
 
         # Step 2: Load continuity messages (last 3 turns before active sentinel)
         continuity_messages = self._load_continuity_messages(continuum_id, turn_count=3)
@@ -81,16 +80,15 @@ class SegmentCacheLoader:
 
         return messages
 
-    def _load_segment_summaries(self, continuum_id: str, limit: int) -> List[Message]:
+    def _load_segment_summaries(self, continuum_id: str) -> List[Message]:
         """
-        Load recent collapsed segment sentinels.
+        Load recent collapsed segment sentinels using complexity-based selection.
 
-        These are segment boundary messages with status='collapsed' that contain
-        telegraphic summaries of past conversation segments.
+        Queries the most recent segments and selects based on accumulated complexity
+        score to optimize information density within context window constraints.
 
         Args:
             continuum_id: Continuum ID
-            limit: Number of segment summaries to load
 
         Returns:
             List of collapsed segment sentinels in chronological order
@@ -100,9 +98,93 @@ class SegmentCacheLoader:
         """
         from utils.user_context import get_current_user_id
         user_id = get_current_user_id()
-        messages = self.repository.find_collapsed_segments(continuum_id, user_id, limit)
-        logger.debug(f"Loaded {len(messages)} segment summaries for continuum {continuum_id}")
+
+        messages = self._select_summaries_by_complexity(continuum_id, user_id)
+
+        logger.debug(
+            f"Loaded {len(messages)} segment summaries for continuum {continuum_id} "
+            f"using complexity-based selection"
+        )
         return messages
+
+    def _select_summaries_by_complexity(
+        self,
+        continuum_id: str,
+        user_id: str
+    ) -> List[Message]:
+        """
+        Select segment summaries based on complexity score accumulation.
+
+        Queries a window of recent collapsed segments and iteratively selects
+        them from newest to oldest, accumulating complexity scores until the
+        total exceeds the configured limit or max count is reached.
+
+        Complexity scores optimize information density - a few complex segments
+        provide more value than many simple ones within the same token budget.
+
+        Args:
+            continuum_id: Continuum ID
+            user_id: User ID
+
+        Returns:
+            Selected segment summaries in chronological order (oldest to newest)
+
+        Raises:
+            DatabaseError: If database query fails
+        """
+        # Get configuration values
+        complexity_limit = config.system.session_summary_complexity_limit
+        max_count = config.system.session_summary_max_count
+        query_window = config.system.session_summary_query_window
+
+        # Query window of recent segments (newest first)
+        candidates = self.repository.find_collapsed_segments(
+            continuum_id,
+            user_id,
+            limit=query_window
+        )
+
+        if not candidates:
+            logger.debug(f"No collapsed segments found for continuum {continuum_id}")
+            return []
+
+        # Select segments by accumulating complexity
+        selected = []
+        total_complexity = 0
+
+        for segment in candidates:
+            # Get complexity score, default to 2 (moderate) if missing
+            complexity = segment.metadata.get('complexity_score', 2)
+
+            # Check if adding this segment would exceed limit
+            # Allow if we have 0 segments (always include at least one)
+            if total_complexity + complexity > complexity_limit and len(selected) > 0:
+                logger.debug(
+                    f"Stopping selection: total_complexity={total_complexity}, "
+                    f"next_complexity={complexity} would exceed limit={complexity_limit}"
+                )
+                break
+
+            # Add segment
+            selected.append(segment)
+            total_complexity += complexity
+
+            # Check if we've reached max count
+            if len(selected) >= max_count:
+                logger.debug(
+                    f"Stopping selection: reached max_count={max_count}"
+                )
+                break
+
+        logger.info(
+            f"Selected {len(selected)}/{len(candidates)} segments "
+            f"(total_complexity={total_complexity}/{complexity_limit}, "
+            f"limit={'complexity' if len(selected) < max_count else 'count'})"
+        )
+
+        # Return in chronological order (oldest first)
+        # Candidates are newest-first, so reverse the selected slice
+        return list(reversed(selected))
 
     def _load_active_segment_messages(self, continuum_id: str) -> List[Message]:
         """

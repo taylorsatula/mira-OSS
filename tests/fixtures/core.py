@@ -337,7 +337,6 @@ async def authenticated_user(auth_service):
         "user_id": setup["user_id"],
         "email": setup["email"],
         "continuum_id": setup["continuum_id"],  # Include continuum_id
-        "tenant_id": "test_tenant",
         "is_active": setup["is_active"]
     }
     set_current_user_data(user_data)
@@ -385,7 +384,6 @@ async def second_authenticated_user(auth_service):
         "user_id": setup["user_id"],
         "email": setup["email"],
         "continuum_id": setup["continuum_id"],
-        "tenant_id": "test_tenant",
         "is_active": setup["is_active"]
     }
     set_current_user_data(user_data)

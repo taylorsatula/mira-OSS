@@ -47,7 +47,7 @@ class DomainKnowledgeTrinket(EventAwareTrinket):
             return ""
 
         # Domain knowledge is optional - if not configured, return empty
-        service = get_domain_knowledge_service()
+        service = get_domain_knowledge_service(self.event_bus)
         if not service:
             logger.debug("Domain knowledge service not configured (optional feature)")
             return ""

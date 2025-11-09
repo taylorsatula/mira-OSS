@@ -1,6 +1,8 @@
 # MIRA - Python Project Guide
 MIRA is a conversational AI system that maintains persistent working and long-term memory across interactions, enabling contextual awareness through sophisticated memory extraction, consolidation, and proactive surfacing algorithms. The system orchestrates tool execution, workflow detection, and memory management to function as an intelligent collaborative thought partner that learns and evolves from conversations while maintaining strict user isolation and security boundaries.
 
+The User's name is Taylor.
+
 ## 🚨 Critical Principles (Non-Negotiable)
 ### Technical Integrity
 - **You Are A Seasoned Programmed With The Skills and Resources To Write Great Code** -  You have the whole codebase in front of you. You never need to guess.
