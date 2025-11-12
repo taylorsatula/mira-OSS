@@ -4,6 +4,31 @@
 --
 -- Run this to create a fresh mira_service database:
 -- psql -U mira_admin -h localhost -f deploy/mira_service_schema.sql
+--
+-- =====================================================================
+-- INDEX STRATEGY WITH ROW LEVEL SECURITY (RLS)
+-- =====================================================================
+--
+-- CRITICAL: RLS policies filter data AFTER index scans complete.
+-- Standard indexes (B-tree, GIN, IVFFlat, HNSW) without user_id as the
+-- leading column provide NO selectivity benefit when RLS is enabled.
+--
+-- DO NOT CREATE indexes on RLS-enabled tables unless:
+--   1. user_id is the first column in a composite index, OR
+--   2. The index is for cross-user admin queries (executed with BYPASSRLS)
+--
+-- For RLS-filtered queries, rely on:
+--   - Application-level caching (avoid database hits)
+--   - Query result caching in Valkey/Redis
+--   - Table partitioning by user_id (future optimization)
+--
+-- This schema intentionally omits indexes on:
+--   - memories.embedding (vector search with RLS)
+--   - memories.search_vector (full-text search with RLS)
+--   - messages.segment_embedding (segment search with RLS)
+--   - messages metadata (segment queries with RLS)
+--
+-- Performance is achieved through caching, not indexing.
 
 -- =====================================================================
 -- CREATE ROLES
@@ -177,19 +202,7 @@ COMMENT ON COLUMN messages.segment_embedding IS 'AllMiniLM embedding (384-dim) f
 -- MESSAGE INDEXES
 -- =====================================================================
 
--- Vector index for segment embedding searches (segment sentinels only)
-CREATE INDEX IF NOT EXISTS idx_messages_segment_embedding ON messages
-    USING ivfflat(segment_embedding vector_cosine_ops)
-    WHERE metadata->>'is_segment_boundary' = 'true' AND segment_embedding IS NOT NULL;
-
--- Partial index for finding active segments efficiently
-CREATE INDEX IF NOT EXISTS idx_messages_active_segments ON messages(continuum_id, created_at)
-    WHERE metadata->>'is_segment_boundary' = 'true'
-        AND metadata->>'status' = 'active';
-
--- GIN index for segment metadata queries (boundary detection, status filtering)
-CREATE INDEX IF NOT EXISTS idx_messages_segment_metadata ON messages USING GIN (metadata)
-    WHERE metadata->>'is_segment_boundary' = 'true';
+-- See INDEX STRATEGY WITH ROW LEVEL SECURITY section at top of file
 
 COMMENT ON TABLE messages IS 'All conversation messages; segments implemented as sentinel messages with is_segment_boundary=true in metadata';
 COMMENT ON COLUMN messages.segment_embedding IS 'Vector embedding for segment sentinels, enables semantic segment search. See docs/SystemsOverview/segment_system_overview.md for architecture details.';
@@ -250,8 +263,7 @@ COMMENT ON COLUMN memories.activity_days_at_last_access IS 'User cumulative_acti
 -- Set LZ4 compression for large text columns
 ALTER TABLE memories ALTER COLUMN text SET COMPRESSION lz4;
 
--- Text search index for hybrid BM25 + vector retrieval
-CREATE INDEX idx_memories_search_vector ON memories USING GIN(search_vector);
+-- See INDEX STRATEGY WITH ROW LEVEL SECURITY section at top of file
 
 -- Trigger function to maintain search vectors
 CREATE OR REPLACE FUNCTION update_memories_search_vector() RETURNS trigger AS $$
