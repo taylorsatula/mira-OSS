@@ -245,30 +245,68 @@ else
 fi
 echo ""
 
-echo -e "${BOLD}API Key Summary:${RESET}"
-echo -e "  Anthropic: $ANTHROPIC_STATUS"
-echo -e "  Groq:      $GROQ_STATUS"
-echo ""
-
-print_header "System Detection"
-
-# Detect operating system
-echo -ne "${DIM}${ARROW}${RESET} Detecting operating system... "
+# Detect operating system early for systemd prompt
 OS_TYPE=$(uname -s)
 case "$OS_TYPE" in
     Linux*)
         OS="linux"
-        echo -e "${CHECKMARK} ${DIM}Linux (Ubuntu/Debian)${RESET}"
         ;;
     Darwin*)
         OS="macos"
-        echo -e "${CHECKMARK} ${DIM}macOS${RESET}"
         ;;
     *)
-        echo -e "${ERROR}"
+        echo ""
         print_error "Unsupported operating system: $OS_TYPE"
         print_info "This script supports Linux (Ubuntu/Debian) and macOS only."
         exit 1
+        ;;
+esac
+
+# Systemd service option (Linux only)
+echo -e "${BOLD}${BLUE}3. Systemd Service${RESET} ${DIM}(OPTIONAL - Linux Only)${RESET}"
+if [ "$OS" = "linux" ]; then
+    print_info "Configure MIRA to start automatically on system boot?"
+    print_info "This creates a systemd service that starts MIRA when the system boots."
+    echo ""
+    read -p "$(echo -e ${CYAN}Install MIRA as systemd service?${RESET}) (yes/no): " INSTALL_SYSTEMD
+    if [ "$INSTALL_SYSTEMD" = "yes" ]; then
+        echo ""
+        read -p "$(echo -e ${CYAN}Start MIRA service immediately after installation?${RESET}) (yes/no): " START_MIRA_NOW
+        if [ "$START_MIRA_NOW" = "yes" ]; then
+            SYSTEMD_STATUS="${CHECKMARK} Will be installed and started"
+        else
+            START_MIRA_NOW="no"
+            SYSTEMD_STATUS="${CHECKMARK} Will be installed (not started)"
+        fi
+    else
+        INSTALL_SYSTEMD="no"
+        START_MIRA_NOW="no"
+        SYSTEMD_STATUS="${RED}Skipped${RESET}"
+    fi
+elif [ "$OS" = "macos" ]; then
+    INSTALL_SYSTEMD="no"
+    START_MIRA_NOW="no"
+    print_info "Systemd service creation only available on Linux (macOS uses launchd)"
+    SYSTEMD_STATUS="${DIM}Not available on macOS${RESET}"
+fi
+echo ""
+
+echo -e "${BOLD}Configuration Summary:${RESET}"
+echo -e "  Anthropic:       $ANTHROPIC_STATUS"
+echo -e "  Groq:            $GROQ_STATUS"
+echo -e "  Systemd Service: $SYSTEMD_STATUS"
+echo ""
+
+print_header "System Detection"
+
+# Display detected operating system
+echo -ne "${DIM}${ARROW}${RESET} Detecting operating system... "
+case "$OS" in
+    linux)
+        echo -e "${CHECKMARK} ${DIM}Linux (Ubuntu/Debian)${RESET}"
+        ;;
+    macos)
+        echo -e "${CHECKMARK} ${DIM}macOS${RESET}"
         ;;
 esac
 
@@ -300,6 +338,12 @@ print_info "Progress will be displayed as each step completes"
 [ "$LOUD_MODE" = false ] && print_info "Use --loud flag to see detailed output"
 echo ""
 sleep 1
+
+echo -e "${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+echo -e "${DIM}Some of these steps will take a long time. If the spinner is still going, it hasn't${RESET}"
+echo -e "${DIM}error'd or timed out—everything is okay. It could take 15 minutes or more to complete.${RESET}"
+echo -e "${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+echo ""
 
 print_header "Step 1: System Dependencies"
 
@@ -411,7 +455,7 @@ fi
 
 # Download to /tmp to keep user's home directory clean
 cd /tmp
-run_with_status "Downloading MIRA v0.94 (~2MB)" \
+run_with_status "Downloading MIRA v0.94" \
     wget -q -O mira-0.94.tar.gz https://github.com/taylorsatula/mira-OSS/archive/refs/tags/0.94.tar.gz
 
 run_with_status "Creating /opt/mira/app directory" \
@@ -448,17 +492,22 @@ if venv/bin/pip3 show torch &> /dev/null; then
     echo -e "${CHECKMARK} ${DIM}$TORCH_VERSION (existing)${RESET}"
     print_info "Note: If you have CUDA-enabled PyTorch, it will be preserved"
 else
-    echo -e "${DIM}(not found)${RESET}"
+    echo -e "${DIM}(not installed yet)${RESET}"
     if [ "$LOUD_MODE" = true ]; then
         print_step "Installing PyTorch CPU-only version..."
         venv/bin/pip3 install torch --index-url https://download.pytorch.org/whl/cpu
     else
         (venv/bin/pip3 install -q torch --index-url https://download.pytorch.org/whl/cpu) &
-        show_progress $! "Installing PyTorch CPU-only (~100MB)"
+        show_progress $! "Installing PyTorch CPU-only"
     fi
 fi
 
 print_header "Step 5: Python Dependencies"
+
+# Count packages in requirements.txt
+PACKAGE_COUNT=$(grep -c '^[^#]' requirements.txt 2>/dev/null || echo "many")
+echo -e "${DIM}This is the one that is going to take a while (~${PACKAGE_COUNT} packages)${RESET}"
+echo ""
 
 if [ "$LOUD_MODE" = true ]; then
     print_step "Installing from requirements.txt..."
@@ -473,7 +522,7 @@ if [ "$LOUD_MODE" = true ]; then
     venv/bin/python3 -m spacy download en_core_web_lg
 else
     (venv/bin/python3 -m spacy download en_core_web_lg > /dev/null 2>&1) &
-    show_progress $! "Installing spacy language model (~560MB)"
+    show_progress $! "Installing spacy language model"
 fi
 
 print_success "Python dependencies installed"
@@ -494,7 +543,7 @@ minilm_path = Path(cache_dir) / "sentence-transformers_all-MiniLM-L6-v2"
 if minilm_path.exists():
     print("✓ all-MiniLM-L6-v2 already cached, skipping")
 else:
-    print("→ Downloading all-MiniLM-L6-v2 (~90MB)...")
+    print("→ Downloading all-MiniLM-L6-v2...")
     fast_model = SentenceTransformer(
         "sentence-transformers/all-MiniLM-L6-v2",
         cache_folder=cache_dir
@@ -506,7 +555,7 @@ reranker_path = Path(cache_dir) / "BAAI_bge-reranker-base"
 if reranker_path.exists():
     print("✓ BGE reranker already cached, skipping")
 else:
-    print("→ Downloading BAAI/bge-reranker-base (~420MB)...")
+    print("→ Downloading BAAI/bge-reranker-base...")
     reranker_model = SentenceTransformer(
         "BAAI/bge-reranker-base",
         cache_folder=cache_dir
@@ -530,7 +579,7 @@ if not reranker_path.exists():
     SentenceTransformer("BAAI/bge-reranker-base", cache_folder=cache_dir)
 EOF
 ) &
-    show_progress $! "Downloading embedding models (~500MB total)"
+    show_progress $! "Downloading embedding models"
 fi
 
 print_header "Step 7: Playwright Browser Setup"
@@ -548,7 +597,7 @@ else
         venv/bin/playwright install chromium
     else
         (venv/bin/playwright install chromium > /dev/null 2>&1) &
-        show_progress $! "Installing Playwright Chromium (~175MB)"
+        show_progress $! "Installing Playwright Chromium"
     fi
 fi
 
@@ -876,7 +925,96 @@ fi
 
 print_success "MIRA CLI configured"
 
-print_header "Step 16: Cleanup"
+# Systemd service installation (Linux only, if user opted in)
+if [ "$INSTALL_SYSTEMD" = "yes" ] && [ "$OS" = "linux" ]; then
+    print_header "Step 16: Systemd Service Configuration"
+
+    # Extract Vault credentials from files
+    echo -ne "${DIM}${ARROW}${RESET} Reading Vault credentials... "
+    VAULT_ROLE_ID=$(grep 'role_id' /opt/vault/role-id.txt | awk '{print $2}')
+    VAULT_SECRET_ID=$(grep 'secret_id' /opt/vault/secret-id.txt | awk '{print $2}')
+
+    if [ -z "$VAULT_ROLE_ID" ] || [ -z "$VAULT_SECRET_ID" ]; then
+        echo -e "${ERROR}"
+        print_error "Failed to read Vault credentials from /opt/vault/"
+        print_info "Skipping systemd service creation"
+        INSTALL_SYSTEMD="failed"
+    else
+        echo -e "${CHECKMARK}"
+
+        # Create systemd service file
+        echo -ne "${DIM}${ARROW}${RESET} Creating systemd service file... "
+        sudo tee /etc/systemd/system/mira.service > /dev/null <<EOF
+[Unit]
+Description=MIRA - AI Assistant with Persistent Memory
+Documentation=https://github.com/taylorsatula/mira-OSS
+Requires=vault.service postgresql.service valkey.service
+After=vault.service postgresql.service valkey.service vault-unseal.service
+ConditionPathExists=/opt/mira/app/main.py
+
+[Service]
+Type=simple
+User=$MIRA_USER
+Group=$MIRA_GROUP
+WorkingDirectory=/opt/mira/app
+Environment="VAULT_ADDR=http://127.0.0.1:8200"
+Environment="VAULT_ROLE_ID=$VAULT_ROLE_ID"
+Environment="VAULT_SECRET_ID=$VAULT_SECRET_ID"
+ExecStart=/opt/mira/app/venv/bin/python3 /opt/mira/app/main.py
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=60
+TimeoutStopSec=30
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mira
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        echo -e "${CHECKMARK}"
+
+        # Reload systemd and enable service
+        run_quiet sudo systemctl daemon-reload
+
+        run_with_status "Enabling MIRA service for auto-start on boot" \
+            sudo systemctl enable mira.service
+
+        print_success "Systemd service configured"
+        print_info "Service will auto-start on system boot"
+
+        # Start service if user chose to during configuration
+        if [ "$START_MIRA_NOW" = "yes" ]; then
+            echo ""
+            run_with_status "Starting MIRA service" \
+                sudo systemctl start mira.service
+
+            # Give service a moment to start
+            sleep 2
+
+            # Check if service started successfully
+            if sudo systemctl is-active --quiet mira.service; then
+                print_success "MIRA service is running"
+                print_info "View logs: journalctl -u mira -f"
+                MIRA_STARTED="yes"
+            else
+                print_warning "MIRA service may have failed to start"
+                print_info "Check status: systemctl status mira"
+                print_info "View logs: journalctl -u mira -n 50"
+                MIRA_STARTED="failed"
+            fi
+        else
+            print_info "To start later: sudo systemctl start mira"
+            print_info "To view logs: journalctl -u mira -f"
+            MIRA_STARTED="no"
+        fi
+    fi
+elif [ "$INSTALL_SYSTEMD" = "no" ]; then
+    print_header "Step 16: Systemd Service Configuration"
+    print_info "Skipping systemd service installation (user opted out)"
+fi
+
+print_header "Step 17: Cleanup"
 
 if [ "$LOUD_MODE" = true ]; then
     print_step "Flushing pip cache..."
@@ -971,6 +1109,15 @@ if [ "$OS" = "linux" ]; then
     print_info "Valkey: localhost:6379"
     print_info "Vault: http://localhost:8200 (systemd service)"
     print_info "PostgreSQL: localhost:5432 (systemd service)"
+    if [ "$INSTALL_SYSTEMD" = "yes" ]; then
+        if [ "$MIRA_STARTED" = "yes" ]; then
+            print_info "MIRA: http://localhost:1993 (systemd service - running)"
+        elif [ "$MIRA_STARTED" = "failed" ]; then
+            print_info "MIRA: http://localhost:1993 (systemd service - start failed, check logs)"
+        else
+            print_info "MIRA: http://localhost:1993 (systemd service - enabled, not started yet)"
+        fi
+    fi
 elif [ "$OS" = "macos" ]; then
     print_info "Valkey: localhost:6379 (brew services)"
     print_info "Vault: http://localhost:8200 (background process)"
@@ -979,7 +1126,24 @@ fi
 
 echo ""
 echo -e "${BOLD}${GREEN}Next Steps${RESET}"
-if [ "$OS" = "linux" ]; then
+if [ "$INSTALL_SYSTEMD" = "yes" ] && [ "$OS" = "linux" ]; then
+    if [ "$MIRA_STARTED" = "yes" ]; then
+        echo -e "  ${CYAN}→${RESET} MIRA is running at: ${BOLD}http://localhost:1993${RESET}"
+        echo -e "  ${CYAN}→${RESET} Check status: ${BOLD}systemctl status mira${RESET}"
+        echo -e "  ${CYAN}→${RESET} View logs: ${BOLD}journalctl -u mira -f${RESET}"
+        echo -e "  ${CYAN}→${RESET} Stop MIRA: ${BOLD}sudo systemctl stop mira${RESET}"
+    elif [ "$MIRA_STARTED" = "failed" ]; then
+        echo -e "  ${CYAN}→${RESET} Check logs: ${BOLD}journalctl -u mira -n 50${RESET}"
+        echo -e "  ${CYAN}→${RESET} Check status: ${BOLD}systemctl status mira${RESET}"
+        echo -e "  ${CYAN}→${RESET} Try starting: ${BOLD}sudo systemctl start mira${RESET}"
+    else
+        echo -e "  ${CYAN}→${RESET} Start MIRA: ${BOLD}sudo systemctl start mira${RESET}"
+        echo -e "  ${CYAN}→${RESET} Check status: ${BOLD}systemctl status mira${RESET}"
+        echo -e "  ${CYAN}→${RESET} View logs: ${BOLD}journalctl -u mira -f${RESET}"
+    fi
+    echo ""
+    print_info "MIRA will auto-start on system boot (systemd enabled)"
+elif [ "$OS" = "linux" ]; then
     echo -e "  ${CYAN}→${RESET} Run: ${BOLD}source ~/.bashrc && mira${RESET}"
 elif [ "$OS" = "macos" ]; then
     echo -e "  ${CYAN}→${RESET} Run: ${BOLD}source $SHELL_RC && mira${RESET}"
