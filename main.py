@@ -79,6 +79,50 @@ def ensure_single_user(app: FastAPI) -> str:
 
         print(f"✅ Created user: {email}")
         print(f"User ID: {user_id}")
+
+        # Set context so we can create API token
+        from utils.user_context import set_current_user_id, set_current_user_data
+        set_current_user_id(user_id)
+        set_current_user_data({"user_id": user_id})
+
+        # Check if API token already exists in Vault
+        token = None
+        try:
+            from clients.vault_client import _ensure_vault_client
+            vault_client = _ensure_vault_client()
+            try:
+                secret_data = vault_client.hvac_client.secrets.kv.v2.read_secret_version(path='mira/api_keys')
+                token = secret_data['data']['data'].get('mira_api')
+                if token:
+                    print(f"✅ Using existing API token from Vault")
+            except Exception:
+                pass  # Token doesn't exist yet
+        except Exception as e:
+            logger.debug(f"Vault not available for token check: {e}")
+
+        # Create new API token if needed
+        if not token:
+            from auth.service import AuthService
+            auth_service = AuthService()
+            token_name = "MIRA CLI Token"
+            token = auth_service.create_api_token(token_name, expires_in_days=36500)  # 100 years
+            print(f"✅ Generated new API token")
+
+            # Store in Vault for CLI access
+            try:
+                vault_client = _ensure_vault_client()
+                vault_client.hvac_client.secrets.kv.v2.create_or_update_secret(
+                    path='mira/api_keys',
+                    secret=dict(mira_api=token)
+                )
+                print(f"✅ API token stored in Vault at secret/mira/api_keys/mira_api")
+            except Exception as e:
+                logger.warning(f"Could not store token in Vault: {e}")
+                print(f"⚠️  Token not stored in Vault (manual setup may be required)")
+
+        # Display token
+        print("\nBearer Token for API access:")
+        print(f"  {token}")
         print("="*60 + "\n")
 
     elif user_count > 1:

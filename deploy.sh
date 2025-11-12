@@ -180,7 +180,11 @@ if [ "$OS" = "linux" ]; then
     # Ubuntu/Debian package installation
     sudo apt-get update
     sudo apt-get install -y \
+        build-essential \
         python3.13-venv \
+        python3.13-dev \
+        libpq-dev \
+        postgresql-server-dev-17 \
         unzip \
         wget \
         curl \
@@ -245,26 +249,29 @@ echo "✓ Using Python $PYTHON_VERSION at $PYTHON_CMD"
 
 echo ""
 echo "Step 3: Downloading MIRA v0.94..."
-# Use appropriate home directory based on OS
+# Determine user/group for ownership
 if [ "$OS" = "linux" ]; then
-    DOWNLOAD_DIR="$HOME"
     MIRA_USER="$(whoami)"
     MIRA_GROUP="$(id -gn)"
 elif [ "$OS" = "macos" ]; then
-    DOWNLOAD_DIR="$HOME"
     MIRA_USER="$(whoami)"
     MIRA_GROUP="staff"
 fi
 
-cd "$DOWNLOAD_DIR"
+# Download to /tmp to keep user's home directory clean
+cd /tmp
 wget -O mira-0.94.tar.gz https://github.com/taylorsatula/mira-OSS/archive/refs/tags/0.94.tar.gz
-tar -xzf mira-0.94.tar.gz
 
 echo ""
 echo "Step 4: Installing to /opt/mira/app..."
 sudo mkdir -p /opt/mira/app
-sudo cp -r mira-OSS-0.94/* /opt/mira/app/
+tar -xzf mira-0.94.tar.gz -C /tmp
+sudo cp -r /tmp/mira-OSS-0.94/* /opt/mira/app/
 sudo chown -R $MIRA_USER:$MIRA_GROUP /opt/mira
+
+# Clean up immediately after copying
+rm -f /tmp/mira-0.94.tar.gz
+rm -rf /tmp/mira-OSS-0.94
 
 echo ""
 echo "Step 5: Creating Python virtual environment..."
@@ -285,8 +292,7 @@ fi
 
 echo ""
 echo "Step 7: Installing Python dependencies..."
-echo "Pre-installing psycopg2-binary to avoid source compilation..."
-venv/bin/pip3 install psycopg2-binary
+echo "Installing all dependencies from requirements.txt..."
 venv/bin/pip3 install -r requirements.txt
 
 echo ""
@@ -295,34 +301,54 @@ venv/bin/python3 -m spacy download en_core_web_lg
 
 echo ""
 echo "Step 9: Downloading embedding and reranker models..."
-echo "This will download ~500MB of models from Hugging Face..."
 venv/bin/python3 << 'EOF'
 from sentence_transformers import SentenceTransformer
 import os
+from pathlib import Path
 
 cache_dir = os.path.expanduser("~/.cache/huggingface")
 
-print("Downloading all-MiniLM-L6-v2 (fast embeddings)...")
-fast_model = SentenceTransformer(
-    "sentence-transformers/all-MiniLM-L6-v2",
-    cache_folder=cache_dir
-)
-print("✓ all-MiniLM-L6-v2 ready")
+# Check if all-MiniLM-L6-v2 is already cached
+minilm_path = Path(cache_dir) / "sentence-transformers_all-MiniLM-L6-v2"
+if minilm_path.exists():
+    print("✓ all-MiniLM-L6-v2 already downloaded, skipping")
+else:
+    print("Downloading all-MiniLM-L6-v2 (fast embeddings, ~90MB)...")
+    fast_model = SentenceTransformer(
+        "sentence-transformers/all-MiniLM-L6-v2",
+        cache_folder=cache_dir
+    )
+    print("✓ all-MiniLM-L6-v2 downloaded")
 
-print("Downloading BAAI/bge-reranker-base (search reranking)...")
-reranker_model = SentenceTransformer(
-    "BAAI/bge-reranker-base",
-    cache_folder=cache_dir
-)
-print("✓ BGE reranker ready")
+# Check if BGE reranker is already cached
+reranker_path = Path(cache_dir) / "BAAI_bge-reranker-base"
+if reranker_path.exists():
+    print("✓ BGE reranker already downloaded, skipping")
+else:
+    print("Downloading BAAI/bge-reranker-base (search reranking, ~420MB)...")
+    reranker_model = SentenceTransformer(
+        "BAAI/bge-reranker-base",
+        cache_folder=cache_dir
+    )
+    print("✓ BGE reranker downloaded")
 
-print("All models downloaded successfully!")
+print("All embedding models ready!")
 EOF
 
 echo ""
 echo "Step 10: Installing Playwright browsers..."
-venv/bin/playwright install
+# Check if Playwright Chromium is already installed
+PLAYWRIGHT_CACHE="$HOME/.cache/ms-playwright"
+if [ -d "$PLAYWRIGHT_CACHE" ] && ls "$PLAYWRIGHT_CACHE"/chromium-* >/dev/null 2>&1; then
+    echo "✓ Playwright Chromium already installed, skipping download"
+    echo "Note: If you need to update browsers, run: venv/bin/playwright install chromium"
+else
+    echo "Downloading Playwright Chromium browser (~175MB)..."
+    venv/bin/playwright install chromium
+fi
+
 if [ "$OS" = "linux" ]; then
+    echo "Installing Playwright system dependencies..."
     sudo venv/bin/playwright install-deps || true
 elif [ "$OS" = "macos" ]; then
     echo "Note: Playwright browser dependencies are bundled on macOS"
@@ -561,7 +587,26 @@ vault kv put secret/mira/services \
     valkey_url="valkey://localhost:6379"
 
 echo ""
-echo "Step 27: Creating mira shell alias..."
+echo "Step 27: Creating mira wrapper script..."
+
+# Create mira wrapper script that sets Vault environment variables
+# Note: MIRA's main.py automatically creates and stores the API token in Vault on first startup
+cat > /opt/mira/mira.sh <<'WRAPPER_EOF'
+#!/bin/bash
+# MIRA CLI wrapper - sets Vault environment variables for talkto_mira.py
+
+# Set Vault environment variables
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_ROLE_ID=$(grep 'role_id' /opt/vault/role-id.txt | awk '{print $2}')
+export VAULT_SECRET_ID=$(grep 'secret_id' /opt/vault/secret-id.txt | awk '{print $2}')
+
+# Launch MIRA CLI
+/opt/mira/app/venv/bin/python3 /opt/mira/app/talkto_mira.py "$@"
+WRAPPER_EOF
+
+chmod +x /opt/mira/mira.sh
+
+# Add alias to shell RC
 if [ "$OS" = "linux" ]; then
     SHELL_RC="$HOME/.bashrc"
 elif [ "$OS" = "macos" ]; then
@@ -574,22 +619,16 @@ elif [ "$OS" = "macos" ]; then
 fi
 
 if ! grep -q "alias mira=" "$SHELL_RC" 2>/dev/null; then
-    echo "alias mira='/opt/mira/app/venv/bin/python3 /opt/mira/app/talkto_mira.py'" >> "$SHELL_RC"
+    echo "alias mira='/opt/mira/mira.sh'" >> "$SHELL_RC"
     echo "Alias added to $SHELL_RC"
 fi
 
 echo ""
 echo "Step 28: Cleaning up installation files..."
 echo "Flushing pip cache..."
-venv/bin/pip3 cache purge
+venv/bin/pip3 cache purge 2>/dev/null || echo "Note: pip cache purge skipped (cache may be empty or unsupported)"
 
 echo "Removing temporary files..."
-# Remove downloaded tarball
-rm -f "$DOWNLOAD_DIR/mira-0.94.tar.gz"
-
-# Remove extracted source directory (both OS)
-rm -rf "$DOWNLOAD_DIR/mira-OSS-0.94"
-
 # Remove Vault policy temp file
 rm -f /tmp/mira-policy.hcl
 
@@ -598,6 +637,8 @@ if [ "$OS" = "linux" ]; then
     rm -f /tmp/vault_1.18.3_linux_amd64.zip
     rm -f /tmp/vault
 fi
+
+# Note: MIRA tarball and extracted directory already cleaned up in Step 4
 
 # Rename deploy script to archive it
 SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")"
