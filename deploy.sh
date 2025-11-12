@@ -4,39 +4,160 @@ set -e
 # MIRA Deployment Script
 # This script automates the complete deployment of MIRA OSS
 
-echo "================================"
-echo "MIRA Deployment Script v0.94"
-echo "================================"
+# ============================================================================
+# VISUAL OUTPUT CONFIGURATION
+# ============================================================================
+
+# Parse arguments
+LOUD_MODE=false
+for arg in "$@"; do
+    if [ "$arg" = "--loud" ]; then
+        LOUD_MODE=true
+    fi
+done
+
+# ANSI color codes (muted/professional palette)
+RESET='\033[0m'
+DIM='\033[2m'
+BOLD='\033[1m'
+GRAY='\033[38;5;240m'
+BLUE='\033[38;5;75m'
+GREEN='\033[38;5;77m'
+YELLOW='\033[38;5;186m'
+RED='\033[38;5;203m'
+CYAN='\033[38;5;80m'
+
+# Visual elements
+CHECKMARK="${GREEN}✓${RESET}"
+ARROW="${CYAN}→${RESET}"
+WARNING="${YELLOW}⚠${RESET}"
+ERROR="${RED}✗${RESET}"
+
+# Print colored output
+print_header() {
+    echo -e "\n${BOLD}${BLUE}$1${RESET}"
+}
+
+print_step() {
+    echo -e "${DIM}${ARROW}${RESET} $1"
+}
+
+print_success() {
+    echo -e "${CHECKMARK} ${GREEN}$1${RESET}"
+}
+
+print_warning() {
+    echo -e "${WARNING} ${YELLOW}$1${RESET}"
+}
+
+print_error() {
+    echo -e "${ERROR} ${RED}$1${RESET}"
+}
+
+print_info() {
+    echo -e "${DIM}  $1${RESET}"
+}
+
+# Execute command with optional output suppression
+run_quiet() {
+    if [ "$LOUD_MODE" = true ]; then
+        "$@"
+    else
+        "$@" > /dev/null 2>&1
+    fi
+}
+
+run_with_status() {
+    local msg="$1"
+    shift
+
+    if [ "$LOUD_MODE" = true ]; then
+        print_step "$msg"
+        "$@"
+    else
+        echo -ne "${DIM}${ARROW}${RESET} $msg... "
+        if "$@" > /dev/null 2>&1; then
+            echo -e "${CHECKMARK}"
+        else
+            echo -e "${ERROR}"
+            return 1
+        fi
+    fi
+}
+
+# Progress spinner for long operations
+show_progress() {
+    local pid=$1
+    local msg=$2
+    local spin='-\|/'
+    local i=0
+
+    if [ "$LOUD_MODE" = true ]; then
+        wait $pid
+        return $?
+    fi
+
+    echo -ne "${DIM}${ARROW}${RESET} $msg... "
+    while kill -0 $pid 2>/dev/null; do
+        i=$(( (i+1) %4 ))
+        echo -ne "\r${DIM}${ARROW}${RESET} $msg... ${spin:$i:1}"
+        sleep 0.1
+    done
+
+    wait $pid
+    local status=$?
+    if [ $status -eq 0 ]; then
+        echo -e "\r${DIM}${ARROW}${RESET} $msg... ${CHECKMARK}"
+    else
+        echo -e "\r${DIM}${ARROW}${RESET} $msg... ${ERROR}"
+    fi
+    return $status
+}
+
+# ============================================================================
+# DEPLOYMENT START
+# ============================================================================
+
+clear
+echo -e "${BOLD}${CYAN}"
+echo "╔════════════════════════════════════════╗"
+echo "║   MIRA Deployment Script v0.94         ║"
+echo "╚════════════════════════════════════════╝"
+echo -e "${RESET}"
+[ "$LOUD_MODE" = true ] && print_info "Running in verbose mode (--loud)"
 echo ""
 
-# Pre-flight checks
-echo "Running pre-flight checks..."
+print_header "Pre-flight Checks"
 
 # Check available disk space (need at least 10GB)
+echo -ne "${DIM}${ARROW}${RESET} Checking disk space... "
 AVAILABLE_SPACE=$(df /opt 2>/dev/null | awk 'NR==2 {print $4}' || df / | awk 'NR==2 {print $4}')
 REQUIRED_SPACE=10485760  # 10GB in KB
 if [ "$AVAILABLE_SPACE" -lt "$REQUIRED_SPACE" ]; then
-    echo "ERROR: Insufficient disk space. Need at least 10GB free, found $(($AVAILABLE_SPACE / 1024 / 1024))GB"
+    echo -e "${ERROR}"
+    print_error "Insufficient disk space. Need at least 10GB free, found $(($AVAILABLE_SPACE / 1024 / 1024))GB"
     exit 1
 fi
+echo -e "${CHECKMARK}"
 
 # Check if installation already exists
 if [ -d "/opt/mira/app" ]; then
     echo ""
-    echo "WARNING: Existing MIRA installation found at /opt/mira/app"
-    read -p "This will OVERWRITE the existing installation. Continue? (yes/no): " OVERWRITE
+    print_warning "Existing MIRA installation found at /opt/mira/app"
+    read -p "$(echo -e ${YELLOW}This will OVERWRITE the existing installation. Continue? ${RESET})(yes/no): " OVERWRITE
     if [ "$OVERWRITE" != "yes" ]; then
-        echo "Installation cancelled."
+        print_info "Installation cancelled."
         exit 0
     fi
-    echo "Proceeding with overwrite..."
+    print_info "Proceeding with overwrite..."
+    echo ""
 fi
 
-echo "✓ Pre-flight checks passed"
-echo ""
+print_success "Pre-flight checks passed"
 
-# Check for port conflicts
-echo "Checking for port conflicts..."
+print_header "Port Availability Check"
+
+echo -ne "${DIM}${ARROW}${RESET} Checking ports 1993, 8200, 6379, 5432... "
 PORTS_IN_USE=""
 for PORT in 1993 8200 6379 5432; do
     if command -v lsof &> /dev/null; then
@@ -51,115 +172,119 @@ for PORT in 1993 8200 6379 5432; do
 done
 
 if [ -n "$PORTS_IN_USE" ]; then
-    echo "WARNING: The following ports are already in use:$PORTS_IN_USE"
-    echo "MIRA requires ports: 1993 (app), 8200 (vault), 6379 (valkey), 5432 (postgresql)"
-    read -p "Stop existing services and continue? (yes/no): " CONTINUE
+    echo -e "${WARNING}"
+    print_warning "The following ports are already in use:$PORTS_IN_USE"
+    print_info "MIRA requires: 1993 (app), 8200 (vault), 6379 (valkey), 5432 (postgresql)"
+    read -p "$(echo -e ${YELLOW}Stop existing services and continue?${RESET}) (yes/no): " CONTINUE
     if [ "$CONTINUE" != "yes" ]; then
-        echo "Installation cancelled. Free up the required ports and try again."
+        print_info "Installation cancelled. Free up the required ports and try again."
         exit 0
     fi
+    echo ""
+else
+    echo -e "${CHECKMARK}"
 fi
-echo "✓ Port check passed"
-echo ""
 
-# Collect API keys upfront so installation can run unattended
-echo "================================"
-echo "API Key Configuration"
-echo "================================"
-echo "MIRA requires both Anthropic and Groq API keys to function."
-echo "You can set them now or skip and configure later (MIRA won't work until both are set)."
+print_success "Port check passed"
+
+print_header "API Key Configuration"
+
+print_info "MIRA requires both Anthropic and Groq API keys to function."
+print_info "You can set them now or skip and configure later (MIRA won't work until both are set)."
 echo ""
 
 # Anthropic API Key (required)
-echo "1. Anthropic API Key (REQUIRED)"
-echo "   Used for: Main LLM operations (Claude models)"
-echo "   Get your key at: https://console.anthropic.com/settings/keys"
+echo -e "${BOLD}${BLUE}1. Anthropic API Key${RESET} ${DIM}(REQUIRED)${RESET}"
+print_info "Used for: Main LLM operations (Claude models)"
+print_info "Get your key at: https://console.anthropic.com/settings/keys"
 echo ""
-read -p "Enter your Anthropic API key (or press Enter to skip): " ANTHROPIC_KEY
+read -p "$(echo -e ${CYAN}Enter your Anthropic API key${RESET}) (or press Enter to skip): " ANTHROPIC_KEY
 if [ -z "$ANTHROPIC_KEY" ]; then
     ANTHROPIC_KEY="PLACEHOLDER_SET_THIS_LATER"
-    ANTHROPIC_STATUS="⚠️  NOT SET - You must configure this before using MIRA"
+    ANTHROPIC_STATUS="${WARNING} NOT SET - You must configure this before using MIRA"
 else
     # Basic validation - check if it looks like an Anthropic key
     if [[ $ANTHROPIC_KEY =~ ^sk-ant- ]]; then
-        ANTHROPIC_STATUS="✓ Configured"
+        ANTHROPIC_STATUS="${CHECKMARK} Configured"
     else
-        echo "   Warning: This doesn't look like a valid Anthropic API key (should start with 'sk-ant-')"
-        read -p "   Continue anyway? (y/n): " CONFIRM
+        print_warning "This doesn't look like a valid Anthropic API key (should start with 'sk-ant-')"
+        read -p "$(echo -e ${YELLOW}Continue anyway?${RESET}) (y/n): " CONFIRM
         if [ "$CONFIRM" != "y" ] && [ "$CONFIRM" != "Y" ]; then
             ANTHROPIC_KEY="PLACEHOLDER_SET_THIS_LATER"
-            ANTHROPIC_STATUS="⚠️  NOT SET"
+            ANTHROPIC_STATUS="${WARNING} NOT SET"
         else
-            ANTHROPIC_STATUS="✓ Configured (unvalidated)"
+            ANTHROPIC_STATUS="${CHECKMARK} Configured (unvalidated)"
         fi
     fi
 fi
 echo ""
 
 # Groq API Key (required)
-echo "2. Groq API Key (REQUIRED)"
-echo "   Used for: Fast inference and web extraction operations"
-echo "   Get your key at: https://console.groq.com/keys"
+echo -e "${BOLD}${BLUE}2. Groq API Key${RESET} ${DIM}(REQUIRED)${RESET}"
+print_info "Used for: Fast inference and web extraction operations"
+print_info "Get your key at: https://console.groq.com/keys"
 echo ""
-read -p "Enter your Groq API key (or press Enter to skip): " GROQ_KEY
+read -p "$(echo -e ${CYAN}Enter your Groq API key${RESET}) (or press Enter to skip): " GROQ_KEY
 if [ -z "$GROQ_KEY" ]; then
     GROQ_KEY="PLACEHOLDER_SET_THIS_LATER"
-    GROQ_STATUS="⚠️  NOT SET - You must configure this before using MIRA"
+    GROQ_STATUS="${WARNING} NOT SET - You must configure this before using MIRA"
 else
     # Basic validation - check if it looks like a Groq key
     if [[ $GROQ_KEY =~ ^gsk_ ]]; then
-        GROQ_STATUS="✓ Configured"
+        GROQ_STATUS="${CHECKMARK} Configured"
     else
-        echo "   Warning: This doesn't look like a valid Groq API key (should start with 'gsk_')"
-        read -p "   Continue anyway? (y/n): " CONFIRM
+        print_warning "This doesn't look like a valid Groq API key (should start with 'gsk_')"
+        read -p "$(echo -e ${YELLOW}Continue anyway?${RESET}) (y/n): " CONFIRM
         if [ "$CONFIRM" != "y" ] && [ "$CONFIRM" != "Y" ]; then
             GROQ_KEY="PLACEHOLDER_SET_THIS_LATER"
-            GROQ_STATUS="⚠️  NOT SET"
+            GROQ_STATUS="${WARNING} NOT SET"
         else
-            GROQ_STATUS="✓ Configured (unvalidated)"
+            GROQ_STATUS="${CHECKMARK} Configured (unvalidated)"
         fi
     fi
 fi
 echo ""
 
-echo "API Key Summary:"
-echo "  Anthropic: $ANTHROPIC_STATUS"
-echo "  Groq:      $GROQ_STATUS"
-echo ""
-echo "================================"
+echo -e "${BOLD}API Key Summary:${RESET}"
+echo -e "  Anthropic: $ANTHROPIC_STATUS"
+echo -e "  Groq:      $GROQ_STATUS"
 echo ""
 
+print_header "System Detection"
+
 # Detect operating system
+echo -ne "${DIM}${ARROW}${RESET} Detecting operating system... "
 OS_TYPE=$(uname -s)
 case "$OS_TYPE" in
     Linux*)
         OS="linux"
-        echo "Detected OS: Linux (Ubuntu/Debian)"
+        echo -e "${CHECKMARK} ${DIM}Linux (Ubuntu/Debian)${RESET}"
         ;;
     Darwin*)
         OS="macos"
-        echo "Detected OS: macOS"
+        echo -e "${CHECKMARK} ${DIM}macOS${RESET}"
         ;;
     *)
-        echo "ERROR: Unsupported operating system: $OS_TYPE"
-        echo "This script supports Linux (Ubuntu/Debian) and macOS only."
+        echo -e "${ERROR}"
+        print_error "Unsupported operating system: $OS_TYPE"
+        print_info "This script supports Linux (Ubuntu/Debian) and macOS only."
         exit 1
         ;;
 esac
-echo ""
 
 # Check if running as root
+echo -ne "${DIM}${ARROW}${RESET} Checking user privileges... "
 if [ "$EUID" -eq 0 ]; then
-   echo "ERROR: Please do not run this script as root."
+   echo -e "${ERROR}"
+   print_error "Please do not run this script as root."
    exit 1
 fi
+echo -e "${CHECKMARK}"
 
-# Prompt for sudo password upfront - all interactive prompts are now complete
-echo "================================"
-echo "Beginning Installation"
-echo "================================"
-echo "This script requires sudo privileges for system package installation."
-echo "Please enter your password - the installation will then run unattended."
+print_header "Beginning Installation"
+
+print_info "This script requires sudo privileges for system package installation."
+print_info "Please enter your password - the installation will then run unattended."
 echo ""
 sudo -v
 
@@ -169,64 +294,89 @@ if [ "$OS" = "linux" ]; then
 fi
 
 echo ""
-echo "✓ All configuration collected"
-echo "✓ Installation will now proceed unattended (estimated 10-15 minutes)"
-echo "✓ Progress will be displayed as each step completes"
+print_success "All configuration collected"
+print_info "Installation will now proceed unattended (estimated 10-15 minutes)"
+print_info "Progress will be displayed as each step completes"
+[ "$LOUD_MODE" = false ] && print_info "Use --loud flag to see detailed output"
 echo ""
-sleep 2
+sleep 1
 
-echo "Step 1: Installing system dependencies..."
+print_header "Step 1: System Dependencies"
+
 if [ "$OS" = "linux" ]; then
     # Ubuntu/Debian package installation
-    sudo apt-get update
-    sudo apt-get install -y \
-        build-essential \
-        python3.13-venv \
-        python3.13-dev \
-        libpq-dev \
-        postgresql-server-dev-17 \
-        unzip \
-        wget \
-        curl \
-        postgresql \
-        postgresql-contrib \
-        postgresql-17-pgvector \
-        valkey \
-        libatk1.0-0t64 \
-        libatk-bridge2.0-0t64 \
-        libatspi2.0-0t64 \
-        libxcomposite1
+    if [ "$LOUD_MODE" = true ]; then
+        print_step "Updating package lists..."
+        sudo apt-get update
+        print_step "Installing system packages..."
+        sudo apt-get install -y \
+            build-essential \
+            python3.13-venv \
+            python3.13-dev \
+            libpq-dev \
+            postgresql-server-dev-17 \
+            unzip \
+            wget \
+            curl \
+            postgresql \
+            postgresql-contrib \
+            postgresql-17-pgvector \
+            valkey \
+            libatk1.0-0t64 \
+            libatk-bridge2.0-0t64 \
+            libatspi2.0-0t64 \
+            libxcomposite1
+    else
+        # Silent mode with progress indicator
+        (sudo apt-get update > /dev/null 2>&1) &
+        show_progress $! "Updating package lists"
+
+        (sudo apt-get install -y \
+            build-essential python3.13-venv python3.13-dev libpq-dev \
+            postgresql-server-dev-17 unzip wget curl postgresql \
+            postgresql-contrib postgresql-17-pgvector valkey \
+            libatk1.0-0t64 libatk-bridge2.0-0t64 libatspi2.0-0t64 \
+            libxcomposite1 > /dev/null 2>&1) &
+        show_progress $! "Installing system packages (18 packages)"
+    fi
 elif [ "$OS" = "macos" ]; then
     # macOS Homebrew package installation
     # Check if Homebrew is installed
+    echo -ne "${DIM}${ARROW}${RESET} Checking for Homebrew... "
     if ! command -v brew &> /dev/null; then
-        echo "ERROR: Homebrew is not installed. Please install Homebrew first:"
-        echo "  /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\""
+        echo -e "${ERROR}"
+        print_error "Homebrew is not installed. Please install Homebrew first:"
+        print_info "/bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\""
         exit 1
     fi
+    echo -e "${CHECKMARK}"
 
-    echo "Updating Homebrew..."
-    brew update
+    if [ "$LOUD_MODE" = true ]; then
+        print_step "Updating Homebrew..."
+        brew update
+        print_step "Installing dependencies via Homebrew..."
+        brew install python@3.13 wget curl postgresql@17 valkey vault
+    else
+        (brew update > /dev/null 2>&1) &
+        show_progress $! "Updating Homebrew"
 
-    echo "Installing dependencies via Homebrew..."
-    brew install \
-        python@3.13 \
-        wget \
-        curl \
-        postgresql@17 \
-        valkey \
-        vault
+        (brew install python@3.13 wget curl postgresql@17 valkey vault > /dev/null 2>&1) &
+        show_progress $! "Installing dependencies via Homebrew (6 packages)"
+    fi
 
-    # Playwright dependencies are handled differently on macOS
-    echo "Note: Playwright will install its own browser dependencies"
+    print_info "Playwright will install its own browser dependencies"
 fi
 
-echo ""
-echo "Step 2: Verifying Python 3.13..."
+print_success "System dependencies installed"
+
+print_header "Step 2: Python Verification"
+
+echo -ne "${DIM}${ARROW}${RESET} Locating Python 3.13... "
 if [ "$OS" = "linux" ]; then
     # Check if python3.13 is available
     if ! command -v python3.13 &> /dev/null; then
-        echo "ERROR: Python 3.13 not found after installation. Check package availability."
+        echo -e "${ERROR}"
+        print_error "Python 3.13 not found after installation. Check package availability."
         exit 1
     fi
     PYTHON_CMD="python3.13"
@@ -239,16 +389,17 @@ elif [ "$OS" = "macos" ]; then
     elif [ -f "/usr/local/opt/python@3.13/bin/python3.13" ]; then
         PYTHON_CMD="/usr/local/opt/python@3.13/bin/python3.13"
     else
-        echo "ERROR: Python 3.13 not found. Check Homebrew installation."
+        echo -e "${ERROR}"
+        print_error "Python 3.13 not found. Check Homebrew installation."
         exit 1
     fi
 fi
 
 PYTHON_VERSION=$($PYTHON_CMD --version 2>&1 | awk '{print $2}')
-echo "✓ Using Python $PYTHON_VERSION at $PYTHON_CMD"
+echo -e "${CHECKMARK} ${DIM}$PYTHON_VERSION${RESET}"
 
-echo ""
-echo "Step 3: Downloading MIRA v0.94..."
+print_header "Step 3: MIRA Download & Installation"
+
 # Determine user/group for ownership
 if [ "$OS" = "linux" ]; then
     MIRA_USER="$(whoami)"
@@ -260,48 +411,78 @@ fi
 
 # Download to /tmp to keep user's home directory clean
 cd /tmp
-wget -O mira-0.94.tar.gz https://github.com/taylorsatula/mira-OSS/archive/refs/tags/0.94.tar.gz
+run_with_status "Downloading MIRA v0.94 (~2MB)" \
+    wget -q -O mira-0.94.tar.gz https://github.com/taylorsatula/mira-OSS/archive/refs/tags/0.94.tar.gz
 
-echo ""
-echo "Step 4: Installing to /opt/mira/app..."
-sudo mkdir -p /opt/mira/app
-tar -xzf mira-0.94.tar.gz -C /tmp
-sudo cp -r /tmp/mira-OSS-0.94/* /opt/mira/app/
-sudo chown -R $MIRA_USER:$MIRA_GROUP /opt/mira
+run_with_status "Creating /opt/mira/app directory" \
+    sudo mkdir -p /opt/mira/app
+
+run_with_status "Extracting archive" \
+    tar -xzf mira-0.94.tar.gz -C /tmp
+
+run_with_status "Copying files to /opt/mira/app" \
+    sudo cp -r /tmp/mira-OSS-0.94/* /opt/mira/app/
+
+run_with_status "Setting ownership to $MIRA_USER:$MIRA_GROUP" \
+    sudo chown -R $MIRA_USER:$MIRA_GROUP /opt/mira
 
 # Clean up immediately after copying
-rm -f /tmp/mira-0.94.tar.gz
-rm -rf /tmp/mira-OSS-0.94
+run_quiet rm -f /tmp/mira-0.94.tar.gz
+run_quiet rm -rf /tmp/mira-OSS-0.94
 
-echo ""
-echo "Step 5: Creating Python virtual environment..."
+print_success "MIRA installed to /opt/mira/app"
+
+print_header "Step 4: Python Environment Setup"
+
 cd /opt/mira/app
-$PYTHON_CMD -m venv venv
-venv/bin/python3 -m ensurepip
 
-echo ""
-echo "Step 6: Checking PyTorch installation..."
+run_with_status "Creating virtual environment" \
+    $PYTHON_CMD -m venv venv
+
+run_with_status "Initializing pip" \
+    venv/bin/python3 -m ensurepip
+
+echo -ne "${DIM}${ARROW}${RESET} Checking PyTorch installation... "
 if venv/bin/pip3 show torch &> /dev/null; then
     TORCH_VERSION=$(venv/bin/pip3 show torch | grep Version | awk '{print $2}')
-    echo "PyTorch $TORCH_VERSION already installed, using existing installation"
-    echo "Note: If you have CUDA-enabled PyTorch, it will be preserved"
+    echo -e "${CHECKMARK} ${DIM}$TORCH_VERSION (existing)${RESET}"
+    print_info "Note: If you have CUDA-enabled PyTorch, it will be preserved"
 else
-    echo "No PyTorch found, installing CPU-only version..."
-    venv/bin/pip3 install torch --index-url https://download.pytorch.org/whl/cpu
+    echo -e "${DIM}(not found)${RESET}"
+    if [ "$LOUD_MODE" = true ]; then
+        print_step "Installing PyTorch CPU-only version..."
+        venv/bin/pip3 install torch --index-url https://download.pytorch.org/whl/cpu
+    else
+        (venv/bin/pip3 install -q torch --index-url https://download.pytorch.org/whl/cpu) &
+        show_progress $! "Installing PyTorch CPU-only (~100MB)"
+    fi
 fi
 
-echo ""
-echo "Step 7: Installing Python dependencies..."
-echo "Installing all dependencies from requirements.txt..."
-venv/bin/pip3 install -r requirements.txt
+print_header "Step 5: Python Dependencies"
 
-echo ""
-echo "Step 8: Installing spacy language model..."
-venv/bin/python3 -m spacy download en_core_web_lg
+if [ "$LOUD_MODE" = true ]; then
+    print_step "Installing from requirements.txt..."
+    venv/bin/pip3 install -r requirements.txt
+else
+    (venv/bin/pip3 install -q -r requirements.txt) &
+    show_progress $! "Installing Python packages from requirements.txt"
+fi
 
-echo ""
-echo "Step 9: Downloading embedding and reranker models..."
-venv/bin/python3 << 'EOF'
+if [ "$LOUD_MODE" = true ]; then
+    print_step "Installing spacy language model..."
+    venv/bin/python3 -m spacy download en_core_web_lg
+else
+    (venv/bin/python3 -m spacy download en_core_web_lg > /dev/null 2>&1) &
+    show_progress $! "Installing spacy language model (~560MB)"
+fi
+
+print_success "Python dependencies installed"
+
+print_header "Step 6: AI Model Downloads"
+
+if [ "$LOUD_MODE" = true ]; then
+    print_step "Downloading embedding and reranker models..."
+    venv/bin/python3 << 'EOF'
 from sentence_transformers import SentenceTransformer
 import os
 from pathlib import Path
@@ -311,9 +492,9 @@ cache_dir = os.path.expanduser("~/.cache/huggingface")
 # Check if all-MiniLM-L6-v2 is already cached
 minilm_path = Path(cache_dir) / "sentence-transformers_all-MiniLM-L6-v2"
 if minilm_path.exists():
-    print("✓ all-MiniLM-L6-v2 already downloaded, skipping")
+    print("✓ all-MiniLM-L6-v2 already cached, skipping")
 else:
-    print("Downloading all-MiniLM-L6-v2 (fast embeddings, ~90MB)...")
+    print("→ Downloading all-MiniLM-L6-v2 (~90MB)...")
     fast_model = SentenceTransformer(
         "sentence-transformers/all-MiniLM-L6-v2",
         cache_folder=cache_dir
@@ -323,61 +504,94 @@ else:
 # Check if BGE reranker is already cached
 reranker_path = Path(cache_dir) / "BAAI_bge-reranker-base"
 if reranker_path.exists():
-    print("✓ BGE reranker already downloaded, skipping")
+    print("✓ BGE reranker already cached, skipping")
 else:
-    print("Downloading BAAI/bge-reranker-base (search reranking, ~420MB)...")
+    print("→ Downloading BAAI/bge-reranker-base (~420MB)...")
     reranker_model = SentenceTransformer(
         "BAAI/bge-reranker-base",
         cache_folder=cache_dir
     )
     print("✓ BGE reranker downloaded")
-
-print("All embedding models ready!")
 EOF
+else
+    (venv/bin/python3 << 'EOF'
+from sentence_transformers import SentenceTransformer
+import os
+from pathlib import Path
 
-echo ""
-echo "Step 10: Installing Playwright browsers..."
+cache_dir = os.path.expanduser("~/.cache/huggingface")
+
+minilm_path = Path(cache_dir) / "sentence-transformers_all-MiniLM-L6-v2"
+if not minilm_path.exists():
+    SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2", cache_folder=cache_dir)
+
+reranker_path = Path(cache_dir) / "BAAI_bge-reranker-base"
+if not reranker_path.exists():
+    SentenceTransformer("BAAI/bge-reranker-base", cache_folder=cache_dir)
+EOF
+) &
+    show_progress $! "Downloading embedding models (~500MB total)"
+fi
+
+print_header "Step 7: Playwright Browser Setup"
+
 # Check if Playwright Chromium is already installed
 PLAYWRIGHT_CACHE="$HOME/.cache/ms-playwright"
+echo -ne "${DIM}${ARROW}${RESET} Checking Playwright cache... "
 if [ -d "$PLAYWRIGHT_CACHE" ] && ls "$PLAYWRIGHT_CACHE"/chromium-* >/dev/null 2>&1; then
-    echo "✓ Playwright Chromium already installed, skipping download"
-    echo "Note: If you need to update browsers, run: venv/bin/playwright install chromium"
+    echo -e "${CHECKMARK} ${DIM}(already installed)${RESET}"
+    print_info "To update browsers: venv/bin/playwright install chromium"
 else
-    echo "Downloading Playwright Chromium browser (~175MB)..."
-    venv/bin/playwright install chromium
+    echo -e "${DIM}(not found)${RESET}"
+    if [ "$LOUD_MODE" = true ]; then
+        print_step "Installing Playwright Chromium browser..."
+        venv/bin/playwright install chromium
+    else
+        (venv/bin/playwright install chromium > /dev/null 2>&1) &
+        show_progress $! "Installing Playwright Chromium (~175MB)"
+    fi
 fi
 
 if [ "$OS" = "linux" ]; then
-    echo "Installing Playwright system dependencies..."
-    sudo venv/bin/playwright install-deps || true
+    run_with_status "Installing Playwright system dependencies" \
+        sudo venv/bin/playwright install-deps || true
 elif [ "$OS" = "macos" ]; then
-    echo "Note: Playwright browser dependencies are bundled on macOS"
+    print_info "Playwright browser dependencies are bundled on macOS"
 fi
 
-echo ""
+print_success "Playwright configured"
+
+print_header "Step 8: HashiCorp Vault Setup"
+
 if [ "$OS" = "linux" ]; then
-    echo "Step 11: Installing HashiCorp Vault..."
     cd /tmp
-    wget -q https://releases.hashicorp.com/vault/1.18.3/vault_1.18.3_linux_amd64.zip
-    unzip -o vault_1.18.3_linux_amd64.zip
-    sudo mv vault /usr/local/bin/
-    sudo chmod +x /usr/local/bin/vault
+    run_with_status "Downloading Vault 1.18.3" \
+        wget -q https://releases.hashicorp.com/vault/1.18.3/vault_1.18.3_linux_amd64.zip
+
+    run_with_status "Extracting Vault binary" \
+        unzip -o vault_1.18.3_linux_amd64.zip
+
+    run_with_status "Installing to /usr/local/bin" \
+        sudo mv vault /usr/local/bin/
+
+    run_quiet sudo chmod +x /usr/local/bin/vault
 elif [ "$OS" = "macos" ]; then
-    echo "Step 11: Verifying Vault installation..."
+    echo -ne "${DIM}${ARROW}${RESET} Verifying Vault installation... "
     if ! command -v vault &> /dev/null; then
-        echo "ERROR: Vault installation failed. Please install manually with: brew install vault"
+        echo -e "${ERROR}"
+        print_error "Vault installation failed. Please install manually: brew install vault"
         exit 1
     fi
-    echo "Vault is installed via Homebrew"
+    echo -e "${CHECKMARK}"
 fi
 
-echo ""
-echo "Step 12: Creating Vault directories..."
-sudo mkdir -p /opt/vault/data /opt/vault/config /opt/vault/logs
-sudo chown -R $MIRA_USER:$MIRA_GROUP /opt/vault
+run_with_status "Creating Vault directories" \
+    sudo mkdir -p /opt/vault/data /opt/vault/config /opt/vault/logs
 
-echo ""
-echo "Step 13: Creating Vault configuration..."
+run_with_status "Setting Vault directory ownership" \
+    sudo chown -R $MIRA_USER:$MIRA_GROUP /opt/vault
+
+echo -ne "${DIM}${ARROW}${RESET} Writing Vault configuration... "
 cat > /opt/vault/config/vault.hcl <<'EOF'
 storage "file" {
   path = "/opt/vault/data"
@@ -394,10 +608,12 @@ ui = true
 
 log_level = "Info"
 EOF
+echo -e "${CHECKMARK}"
 
-echo ""
+print_header "Step 9: Vault Service Configuration"
+
 if [ "$OS" = "linux" ]; then
-    echo "Step 14: Creating Vault systemd service..."
+    echo -ne "${DIM}${ARROW}${RESET} Creating systemd service... "
     sudo tee /etc/systemd/system/vault.service > /dev/null <<EOF
 [Unit]
 Description=HashiCorp Vault
@@ -426,50 +642,59 @@ LimitMEMLOCK=infinity
 [Install]
 WantedBy=multi-user.target
 EOF
+    echo -e "${CHECKMARK}"
 
-    sudo systemctl daemon-reload
-    sudo systemctl enable vault.service
-    sudo systemctl start vault.service
-    sleep 3
+    run_quiet sudo systemctl daemon-reload
+    run_with_status "Enabling Vault service" \
+        sudo systemctl enable vault.service
+
+    run_with_status "Starting Vault service" \
+        sudo systemctl start vault.service
+
+    sleep 2
 elif [ "$OS" = "macos" ]; then
-    echo "Step 14: Starting Vault service..."
+    echo -ne "${DIM}${ARROW}${RESET} Starting Vault service... "
     # Start Vault in the background
     vault server -config=/opt/vault/config/vault.hcl > /opt/vault/logs/vault.log 2>&1 &
     VAULT_PID=$!
     echo $VAULT_PID > /opt/vault/vault.pid
-    sleep 3
+    sleep 2
 
     # Verify Vault started
     if ! kill -0 $VAULT_PID 2>/dev/null; then
-        echo "ERROR: Vault failed to start. Check /opt/vault/logs/vault.log for details."
+        echo -e "${ERROR}"
+        print_error "Vault failed to start. Check /opt/vault/logs/vault.log for details."
         exit 1
     fi
-    echo "Vault started with PID $VAULT_PID"
+    echo -e "${CHECKMARK} ${DIM}PID $VAULT_PID${RESET}"
 fi
 
-echo ""
-echo "Step 15: Initializing Vault..."
+print_success "Vault service configured and running"
+
+print_header "Step 10: Vault Initialization"
+
 export VAULT_ADDR='http://127.0.0.1:8200'
-vault operator init -key-shares=1 -key-threshold=1 > /opt/vault/init-keys.txt
-chmod 600 /opt/vault/init-keys.txt
 
-echo ""
-echo "Step 16: Unsealing Vault..."
+run_with_status "Initializing Vault" \
+    vault operator init -key-shares=1 -key-threshold=1 > /opt/vault/init-keys.txt
+
+run_quiet chmod 600 /opt/vault/init-keys.txt
+
 UNSEAL_KEY=$(grep 'Unseal Key 1' /opt/vault/init-keys.txt | awk '{print $NF}')
-vault operator unseal "$UNSEAL_KEY"
+run_with_status "Unsealing Vault" \
+    vault operator unseal "$UNSEAL_KEY" > /dev/null
 
-echo ""
-echo "Step 17: Logging into Vault..."
 ROOT_TOKEN=$(grep 'Initial Root Token' /opt/vault/init-keys.txt | awk '{print $NF}')
-vault login "$ROOT_TOKEN"
+run_with_status "Authenticating with root token" \
+    vault login "$ROOT_TOKEN" > /dev/null
 
-echo ""
-echo "Step 18: Enabling KV2 and AppRole..."
-vault secrets enable -version=2 -path=secret kv
-vault auth enable approle
+run_with_status "Enabling KV2 secrets engine" \
+    vault secrets enable -version=2 -path=secret kv > /dev/null
 
-echo ""
-echo "Step 19: Creating Vault policy and AppRole..."
+run_with_status "Enabling AppRole authentication" \
+    vault auth enable approle > /dev/null
+
+echo -ne "${DIM}${ARROW}${RESET} Creating Vault policy... "
 cat > /tmp/mira-policy.hcl <<'EOF'
 # Allow full access to secret/* path
 path "secret/*" {
@@ -480,17 +705,24 @@ path "secret/metadata/*" {
   capabilities = ["list", "read", "delete"]
 }
 EOF
+echo -e "${CHECKMARK}"
 
-vault policy write mira-policy /tmp/mira-policy.hcl
-vault write auth/approle/role/mira policies="mira-policy" token_ttl=1h token_max_ttl=4h
+run_with_status "Writing policy to Vault" \
+    vault policy write mira-policy /tmp/mira-policy.hcl > /dev/null
 
-echo ""
-echo "Step 20: Getting AppRole credentials..."
-vault read auth/approle/role/mira/role-id > /opt/vault/role-id.txt
-vault write -f auth/approle/role/mira/secret-id > /opt/vault/secret-id.txt
+run_with_status "Creating AppRole" \
+    vault write auth/approle/role/mira policies="mira-policy" token_ttl=1h token_max_ttl=4h > /dev/null
 
-echo ""
-echo "Step 21: Creating auto-unseal script..."
+run_with_status "Getting AppRole credentials" \
+    vault read auth/approle/role/mira/role-id > /opt/vault/role-id.txt
+
+run_quiet vault write -f auth/approle/role/mira/secret-id > /opt/vault/secret-id.txt
+
+print_success "Vault fully configured"
+
+print_header "Step 11: Auto-Unseal Configuration"
+
+echo -ne "${DIM}${ARROW}${RESET} Creating unseal script... "
 cat > /opt/vault/unseal.sh <<'EOF'
 #!/bin/bash
 export VAULT_ADDR='http://127.0.0.1:8200'
@@ -498,12 +730,12 @@ sleep 5
 UNSEAL_KEY=$(grep 'Unseal Key 1' /opt/vault/init-keys.txt | awk '{print $NF}')
 vault operator unseal "$UNSEAL_KEY"
 EOF
+echo -e "${CHECKMARK}"
 
-chmod +x /opt/vault/unseal.sh
+run_quiet chmod +x /opt/vault/unseal.sh
 
-echo ""
 if [ "$OS" = "linux" ]; then
-    echo "Step 22: Creating auto-unseal systemd service..."
+    echo -ne "${DIM}${ARROW}${RESET} Creating auto-unseal systemd service... "
     sudo tee /etc/systemd/system/vault-unseal.service > /dev/null <<'EOF'
 [Unit]
 Description=Vault Auto-Unseal
@@ -518,76 +750,91 @@ RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
 EOF
+    echo -e "${CHECKMARK}"
 
-    sudo systemctl daemon-reload
-    sudo systemctl enable vault-unseal.service
+    run_quiet sudo systemctl daemon-reload
+    run_with_status "Enabling auto-unseal service" \
+        sudo systemctl enable vault-unseal.service
 elif [ "$OS" = "macos" ]; then
-    echo "Step 22: Auto-unseal script created (manual restart required)..."
-    echo "Note: On macOS, you'll need to manually unseal Vault after restart using:"
-    echo "  /opt/vault/unseal.sh"
+    print_info "On macOS, manually unseal Vault after restart using: /opt/vault/unseal.sh"
 fi
 
-echo ""
+print_success "Auto-unseal configured"
+
 if [ "$OS" = "macos" ]; then
-    echo "Step 23: Starting services..."
-    echo "Starting Valkey..."
-    brew services start valkey || true
-    echo "Starting PostgreSQL..."
-    brew services start postgresql@17 || true
-    sleep 3
-    echo ""
+    print_header "Step 12: Starting Services"
+
+    run_with_status "Starting Valkey" \
+        brew services start valkey || true
+
+    run_with_status "Starting PostgreSQL" \
+        brew services start postgresql@17 || true
+
+    sleep 2
 fi
 
-echo "Step 24: Setting up PostgreSQL..."
+print_header "Step 13: PostgreSQL Configuration"
+
 if [ "$OS" = "linux" ]; then
     # Linux: use postgres system user
-    echo "Creating PostgreSQL database and users..."
-    sudo -u postgres psql -c "CREATE DATABASE mira_service;" || true
-    sudo -u postgres psql -c "CREATE USER mira_admin WITH PASSWORD 'changethisifdeployingpwd' SUPERUSER;" || true
-    sudo -u postgres psql -c "CREATE USER mira_dbuser WITH PASSWORD 'changethisifdeployingpwd';" || true
-    sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE mira_service TO mira_admin;"
-    sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE mira_service TO mira_dbuser;"
-elif [ "$OS" = "macos" ]; then
-    # macOS: create database and users (services already started above)
+    run_with_status "Creating database 'mira_service'" \
+        sudo -u postgres psql -c "CREATE DATABASE mira_service;" || true
 
-    echo "Creating PostgreSQL database and users..."
-    # On macOS, run as current user (no postgres system user)
-    createdb mira_service 2>/dev/null || true
-    psql postgres -c "CREATE USER mira_admin WITH PASSWORD 'changethisifdeployingpwd' SUPERUSER;" || true
-    psql postgres -c "CREATE USER mira_dbuser WITH PASSWORD 'changethisifdeployingpwd';" || true
-    psql postgres -c "GRANT ALL PRIVILEGES ON DATABASE mira_service TO mira_admin;"
-    psql postgres -c "GRANT ALL PRIVILEGES ON DATABASE mira_service TO mira_dbuser;"
+    run_with_status "Creating user 'mira_admin'" \
+        sudo -u postgres psql -c "CREATE USER mira_admin WITH PASSWORD 'changethisifdeployingpwd' SUPERUSER;" || true
+
+    run_with_status "Creating user 'mira_dbuser'" \
+        sudo -u postgres psql -c "CREATE USER mira_dbuser WITH PASSWORD 'changethisifdeployingpwd';" || true
+
+    run_quiet sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE mira_service TO mira_admin;"
+    run_quiet sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE mira_service TO mira_dbuser;"
+
+    run_with_status "Enabling pgvector extension" \
+        sudo -u postgres psql -d mira_service -c "CREATE EXTENSION IF NOT EXISTS vector;"
+elif [ "$OS" = "macos" ]; then
+    # macOS: run as current user (services already started above)
+    run_with_status "Creating database 'mira_service'" \
+        createdb mira_service 2>/dev/null || true
+
+    run_with_status "Creating user 'mira_admin'" \
+        psql postgres -c "CREATE USER mira_admin WITH PASSWORD 'changethisifdeployingpwd' SUPERUSER;" || true
+
+    run_with_status "Creating user 'mira_dbuser'" \
+        psql postgres -c "CREATE USER mira_dbuser WITH PASSWORD 'changethisifdeployingpwd';" || true
+
+    run_quiet psql postgres -c "GRANT ALL PRIVILEGES ON DATABASE mira_service TO mira_admin;"
+    run_quiet psql postgres -c "GRANT ALL PRIVILEGES ON DATABASE mira_service TO mira_dbuser;"
+
+    run_with_status "Enabling pgvector extension" \
+        psql -d mira_service -c "CREATE EXTENSION IF NOT EXISTS vector;"
 fi
 
-echo ""
-echo "Step 25: Enabling pgvector extension..."
-if [ "$OS" = "linux" ]; then
-    sudo -u postgres psql -d mira_service -c "CREATE EXTENSION IF NOT EXISTS vector;"
-elif [ "$OS" = "macos" ]; then
-    psql -d mira_service -c "CREATE EXTENSION IF NOT EXISTS vector;"
-fi
+print_success "PostgreSQL configured"
 
-echo ""
-echo "Step 26: Storing configuration in Vault..."
-echo "Storing API keys..."
-vault kv put secret/mira/api_keys \
-    anthropic_key="$ANTHROPIC_KEY" \
-    groq_key="$GROQ_KEY"
+print_header "Step 14: Vault Credential Storage"
 
-echo "Storing database credentials..."
+run_with_status "Storing API keys" \
+    vault kv put secret/mira/api_keys \
+        anthropic_key="$ANTHROPIC_KEY" \
+        groq_key="$GROQ_KEY" > /dev/null
 
-vault kv put secret/mira/database \
-    admin_url="postgresql://mira_admin:changethisifdeployingpwd@localhost:5432/mira_service" \
-    password="changethisifdeployingpwd" \
-    username="mira_dbuser" \
-    service_url="postgresql://mira_dbuser:changethisifdeployingpwd@localhost:5432/mira_service"
+run_with_status "Storing database credentials" \
+    vault kv put secret/mira/database \
+        admin_url="postgresql://mira_admin:changethisifdeployingpwd@localhost:5432/mira_service" \
+        password="changethisifdeployingpwd" \
+        username="mira_dbuser" \
+        service_url="postgresql://mira_dbuser:changethisifdeployingpwd@localhost:5432/mira_service" > /dev/null
 
-vault kv put secret/mira/services \
-    app_url="http://localhost:1993" \
-    valkey_url="valkey://localhost:6379"
+run_with_status "Storing service URLs" \
+    vault kv put secret/mira/services \
+        app_url="http://localhost:1993" \
+        valkey_url="valkey://localhost:6379" > /dev/null
 
-echo ""
-echo "Step 27: Creating mira wrapper script..."
+print_success "All credentials stored in Vault"
+
+print_header "Step 15: MIRA CLI Setup"
+
+echo -ne "${DIM}${ARROW}${RESET} Creating mira wrapper script... "
 
 # Create mira wrapper script that sets Vault environment variables
 # Note: MIRA's main.py automatically creates and stores the API token in Vault on first startup
@@ -603,8 +850,9 @@ export VAULT_SECRET_ID=$(grep 'secret_id' /opt/vault/secret-id.txt | awk '{print
 # Launch MIRA CLI
 /opt/mira/app/venv/bin/python3 /opt/mira/app/talkto_mira.py "$@"
 WRAPPER_EOF
+echo -e "${CHECKMARK}"
 
-chmod +x /opt/mira/mira.sh
+run_quiet chmod +x /opt/mira/mira.sh
 
 # Add alias to shell RC
 if [ "$OS" = "linux" ]; then
@@ -618,29 +866,36 @@ elif [ "$OS" = "macos" ]; then
     fi
 fi
 
+echo -ne "${DIM}${ARROW}${RESET} Adding 'mira' alias to $SHELL_RC... "
 if ! grep -q "alias mira=" "$SHELL_RC" 2>/dev/null; then
     echo "alias mira='/opt/mira/mira.sh'" >> "$SHELL_RC"
-    echo "Alias added to $SHELL_RC"
+    echo -e "${CHECKMARK}"
+else
+    echo -e "${DIM}(already exists)${RESET}"
 fi
 
-echo ""
-echo "Step 28: Cleaning up installation files..."
-echo "Flushing pip cache..."
-venv/bin/pip3 cache purge 2>/dev/null || echo "Note: pip cache purge skipped (cache may be empty or unsupported)"
+print_success "MIRA CLI configured"
 
-echo "Removing temporary files..."
-# Remove Vault policy temp file
-rm -f /tmp/mira-policy.hcl
+print_header "Step 16: Cleanup"
 
-# Remove Vault installer files (Linux)
+if [ "$LOUD_MODE" = true ]; then
+    print_step "Flushing pip cache..."
+    venv/bin/pip3 cache purge 2>/dev/null || print_info "pip cache purge skipped (cache may be empty)"
+else
+    run_with_status "Flushing pip cache" \
+        venv/bin/pip3 cache purge 2>/dev/null || true
+fi
+
+# Remove temporary files silently
+run_quiet rm -f /tmp/mira-policy.hcl
+
 if [ "$OS" = "linux" ]; then
-    rm -f /tmp/vault_1.18.3_linux_amd64.zip
-    rm -f /tmp/vault
+    run_quiet rm -f /tmp/vault_1.18.3_linux_amd64.zip
+    run_quiet rm -f /tmp/vault
 fi
-
-# Note: MIRA tarball and extracted directory already cleaned up in Step 4
 
 # Rename deploy script to archive it
+echo -ne "${DIM}${ARROW}${RESET} Archiving deploy script... "
 SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")"
 SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 SCRIPT_NAME="$(basename "$SCRIPT_PATH")"
@@ -662,67 +917,85 @@ if [ -f "$SCRIPT_PATH" ] && [ "$SCRIPT_NAME" = "deploy.sh" ]; then
 
     mv "$SCRIPT_PATH" "$NEW_PATH"
     SCRIPT_ARCHIVED="$NEW_NAME"
-    echo "Deploy script archived as: $NEW_NAME"
+    echo -e "${CHECKMARK} ${DIM}$NEW_NAME${RESET}"
+else
+    echo -e "${DIM}(skipped - not a file)${RESET}"
 fi
 
-echo "✓ Cleanup complete - all temporary files removed"
+print_success "Cleanup complete"
 
 echo ""
-echo "================================"
-echo "Deployment Complete!"
-echo "================================"
 echo ""
-echo "✓ MIRA installed to: /opt/mira/app"
-echo "✓ All temporary files cleaned up"
+echo -e "${BOLD}${CYAN}"
+echo "╔════════════════════════════════════════╗"
+echo "║       Deployment Complete! 🎉          ║"
+echo "╚════════════════════════════════════════╝"
+echo -e "${RESET}"
+echo ""
+
+print_success "MIRA installed to: /opt/mira/app"
+print_success "All temporary files cleaned up"
 if [ -n "$SCRIPT_ARCHIVED" ]; then
-    echo "✓ Deploy script archived as: $SCRIPT_ARCHIVED"
+    print_success "Deploy script archived as: $SCRIPT_ARCHIVED"
 fi
+
 echo ""
-echo "Important files saved to /opt/vault/:"
-echo "  - init-keys.txt (Vault unseal key and root token)"
-echo "  - role-id.txt (AppRole role ID)"
-echo "  - secret-id.txt (AppRole secret ID)"
+echo -e "${BOLD}${BLUE}Important Files${RESET} ${DIM}(/opt/vault/)${RESET}"
+print_info "init-keys.txt (Vault unseal key and root token)"
+print_info "role-id.txt (AppRole role ID)"
+print_info "secret-id.txt (AppRole secret ID)"
 if [ "$OS" = "macos" ]; then
-    echo "  - vault.pid (Vault process ID)"
+    print_info "vault.pid (Vault process ID)"
 fi
+
 echo ""
-echo "API Key Configuration:"
-echo "  Anthropic: $ANTHROPIC_STATUS"
-echo "  Groq:      $GROQ_STATUS"
+echo -e "${BOLD}${BLUE}API Key Configuration${RESET}"
+echo -e "  Anthropic: $ANTHROPIC_STATUS"
+echo -e "  Groq:      $GROQ_STATUS"
+
 if [ "$ANTHROPIC_KEY" = "PLACEHOLDER_SET_THIS_LATER" ] || [ "$GROQ_KEY" = "PLACEHOLDER_SET_THIS_LATER" ]; then
     echo ""
-    echo "⚠️  WARNING: Required API keys not configured!"
-    echo "   MIRA will not work until you set both API keys."
-    echo "   To configure later, use Vault CLI:"
-    echo "     export VAULT_ADDR='http://127.0.0.1:8200'"
-    echo "     vault login <root-token-from-init-keys.txt>"
-    echo "     vault kv put secret/mira/api_keys \\"
-    echo "       anthropic_key=\"sk-ant-your-key\" \\"
-    echo "       groq_key=\"gsk_your-key\""
+    print_warning "Required API keys not configured!"
+    print_info "MIRA will not work until you set both API keys."
+    print_info "To configure later, use Vault CLI:"
+    echo -e "${DIM}    export VAULT_ADDR='http://127.0.0.1:8200'${RESET}"
+    echo -e "${DIM}    vault login <root-token-from-init-keys.txt>${RESET}"
+    echo -e "${DIM}    vault kv put secret/mira/api_keys \\\\${RESET}"
+    echo -e "${DIM}      anthropic_key=\"sk-ant-your-key\" \\\\${RESET}"
+    echo -e "${DIM}      groq_key=\"gsk_your-key\"${RESET}"
 fi
+
 echo ""
-echo "Services running:"
+echo -e "${BOLD}${BLUE}Services Running${RESET}"
 if [ "$OS" = "linux" ]; then
-    echo "  - Valkey: localhost:6379"
-    echo "  - Vault: http://localhost:8200 (systemd service)"
-    echo "  - PostgreSQL: localhost:5432 (systemd service)"
+    print_info "Valkey: localhost:6379"
+    print_info "Vault: http://localhost:8200 (systemd service)"
+    print_info "PostgreSQL: localhost:5432 (systemd service)"
 elif [ "$OS" = "macos" ]; then
-    echo "  - Valkey: localhost:6379 (brew services)"
-    echo "  - Vault: http://localhost:8200 (background process)"
-    echo "  - PostgreSQL: localhost:5432 (brew services)"
+    print_info "Valkey: localhost:6379 (brew services)"
+    print_info "Vault: http://localhost:8200 (background process)"
+    print_info "PostgreSQL: localhost:5432 (brew services)"
 fi
+
 echo ""
+echo -e "${BOLD}${GREEN}Next Steps${RESET}"
 if [ "$OS" = "linux" ]; then
-    echo "To use MIRA CLI, run: source ~/.bashrc && mira"
+    echo -e "  ${CYAN}→${RESET} Run: ${BOLD}source ~/.bashrc && mira${RESET}"
 elif [ "$OS" = "macos" ]; then
-    echo "To use MIRA CLI, run: source $SHELL_RC && mira"
+    echo -e "  ${CYAN}→${RESET} Run: ${BOLD}source $SHELL_RC && mira${RESET}"
 fi
+
 echo ""
-echo "IMPORTANT: Secure the /opt/vault directory - it contains sensitive credentials!"
+print_warning "IMPORTANT: Secure /opt/vault/ - it contains sensitive credentials!"
+
 if [ "$OS" = "macos" ]; then
     echo ""
-    echo "macOS Notes:"
-    echo "  - Vault is running as a background process. To stop: kill \$(cat /opt/vault/vault.pid)"
-    echo "  - After system restart, manually start Vault and unseal using /opt/vault/unseal.sh"
-    echo "  - PostgreSQL and Valkey are managed by brew services"
+    echo -e "${BOLD}${YELLOW}macOS Notes${RESET}"
+    print_info "Vault is running as a background process"
+    print_info "To stop: kill \$(cat /opt/vault/vault.pid)"
+    print_info "After system restart, manually start Vault and unseal:"
+    echo -e "${DIM}    /opt/vault/unseal.sh${RESET}"
+    print_info "PostgreSQL and Valkey are managed by brew services"
 fi
+
+echo ""
