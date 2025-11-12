@@ -57,23 +57,41 @@ def ensure_single_user(app: FastAPI) -> str:
     from utils.user_context import set_current_user_id
 
     db = PostgresClient('mira_service')
+    default_email = 'user@localhost.net'
 
-    # Count users
-    result = db.execute_single("SELECT COUNT(*) as count FROM users")
-    user_count = result['count']
+    # Check for user with default email
+    user_result = db.execute_single(
+        "SELECT id, email FROM users WHERE email = %s",
+        (default_email,)
+    )
 
-    if user_count == 0:
+    if not user_result:
+        # No user with default email - check total user count
+        count_result = db.execute_single("SELECT COUNT(*) as count FROM users")
+        user_count = count_result['count']
+
+        if user_count > 0:
+            print(f"\n❌ ERROR: Found {user_count} users but none with {default_email}")
+            print("MIRA operates in single-user mode only.")
+            print(f"Please ensure only one user exists with email: {default_email}")
+            print("\nTo fix: Connect to database and update/delete users:")
+            print("  psql -U taylut -h localhost -d mira_service")
+            print(f"  UPDATE users SET email = '{default_email}' WHERE id = '<desired-user-id>';")
+            print("  DELETE FROM users WHERE id != '<desired-user-id>';")
+            sys.exit(1)
+
+        # No users at all - create default user
         print("\n" + "="*60)
         print("🚀 MIRA Single-User Setup")
         print("="*60)
         print("No user found. Creating default user...")
 
-        # Create default user
         user_result = db.execute_single("""
             INSERT INTO users (email, is_active, created_at, memory_enabled)
-            VALUES ('user@localhost', true, NOW(), true)
+            VALUES (%s, true, NOW(), true)
             RETURNING id, email
-        """)
+        """, (default_email,))
+
         user_id = str(user_result['id'])
         email = user_result['email']
 
@@ -125,20 +143,10 @@ def ensure_single_user(app: FastAPI) -> str:
         print(f"  {token}")
         print("="*60 + "\n")
 
-    elif user_count > 1:
-        print(f"\n❌ ERROR: Found {user_count} users")
-        print("MIRA operates in single-user mode only.")
-        print("Please keep only one user in the database.")
-        print("\nTo fix: Connect to database and delete extra users:")
-        print("  psql -U taylut -h localhost -d mira_service")
-        print("  DELETE FROM users WHERE id != '<desired-user-id>';")
-        sys.exit(1)
-
     else:
-        # Exactly one user exists
-        user = db.execute_single("SELECT id, email FROM users LIMIT 1")
-        user_id = str(user['id'])
-        email = user['email']
+        # User with default email exists
+        user_id = str(user_result['id'])
+        email = user_result['email']
 
         print(f"\n✅ MIRA Ready - Single-User Mode")
         print(f"User: {email}")
