@@ -121,7 +121,7 @@ show_progress() {
 clear
 echo -e "${BOLD}${CYAN}"
 echo "╔════════════════════════════════════════╗"
-echo "║   MIRA Deployment Script v0.94         ║"
+echo "║   MIRA Deployment Script (main)        ║"
 echo "╚════════════════════════════════════════╝"
 echo -e "${RESET}"
 [ "$LOUD_MODE" = true ] && print_info "Running in verbose mode (--loud)"
@@ -180,6 +180,61 @@ if [ -n "$PORTS_IN_USE" ]; then
         print_info "Installation cancelled. Free up the required ports and try again."
         exit 0
     fi
+    echo ""
+
+    # Stop services on occupied ports
+    print_info "Stopping services on occupied ports..."
+    for PORT in $PORTS_IN_USE; do
+        if command -v lsof &> /dev/null; then
+            PIDS=$(lsof -ti :$PORT 2>/dev/null)
+            if [ -n "$PIDS" ]; then
+                case $PORT in
+                    8200)
+                        echo -ne "${DIM}${ARROW}${RESET} Stopping Vault (port 8200)... "
+                        if systemctl is-active --quiet vault 2>/dev/null; then
+                            sudo systemctl stop vault && echo -e "${CHECKMARK}" || echo -e "${WARNING}"
+                        elif [ -f /opt/vault/vault.pid ]; then
+                            kill $(cat /opt/vault/vault.pid) 2>/dev/null && echo -e "${CHECKMARK}" || echo -e "${WARNING}"
+                        else
+                            kill $PIDS 2>/dev/null && echo -e "${CHECKMARK}" || echo -e "${WARNING}"
+                        fi
+                        ;;
+                    6379)
+                        echo -ne "${DIM}${ARROW}${RESET} Stopping Valkey (port 6379)... "
+                        if systemctl is-active --quiet valkey 2>/dev/null; then
+                            sudo systemctl stop valkey && echo -e "${CHECKMARK}" || echo -e "${WARNING}"
+                        elif brew services list 2>/dev/null | grep -q "valkey.*started"; then
+                            brew services stop valkey && echo -e "${CHECKMARK}" || echo -e "${WARNING}"
+                        else
+                            kill $PIDS 2>/dev/null && echo -e "${CHECKMARK}" || echo -e "${WARNING}"
+                        fi
+                        ;;
+                    5432)
+                        echo -ne "${DIM}${ARROW}${RESET} Stopping PostgreSQL (port 5432)... "
+                        if systemctl is-active --quiet postgresql 2>/dev/null; then
+                            sudo systemctl stop postgresql && echo -e "${CHECKMARK}" || echo -e "${WARNING}"
+                        elif brew services list 2>/dev/null | grep -q "postgresql.*started"; then
+                            brew services stop postgresql@17 && echo -e "${CHECKMARK}" || echo -e "${WARNING}"
+                        else
+                            kill $PIDS 2>/dev/null && echo -e "${CHECKMARK}" || echo -e "${WARNING}"
+                        fi
+                        ;;
+                    1993)
+                        echo -ne "${DIM}${ARROW}${RESET} Stopping MIRA (port 1993)... "
+                        if systemctl is-active --quiet mira 2>/dev/null; then
+                            sudo systemctl stop mira && echo -e "${CHECKMARK}" || echo -e "${WARNING}"
+                        else
+                            kill $PIDS 2>/dev/null && echo -e "${CHECKMARK}" || echo -e "${WARNING}"
+                        fi
+                        ;;
+                    *)
+                        echo -ne "${DIM}${ARROW}${RESET} Stopping process on port $PORT... "
+                        kill $PIDS 2>/dev/null && echo -e "${CHECKMARK}" || echo -e "${WARNING}"
+                        ;;
+                esac
+            fi
+        fi
+    done
     echo ""
 else
     echo -e "${CHECKMARK}"
@@ -455,24 +510,33 @@ fi
 
 # Download to /tmp to keep user's home directory clean
 cd /tmp
-run_with_status "Downloading MIRA v0.94" \
-    wget -q -O mira-0.94.tar.gz https://github.com/taylorsatula/mira-OSS/archive/refs/tags/0.94.tar.gz
+
+# NOTE: Currently downloads from main branch for active development
+# When ready for stable release, change to:
+#   wget -q -O mira-X.XX.tar.gz https://github.com/taylorsatula/mira-OSS/archive/refs/tags/X.XX.tar.gz
+#   tar -xzf mira-X.XX.tar.gz -C /tmp
+#   sudo cp -r /tmp/mira-OSS-X.XX/* /opt/mira/app/
+#   rm -f /tmp/mira-X.XX.tar.gz
+#   rm -rf /tmp/mira-OSS-X.XX
+
+run_with_status "Downloading MIRA from main branch" \
+    wget -q -O mira-main.tar.gz https://github.com/taylorsatula/mira-OSS/archive/refs/heads/main.tar.gz
 
 run_with_status "Creating /opt/mira/app directory" \
     sudo mkdir -p /opt/mira/app
 
 run_with_status "Extracting archive" \
-    tar -xzf mira-0.94.tar.gz -C /tmp
+    tar -xzf mira-main.tar.gz -C /tmp
 
 run_with_status "Copying files to /opt/mira/app" \
-    sudo cp -r /tmp/mira-OSS-0.94/* /opt/mira/app/
+    sudo cp -r /tmp/mira-OSS-main/* /opt/mira/app/
 
 run_with_status "Setting ownership to $MIRA_USER:$MIRA_GROUP" \
     sudo chown -R $MIRA_USER:$MIRA_GROUP /opt/mira
 
 # Clean up immediately after copying
-run_quiet rm -f /tmp/mira-0.94.tar.gz
-run_quiet rm -rf /tmp/mira-OSS-0.94
+run_quiet rm -f /tmp/mira-main.tar.gz
+run_quiet rm -rf /tmp/mira-OSS-main
 
 print_success "MIRA installed to /opt/mira/app"
 
@@ -524,7 +588,7 @@ fi
 
 # Verify critical packages installed successfully
 echo -ne "${DIM}${ARROW}${RESET} Verifying sentence-transformers installation... "
-if ! venv/bin/python3 -c "import sentence_transformers" 2>/dev/null; then
+if ! venv/bin/python3 -c "import sentence_transformers" 2>&1; then
     echo -e "${ERROR}"
     print_error "sentence-transformers package not found after installation"
     print_info "Try running: venv/bin/pip3 install sentence-transformers"
@@ -532,69 +596,97 @@ if ! venv/bin/python3 -c "import sentence_transformers" 2>/dev/null; then
 fi
 echo -e "${CHECKMARK}"
 
-if [ "$LOUD_MODE" = true ]; then
-    print_step "Installing spacy language model..."
-    venv/bin/python3 -m spacy download en_core_web_lg
+echo -ne "${DIM}${ARROW}${RESET} Checking spacy language model... "
+if venv/bin/python3 -c "import spacy; spacy.load('en_core_web_lg')" 2>/dev/null; then
+    echo -e "${CHECKMARK} ${DIM}(already installed)${RESET}"
 else
-    (venv/bin/python3 -m spacy download en_core_web_lg > /dev/null 2>&1) &
-    show_progress $! "Installing spacy language model"
+    echo -e "${DIM}(not found)${RESET}"
+    if [ "$LOUD_MODE" = true ]; then
+        print_step "Installing spacy language model..."
+        venv/bin/python3 -m spacy download en_core_web_lg
+    else
+        (venv/bin/python3 -m spacy download en_core_web_lg > /dev/null 2>&1) &
+        show_progress $! "Installing spacy language model"
+    fi
 fi
 
 print_success "Python dependencies installed"
 
 print_header "Step 6: AI Model Downloads"
 
-if [ "$LOUD_MODE" = true ]; then
-    print_step "Downloading embedding and reranker models..."
-    venv/bin/python3 << 'EOF'
-from sentence_transformers import SentenceTransformer
-import os
+# Check what's already cached by verifying required files exist
+echo -ne "${DIM}${ARROW}${RESET} Checking embedding model cache... "
+MODELS_CACHED=$(venv/bin/python3 << 'EOF'
 from pathlib import Path
+import os
 
-cache_dir = os.path.expanduser("~/.cache/huggingface")
+cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
 
-# Check if all-MiniLM-L6-v2 is already cached
-minilm_path = Path(cache_dir) / "sentence-transformers_all-MiniLM-L6-v2"
-if minilm_path.exists():
-    print("✓ all-MiniLM-L6-v2 already cached, skipping")
+def check_model_cached(model_substrings):
+    """Check if a model is fully cached by looking for model directories and required files"""
+    if not cache_dir.exists():
+        return False
+
+    # Find directories matching any of the substrings
+    model_dirs = [d for d in cache_dir.iterdir() if d.is_dir() and any(s in d.name for s in model_substrings)]
+
+    for model_dir in model_dirs:
+        # Check for essential files that indicate a complete download
+        # Look in snapshots subdirectory where actual model files are stored
+        snapshots_dir = model_dir / "snapshots"
+        if snapshots_dir.exists():
+            for snapshot in snapshots_dir.iterdir():
+                if snapshot.is_dir():
+                    # Check for config and model files
+                    has_config = (snapshot / "config.json").exists()
+                    has_model = (snapshot / "pytorch_model.bin").exists() or (snapshot / "model.safetensors").exists()
+                    if has_config and has_model:
+                        return True
+    return False
+
+has_minilm = check_model_cached(["all-MiniLM-L6-v2"])
+has_reranker = check_model_cached(["bge-reranker-base"])
+
+if has_minilm and has_reranker:
+    print("all")
+elif has_minilm or has_reranker:
+    print("partial")
 else:
-    print("→ Downloading all-MiniLM-L6-v2...")
-    fast_model = SentenceTransformer(
-        "sentence-transformers/all-MiniLM-L6-v2",
-        cache_folder=cache_dir
-    )
-    print("✓ all-MiniLM-L6-v2 downloaded")
-
-# Check if BGE reranker is already cached
-reranker_path = Path(cache_dir) / "BAAI_bge-reranker-base"
-if reranker_path.exists():
-    print("✓ BGE reranker already cached, skipping")
-else:
-    print("→ Downloading BAAI/bge-reranker-base...")
-    reranker_model = SentenceTransformer(
-        "BAAI/bge-reranker-base",
-        cache_folder=cache_dir
-    )
-    print("✓ BGE reranker downloaded")
+    print("none")
 EOF
+)
+
+if [ "$MODELS_CACHED" = "all" ]; then
+    echo -e "${CHECKMARK} ${DIM}(both models already cached)${RESET}"
+    print_info "To re-download: rm -rf ~/.cache/huggingface/hub"
+elif [ "$MODELS_CACHED" = "partial" ]; then
+    echo -e "${DIM}(some models cached, downloading missing)${RESET}"
 else
-    (venv/bin/python3 << 'EOF'
+    echo -e "${DIM}(not found)${RESET}"
+fi
+
+# Only download if not all cached
+if [ "$MODELS_CACHED" != "all" ]; then
+    if [ "$LOUD_MODE" = true ]; then
+        print_step "Downloading embedding and reranker models..."
+        venv/bin/python3 << 'EOF'
 from sentence_transformers import SentenceTransformer
-import os
-from pathlib import Path
-
-cache_dir = os.path.expanduser("~/.cache/huggingface")
-
-minilm_path = Path(cache_dir) / "sentence-transformers_all-MiniLM-L6-v2"
-if not minilm_path.exists():
-    SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2", cache_folder=cache_dir)
-
-reranker_path = Path(cache_dir) / "BAAI_bge-reranker-base"
-if not reranker_path.exists():
-    SentenceTransformer("BAAI/bge-reranker-base", cache_folder=cache_dir)
+print("→ Loading/downloading all-MiniLM-L6-v2...")
+SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+print("✓ all-MiniLM-L6-v2 ready")
+print("→ Loading/downloading BAAI/bge-reranker-base...")
+SentenceTransformer("BAAI/bge-reranker-base")
+print("✓ BGE reranker ready")
+EOF
+    else
+        (venv/bin/python3 << 'EOF'
+from sentence_transformers import SentenceTransformer
+SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+SentenceTransformer("BAAI/bge-reranker-base")
 EOF
 ) &
-    show_progress $! "Downloading embedding models"
+        show_progress $! "Downloading embedding models"
+    fi
 fi
 
 print_header "Step 7: Playwright Browser Setup"
@@ -757,8 +849,19 @@ echo -e "${CHECKMARK} ${DIM}(ready after ${i}s)${RESET}"
 
 # Check Vault initialization state
 echo -ne "${DIM}${ARROW}${RESET} Checking Vault initialization state... "
-VAULT_STATUS=$(vault status -format=json 2>/dev/null || echo '{}')
-VAULT_INITIALIZED=$(echo "$VAULT_STATUS" | grep -o '"initialized":[^,}]*' | cut -d':' -f2 | tr -d ' ')
+
+# Check if init-keys.txt exists first (most reliable indicator)
+if [ -f /opt/vault/init-keys.txt ]; then
+    VAULT_INITIALIZED="true"
+else
+    # Try to query vault status
+    VAULT_STATUS=$(vault status -format=json 2>&1)
+    if echo "$VAULT_STATUS" | grep -q '"initialized"'; then
+        VAULT_INITIALIZED=$(echo "$VAULT_STATUS" | grep -o '"initialized":[^,}]*' | cut -d':' -f2 | tr -d ' ')
+    else
+        VAULT_INITIALIZED="false"
+    fi
+fi
 
 if [ "$VAULT_INITIALIZED" = "true" ]; then
     echo -e "${WARNING}"
