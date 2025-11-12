@@ -515,7 +515,22 @@ if [ "$LOUD_MODE" = true ]; then
 else
     (venv/bin/pip3 install -q -r requirements.txt) &
     show_progress $! "Installing Python packages from requirements.txt"
+    if [ $? -ne 0 ]; then
+        print_error "Failed to install Python packages from requirements.txt"
+        print_info "Run with --loud flag to see detailed error output"
+        exit 1
+    fi
 fi
+
+# Verify critical packages installed successfully
+echo -ne "${DIM}${ARROW}${RESET} Verifying sentence-transformers installation... "
+if ! venv/bin/python3 -c "import sentence_transformers" 2>/dev/null; then
+    echo -e "${ERROR}"
+    print_error "sentence-transformers package not found after installation"
+    print_info "Try running: venv/bin/pip3 install sentence-transformers"
+    exit 1
+fi
+echo -e "${CHECKMARK}"
 
 if [ "$LOUD_MODE" = true ]; then
     print_step "Installing spacy language model..."
