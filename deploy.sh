@@ -735,31 +735,76 @@ fi
 
 print_success "Vault service configured and running"
 
+# Wait for Vault to be ready and check initialization state
+echo -ne "${DIM}${ARROW}${RESET} Waiting for Vault to be ready... "
+export VAULT_ADDR='http://127.0.0.1:8200'
+VAULT_READY=0
+for i in {1..30}; do
+    if curl -s http://127.0.0.1:8200/v1/sys/health > /dev/null 2>&1; then
+        VAULT_READY=1
+        break
+    fi
+    sleep 1
+done
+
+if [ $VAULT_READY -eq 0 ]; then
+    echo -e "${ERROR}"
+    print_error "Vault did not become ready within 30 seconds"
+    print_info "Check Vault logs: /opt/vault/logs/vault.log"
+    exit 1
+fi
+echo -e "${CHECKMARK} ${DIM}(ready after ${i}s)${RESET}"
+
+# Check Vault initialization state
+echo -ne "${DIM}${ARROW}${RESET} Checking Vault initialization state... "
+VAULT_STATUS=$(vault status -format=json 2>/dev/null || echo '{}')
+VAULT_INITIALIZED=$(echo "$VAULT_STATUS" | grep -o '"initialized":[^,}]*' | cut -d':' -f2 | tr -d ' ')
+
+if [ "$VAULT_INITIALIZED" = "true" ]; then
+    echo -e "${WARNING}"
+    print_warning "Vault is already initialized"
+
+    # Check if sealed
+    VAULT_SEALED=$(echo "$VAULT_STATUS" | grep -o '"sealed":[^,}]*' | cut -d':' -f2 | tr -d ' ')
+    if [ "$VAULT_SEALED" = "true" ]; then
+        print_error "Vault is sealed. Unseal it before continuing:"
+        print_info "1. Get unseal key: grep 'Unseal Key 1' /opt/vault/init-keys.txt"
+        print_info "2. Unseal: vault operator unseal <unseal-key>"
+        print_info "3. Re-run this script"
+        exit 1
+    fi
+
+    print_info "Vault already configured - skipping initialization steps"
+    SKIP_VAULT_INIT=true
+else
+    echo -e "${CHECKMARK} ${DIM}(ready for initialization)${RESET}"
+    SKIP_VAULT_INIT=false
+fi
+
 print_header "Step 10: Vault Initialization"
 
-export VAULT_ADDR='http://127.0.0.1:8200'
+if [ "$SKIP_VAULT_INIT" = "false" ]; then
+    run_with_status "Initializing Vault" \
+        vault operator init -key-shares=1 -key-threshold=1 > /opt/vault/init-keys.txt
 
-run_with_status "Initializing Vault" \
-    vault operator init -key-shares=1 -key-threshold=1 > /opt/vault/init-keys.txt
+    run_quiet chmod 600 /opt/vault/init-keys.txt
 
-run_quiet chmod 600 /opt/vault/init-keys.txt
+    UNSEAL_KEY=$(grep 'Unseal Key 1' /opt/vault/init-keys.txt | awk '{print $NF}')
+    run_with_status "Unsealing Vault" \
+        vault operator unseal "$UNSEAL_KEY" > /dev/null
 
-UNSEAL_KEY=$(grep 'Unseal Key 1' /opt/vault/init-keys.txt | awk '{print $NF}')
-run_with_status "Unsealing Vault" \
-    vault operator unseal "$UNSEAL_KEY" > /dev/null
+    ROOT_TOKEN=$(grep 'Initial Root Token' /opt/vault/init-keys.txt | awk '{print $NF}')
+    run_with_status "Authenticating with root token" \
+        vault login "$ROOT_TOKEN" > /dev/null
 
-ROOT_TOKEN=$(grep 'Initial Root Token' /opt/vault/init-keys.txt | awk '{print $NF}')
-run_with_status "Authenticating with root token" \
-    vault login "$ROOT_TOKEN" > /dev/null
+    run_with_status "Enabling KV2 secrets engine" \
+        vault secrets enable -version=2 -path=secret kv > /dev/null
 
-run_with_status "Enabling KV2 secrets engine" \
-    vault secrets enable -version=2 -path=secret kv > /dev/null
+    run_with_status "Enabling AppRole authentication" \
+        vault auth enable approle > /dev/null
 
-run_with_status "Enabling AppRole authentication" \
-    vault auth enable approle > /dev/null
-
-echo -ne "${DIM}${ARROW}${RESET} Creating Vault policy... "
-cat > /tmp/mira-policy.hcl <<'EOF'
+    echo -ne "${DIM}${ARROW}${RESET} Creating Vault policy... "
+    cat > /tmp/mira-policy.hcl <<'EOF'
 # Allow full access to secret/* path
 path "secret/*" {
   capabilities = ["create", "read", "update", "delete", "list"]
@@ -769,20 +814,35 @@ path "secret/metadata/*" {
   capabilities = ["list", "read", "delete"]
 }
 EOF
-echo -e "${CHECKMARK}"
+    echo -e "${CHECKMARK}"
 
-run_with_status "Writing policy to Vault" \
-    vault policy write mira-policy /tmp/mira-policy.hcl > /dev/null
+    run_with_status "Writing policy to Vault" \
+        vault policy write mira-policy /tmp/mira-policy.hcl > /dev/null
 
-run_with_status "Creating AppRole" \
-    vault write auth/approle/role/mira policies="mira-policy" token_ttl=1h token_max_ttl=4h > /dev/null
+    run_with_status "Creating AppRole" \
+        vault write auth/approle/role/mira policies="mira-policy" token_ttl=1h token_max_ttl=4h > /dev/null
 
-run_with_status "Getting AppRole credentials" \
-    vault read auth/approle/role/mira/role-id > /opt/vault/role-id.txt
+    run_with_status "Getting AppRole credentials" \
+        vault read auth/approle/role/mira/role-id > /opt/vault/role-id.txt
 
-run_quiet vault write -f auth/approle/role/mira/secret-id > /opt/vault/secret-id.txt
+    run_quiet vault write -f auth/approle/role/mira/secret-id > /opt/vault/secret-id.txt
 
-print_success "Vault fully configured"
+    print_success "Vault fully configured"
+else
+    print_info "Vault already initialized - skipping initialization"
+
+    # Authenticate with existing root token for subsequent steps
+    if [ -f /opt/vault/init-keys.txt ]; then
+        ROOT_TOKEN=$(grep 'Initial Root Token' /opt/vault/init-keys.txt | awk '{print $NF}')
+        run_with_status "Authenticating with existing root token" \
+            vault login "$ROOT_TOKEN" > /dev/null
+        print_success "Using existing Vault configuration"
+    else
+        print_error "Vault is initialized but /opt/vault/init-keys.txt not found"
+        print_info "Cannot proceed without root token. Manual intervention required."
+        exit 1
+    fi
+fi
 
 print_header "Step 11: Auto-Unseal Configuration"
 
@@ -829,45 +889,153 @@ if [ "$OS" = "macos" ]; then
     print_header "Step 12: Starting Services"
 
     run_with_status "Starting Valkey" \
-        brew services start valkey || true
+        brew services start valkey
 
     run_with_status "Starting PostgreSQL" \
-        brew services start postgresql@17 || true
+        brew services start postgresql@17
 
     sleep 2
 fi
+
+# Wait for PostgreSQL to be ready to accept connections
+echo -ne "${DIM}${ARROW}${RESET} Waiting for PostgreSQL to be ready... "
+PG_READY=0
+for i in {1..30}; do
+    if [ "$OS" = "linux" ]; then
+        # On Linux, check with pg_isready
+        if sudo -u postgres pg_isready > /dev/null 2>&1; then
+            PG_READY=1
+            break
+        fi
+    elif [ "$OS" = "macos" ]; then
+        # On macOS, check with pg_isready as current user
+        if pg_isready > /dev/null 2>&1; then
+            PG_READY=1
+            break
+        fi
+    fi
+    sleep 1
+done
+
+if [ $PG_READY -eq 0 ]; then
+    echo -e "${ERROR}"
+    print_error "PostgreSQL did not become ready within 30 seconds"
+    if [ "$OS" = "linux" ]; then
+        print_info "Check status: systemctl status postgresql"
+        print_info "Check logs: journalctl -u postgresql -n 50"
+    elif [ "$OS" = "macos" ]; then
+        print_info "Check status: brew services list | grep postgresql"
+        print_info "Check logs: brew services info postgresql@17"
+    fi
+    exit 1
+fi
+echo -e "${CHECKMARK} ${DIM}(ready after ${i}s)${RESET}"
 
 print_header "Step 13: PostgreSQL Configuration"
 
 if [ "$OS" = "linux" ]; then
     # Linux: use postgres system user
-    run_with_status "Creating database 'mira_service'" \
-        sudo -u postgres psql -c "CREATE DATABASE mira_service;" || true
 
-    run_with_status "Creating user 'mira_admin'" \
-        sudo -u postgres psql -c "CREATE USER mira_admin WITH PASSWORD 'changethisifdeployingpwd' SUPERUSER;" || true
+    # Check if database exists, create if not
+    echo -ne "${DIM}${ARROW}${RESET} Creating database 'mira_service'... "
+    if sudo -u postgres psql -lqt | cut -d \| -f 1 | grep -qw mira_service; then
+        echo -e "${DIM}(already exists)${RESET}"
+    else
+        if sudo -u postgres psql -c "CREATE DATABASE mira_service;" > /dev/null 2>&1; then
+            echo -e "${CHECKMARK}"
+        else
+            echo -e "${ERROR}"
+            print_error "Failed to create database 'mira_service'"
+            exit 1
+        fi
+    fi
 
-    run_with_status "Creating user 'mira_dbuser'" \
-        sudo -u postgres psql -c "CREATE USER mira_dbuser WITH PASSWORD 'changethisifdeployingpwd';" || true
+    # Check if user mira_admin exists, create if not
+    echo -ne "${DIM}${ARROW}${RESET} Creating user 'mira_admin'... "
+    if sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='mira_admin'" | grep -q 1; then
+        echo -e "${DIM}(already exists)${RESET}"
+    else
+        if sudo -u postgres psql -c "CREATE USER mira_admin WITH PASSWORD 'changethisifdeployingpwd' SUPERUSER;" > /dev/null 2>&1; then
+            echo -e "${CHECKMARK}"
+        else
+            echo -e "${ERROR}"
+            print_error "Failed to create user 'mira_admin'"
+            exit 1
+        fi
+    fi
 
-    run_quiet sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE mira_service TO mira_admin;"
-    run_quiet sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE mira_service TO mira_dbuser;"
+    # Check if user mira_dbuser exists, create if not
+    echo -ne "${DIM}${ARROW}${RESET} Creating user 'mira_dbuser'... "
+    if sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='mira_dbuser'" | grep -q 1; then
+        echo -e "${DIM}(already exists)${RESET}"
+    else
+        if sudo -u postgres psql -c "CREATE USER mira_dbuser WITH PASSWORD 'changethisifdeployingpwd';" > /dev/null 2>&1; then
+            echo -e "${CHECKMARK}"
+        else
+            echo -e "${ERROR}"
+            print_error "Failed to create user 'mira_dbuser'"
+            exit 1
+        fi
+    fi
+
+    run_with_status "Granting privileges to mira_admin" \
+        sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE mira_service TO mira_admin;"
+
+    run_with_status "Granting privileges to mira_dbuser" \
+        sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE mira_service TO mira_dbuser;"
 
     run_with_status "Enabling pgvector extension" \
         sudo -u postgres psql -d mira_service -c "CREATE EXTENSION IF NOT EXISTS vector;"
 elif [ "$OS" = "macos" ]; then
     # macOS: run as current user (services already started above)
-    run_with_status "Creating database 'mira_service'" \
-        createdb mira_service 2>/dev/null || true
 
-    run_with_status "Creating user 'mira_admin'" \
-        psql postgres -c "CREATE USER mira_admin WITH PASSWORD 'changethisifdeployingpwd' SUPERUSER;" || true
+    # Check if database exists, create if not
+    echo -ne "${DIM}${ARROW}${RESET} Creating database 'mira_service'... "
+    if psql -lqt | cut -d \| -f 1 | grep -qw mira_service; then
+        echo -e "${DIM}(already exists)${RESET}"
+    else
+        if createdb mira_service > /dev/null 2>&1; then
+            echo -e "${CHECKMARK}"
+        else
+            echo -e "${ERROR}"
+            print_error "Failed to create database 'mira_service'"
+            exit 1
+        fi
+    fi
 
-    run_with_status "Creating user 'mira_dbuser'" \
-        psql postgres -c "CREATE USER mira_dbuser WITH PASSWORD 'changethisifdeployingpwd';" || true
+    # Check if user mira_admin exists, create if not
+    echo -ne "${DIM}${ARROW}${RESET} Creating user 'mira_admin'... "
+    if psql postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='mira_admin'" 2>/dev/null | grep -q 1; then
+        echo -e "${DIM}(already exists)${RESET}"
+    else
+        if psql postgres -c "CREATE USER mira_admin WITH PASSWORD 'changethisifdeployingpwd' SUPERUSER;" > /dev/null 2>&1; then
+            echo -e "${CHECKMARK}"
+        else
+            echo -e "${ERROR}"
+            print_error "Failed to create user 'mira_admin'"
+            exit 1
+        fi
+    fi
 
-    run_quiet psql postgres -c "GRANT ALL PRIVILEGES ON DATABASE mira_service TO mira_admin;"
-    run_quiet psql postgres -c "GRANT ALL PRIVILEGES ON DATABASE mira_service TO mira_dbuser;"
+    # Check if user mira_dbuser exists, create if not
+    echo -ne "${DIM}${ARROW}${RESET} Creating user 'mira_dbuser'... "
+    if psql postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='mira_dbuser'" 2>/dev/null | grep -q 1; then
+        echo -e "${DIM}(already exists)${RESET}"
+    else
+        if psql postgres -c "CREATE USER mira_dbuser WITH PASSWORD 'changethisifdeployingpwd';" > /dev/null 2>&1; then
+            echo -e "${CHECKMARK}"
+        else
+            echo -e "${ERROR}"
+            print_error "Failed to create user 'mira_dbuser'"
+            exit 1
+        fi
+    fi
+
+    run_with_status "Granting privileges to mira_admin" \
+        psql postgres -c "GRANT ALL PRIVILEGES ON DATABASE mira_service TO mira_admin;"
+
+    run_with_status "Granting privileges to mira_dbuser" \
+        psql postgres -c "GRANT ALL PRIVILEGES ON DATABASE mira_service TO mira_dbuser;"
 
     run_with_status "Enabling pgvector extension" \
         psql -d mira_service -c "CREATE EXTENSION IF NOT EXISTS vector;"
