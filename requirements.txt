@@ -29,7 +29,7 @@ letta-client     # Letta Python SDK - domain knowledge blocks via Letta API
 numpy            # Numerical computing - embeddings, vector operations, ML utilities
 torch            # PyTorch (CPU-only via index above) - sentence_transformers.py, bge_embeddings.py
 transformers     # Hugging Face transformers - embeddings, BGE models
-sentence-transformers  # Sentence embeddings - all-MiniLM, BGE reranker models
+# sentence-transformers  # Installed separately in deploy.sh to ensure proper dependency resolution
 optimum[onnxruntime]  # ONNX model optimization - sentence_transformers.py, BGE embeddings
 onnx             # ONNX runtime - sentence_transformers.py, bge_embeddings.py
 onnxruntime      # ONNX inference engine - bge_embeddings.py

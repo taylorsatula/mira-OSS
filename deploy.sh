@@ -115,6 +115,320 @@ show_progress() {
 }
 
 # ============================================================================
+# UNIFIED HELPER FUNCTIONS
+# ============================================================================
+
+# Check if something exists with consistent pattern
+# Usage: check_exists TYPE TARGET [EXTRA]
+# Types: file, dir, command, package, db, db_user, service_systemctl, service_brew
+check_exists() {
+    local type="$1"
+    local target="$2"
+    local extra="$3"
+
+    case "$type" in
+        file)
+            [ -f "$target" ]
+            ;;
+        dir)
+            [ -d "$target" ]
+            ;;
+        command)
+            command -v "$target" &> /dev/null
+            ;;
+        package)
+            venv/bin/pip3 show "$target" &> /dev/null
+            ;;
+        db)
+            if [ "$OS" = "linux" ]; then
+                sudo -u postgres psql -lqt | cut -d \| -f 1 | grep -qw "$target"
+            else
+                psql -lqt | cut -d \| -f 1 | grep -qw "$target"
+            fi
+            ;;
+        db_user)
+            if [ "$OS" = "linux" ]; then
+                sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='$target'" | grep -q 1
+            else
+                psql postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='$target'" 2>/dev/null | grep -q 1
+            fi
+            ;;
+        service_systemctl)
+            systemctl is-active --quiet "$target" 2>/dev/null
+            ;;
+        service_brew)
+            brew services list 2>/dev/null | grep -q "${target}.*started"
+            ;;
+    esac
+}
+
+# Start service with idempotency check
+# Usage: start_service SERVICE_NAME SERVICE_TYPE
+# Types: systemctl, brew, background (for custom processes)
+start_service() {
+    local service_name="$1"
+    local service_type="$2"
+
+    case "$service_type" in
+        systemctl)
+            if check_exists service_systemctl "$service_name"; then
+                print_info "$service_name already running"
+                return 0
+            fi
+            run_with_status "Starting $service_name" \
+                sudo systemctl start "$service_name"
+            ;;
+        brew)
+            if check_exists service_brew "$service_name"; then
+                print_info "$service_name already running"
+                return 0
+            fi
+            run_with_status "Starting $service_name" \
+                brew services start "$service_name"
+            ;;
+        background)
+            print_error "Background service type requires custom implementation"
+            return 1
+            ;;
+    esac
+}
+
+# Stop service with consistent pattern
+# Usage: stop_service SERVICE_NAME SERVICE_TYPE [EXTRA]
+# Types: systemctl, brew, pid_file (EXTRA=pid_file_path), port (EXTRA=port_number)
+stop_service() {
+    local service_name="$1"
+    local service_type="$2"
+    local extra="$3"
+
+    case "$service_type" in
+        systemctl)
+            if ! check_exists service_systemctl "$service_name"; then
+                return 0  # Already stopped
+            fi
+            run_with_status "Stopping $service_name" \
+                sudo systemctl stop "$service_name"
+            ;;
+        brew)
+            if ! check_exists service_brew "$service_name"; then
+                return 0  # Already stopped
+            fi
+            run_with_status "Stopping $service_name" \
+                brew services stop "$service_name"
+            ;;
+        pid_file)
+            local pid_file="$extra"
+            if [ ! -f "$pid_file" ]; then
+                return 0  # PID file doesn't exist
+            fi
+            local pid=$(cat "$pid_file")
+            if ! kill -0 "$pid" 2>/dev/null; then
+                rm -f "$pid_file"  # Clean up stale PID file
+                return 0
+            fi
+            kill "$pid" 2>/dev/null && rm -f "$pid_file"
+            ;;
+        port)
+            local port="$extra"
+            if command -v lsof &> /dev/null; then
+                local pids=$(lsof -ti ":$port" 2>/dev/null)
+                if [ -z "$pids" ]; then
+                    return 0  # Nothing on port
+                fi
+                kill $pids 2>/dev/null
+            fi
+            ;;
+    esac
+}
+
+# Write file only if content has changed
+# Usage: write_file_if_changed FILEPATH CONTENT
+write_file_if_changed() {
+    local target_file="$1"
+    local content="$2"
+
+    if [ -f "$target_file" ]; then
+        local existing_content=$(cat "$target_file")
+        if [ "$existing_content" = "$content" ]; then
+            return 1  # File unchanged
+        fi
+    fi
+
+    echo "$content" > "$target_file"
+    return 0
+}
+
+# Install Python package if not already installed
+# Usage: install_python_package PACKAGE_NAME
+install_python_package() {
+    local package="$1"
+
+    if check_exists package "$package"; then
+        local version=$(venv/bin/pip3 show "$package" | grep Version | awk '{print $2}')
+        echo -e "${CHECKMARK} ${DIM}$version (already installed)${RESET}"
+        return 0
+    fi
+
+    if [ "$LOUD_MODE" = true ]; then
+        print_step "Installing $package..."
+        venv/bin/pip3 install "$package"
+    else
+        (venv/bin/pip3 install -q "$package") &
+        show_progress $! "Installing $package"
+    fi
+}
+
+# Vault helper: Check if Vault is initialized
+vault_is_initialized() {
+    check_exists file "/opt/vault/init-keys.txt"
+}
+
+# Vault helper: Check if Vault is sealed
+vault_is_sealed() {
+    local status=$(vault status -format=json 2>&1 || true)
+    echo "$status" | grep -q '"sealed":true'
+}
+
+# Vault helper: Extract credential from init-keys.txt
+# Usage: vault_extract_credential "Unseal Key 1" or "Initial Root Token"
+vault_extract_credential() {
+    local cred_type="$1"
+    grep "$cred_type:" /opt/vault/init-keys.txt | awk '{print $4}'
+}
+
+# Vault helper: Unseal vault if sealed
+vault_unseal() {
+    if ! vault_is_sealed; then
+        return 0  # Already unsealed
+    fi
+
+    local unseal_key=$(vault_extract_credential "Unseal Key 1")
+    if [ -z "$unseal_key" ]; then
+        print_error "Cannot unseal: unseal key not found in init-keys.txt"
+        return 1
+    fi
+
+    echo "$unseal_key" | run_with_status "Unsealing Vault" vault operator unseal -
+}
+
+# Vault helper: Authenticate with root token
+vault_authenticate() {
+    if ! vault_is_initialized; then
+        print_error "Cannot authenticate: Vault not initialized"
+        return 1
+    fi
+
+    local root_token=$(vault_extract_credential "Initial Root Token")
+    if [ -z "$root_token" ]; then
+        print_error "Cannot authenticate: root token not found in init-keys.txt"
+        return 1
+    fi
+
+    run_with_status "Authenticating with Vault" vault login "$root_token"
+}
+
+# Vault helper: Check if AppRole exists
+vault_approle_exists() {
+    vault read auth/approle/role/mira > /dev/null 2>&1
+}
+
+# Vault helper: Full initialization orchestration
+vault_initialize() {
+    if vault_is_initialized; then
+        print_info "Vault already initialized - checking state"
+        vault_unseal || return 1
+        vault_authenticate || return 1
+
+        # Ensure AppRole exists
+        if ! vault_approle_exists; then
+            print_info "AppRole not found - creating it"
+
+            # Enable AppRole if not enabled
+            vault auth enable approle 2>/dev/null || true
+
+            # Create policy if needed
+            if ! vault policy read mira-policy > /dev/null 2>&1; then
+                cat > /tmp/mira-policy.hcl <<'EOF'
+path "secret/*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
+}
+path "secret/metadata/*" {
+  capabilities = ["list", "read", "delete"]
+}
+EOF
+                run_with_status "Writing policy to Vault" \
+                    vault policy write mira-policy /tmp/mira-policy.hcl
+            fi
+
+            run_with_status "Creating AppRole" \
+                vault write auth/approle/role/mira policies="mira-policy" token_ttl=1h token_max_ttl=4h
+        fi
+
+        # Ensure role-id and secret-id files exist
+        if [ ! -f /opt/vault/role-id.txt ]; then
+            vault read auth/approle/role/mira/role-id > /opt/vault/role-id.txt
+        fi
+        if [ ! -f /opt/vault/secret-id.txt ]; then
+            vault write -f auth/approle/role/mira/secret-id > /opt/vault/secret-id.txt
+        fi
+
+        return 0
+    fi
+
+    # Full initialization for new Vault
+    run_with_status "Initializing Vault" \
+        vault operator init -key-shares=1 -key-threshold=1 > /opt/vault/init-keys.txt
+
+    run_quiet chmod 600 /opt/vault/init-keys.txt
+
+    vault_unseal || return 1
+    vault_authenticate || return 1
+
+    # Enable KV2 secrets engine
+    run_with_status "Enabling KV2 secrets engine" \
+        vault secrets enable -version=2 -path=secret kv
+
+    # Enable AppRole authentication
+    run_with_status "Enabling AppRole authentication" \
+        vault auth enable approle
+
+    # Create policy
+    cat > /tmp/mira-policy.hcl <<'EOF'
+path "secret/*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
+}
+path "secret/metadata/*" {
+  capabilities = ["list", "read", "delete"]
+}
+EOF
+
+    run_with_status "Writing policy to Vault" \
+        vault policy write mira-policy /tmp/mira-policy.hcl
+
+    run_with_status "Creating AppRole" \
+        vault write auth/approle/role/mira policies="mira-policy" token_ttl=1h token_max_ttl=4h
+
+    # Extract credentials
+    vault read auth/approle/role/mira/role-id > /opt/vault/role-id.txt
+    vault write -f auth/approle/role/mira/secret-id > /opt/vault/secret-id.txt
+}
+
+# Vault helper: Store secret only if it doesn't exist
+# Usage: vault_put_if_not_exists SECRET_PATH KEY1=VALUE1 KEY2=VALUE2 ...
+vault_put_if_not_exists() {
+    local secret_path="$1"
+    shift
+
+    if vault kv get "$secret_path" &> /dev/null; then
+        print_info "Secret already exists at $secret_path (preserving existing values)"
+        return 0
+    fi
+
+    run_with_status "Storing secret at $secret_path" \
+        vault kv put "$secret_path" "$@"
+}
+
+# ============================================================================
 # DEPLOYMENT START
 # ============================================================================
 
@@ -182,58 +496,77 @@ if [ -n "$PORTS_IN_USE" ]; then
     fi
     echo ""
 
-    # Stop services on occupied ports
+    # Stop services on occupied ports using unified stop_service function
     print_info "Stopping services on occupied ports..."
     for PORT in $PORTS_IN_USE; do
-        if command -v lsof &> /dev/null; then
-            PIDS=$(lsof -ti :$PORT 2>/dev/null)
-            if [ -n "$PIDS" ]; then
-                case $PORT in
-                    8200)
-                        echo -ne "${DIM}${ARROW}${RESET} Stopping Vault (port 8200)... "
-                        if systemctl is-active --quiet vault 2>/dev/null; then
-                            sudo systemctl stop vault && echo -e "${CHECKMARK}" || echo -e "${WARNING}"
-                        elif [ -f /opt/vault/vault.pid ]; then
-                            kill $(cat /opt/vault/vault.pid) 2>/dev/null && echo -e "${CHECKMARK}" || echo -e "${WARNING}"
-                        else
-                            kill $PIDS 2>/dev/null && echo -e "${CHECKMARK}" || echo -e "${WARNING}"
-                        fi
-                        ;;
-                    6379)
-                        echo -ne "${DIM}${ARROW}${RESET} Stopping Valkey (port 6379)... "
-                        if systemctl is-active --quiet valkey 2>/dev/null; then
-                            sudo systemctl stop valkey && echo -e "${CHECKMARK}" || echo -e "${WARNING}"
-                        elif brew services list 2>/dev/null | grep -q "valkey.*started"; then
-                            brew services stop valkey && echo -e "${CHECKMARK}" || echo -e "${WARNING}"
-                        else
-                            kill $PIDS 2>/dev/null && echo -e "${CHECKMARK}" || echo -e "${WARNING}"
-                        fi
-                        ;;
-                    5432)
-                        echo -ne "${DIM}${ARROW}${RESET} Stopping PostgreSQL (port 5432)... "
-                        if systemctl is-active --quiet postgresql 2>/dev/null; then
-                            sudo systemctl stop postgresql && echo -e "${CHECKMARK}" || echo -e "${WARNING}"
-                        elif brew services list 2>/dev/null | grep -q "postgresql.*started"; then
-                            brew services stop postgresql@17 && echo -e "${CHECKMARK}" || echo -e "${WARNING}"
-                        else
-                            kill $PIDS 2>/dev/null && echo -e "${CHECKMARK}" || echo -e "${WARNING}"
-                        fi
-                        ;;
-                    1993)
-                        echo -ne "${DIM}${ARROW}${RESET} Stopping MIRA (port 1993)... "
-                        if systemctl is-active --quiet mira 2>/dev/null; then
-                            sudo systemctl stop mira && echo -e "${CHECKMARK}" || echo -e "${WARNING}"
-                        else
-                            kill $PIDS 2>/dev/null && echo -e "${CHECKMARK}" || echo -e "${WARNING}"
-                        fi
-                        ;;
-                    *)
-                        echo -ne "${DIM}${ARROW}${RESET} Stopping process on port $PORT... "
-                        kill $PIDS 2>/dev/null && echo -e "${CHECKMARK}" || echo -e "${WARNING}"
-                        ;;
-                esac
-            fi
-        fi
+        case $PORT in
+            8200)
+                # Vault - canonical method per OS, fallback to port-based stop
+                if [ "$OS" = "linux" ]; then
+                    echo -ne "${DIM}${ARROW}${RESET} Stopping Vault (port 8200)... "
+                    if check_exists service_systemctl vault; then
+                        stop_service vault systemctl && echo -e "${CHECKMARK}" || echo -e "${WARNING}"
+                    else
+                        stop_service "Vault" port 8200 && echo -e "${CHECKMARK}" || echo -e "${WARNING}"
+                    fi
+                elif [ "$OS" = "macos" ]; then
+                    echo -ne "${DIM}${ARROW}${RESET} Stopping Vault (port 8200)... "
+                    if [ -f /opt/vault/vault.pid ]; then
+                        stop_service "Vault" pid_file /opt/vault/vault.pid && echo -e "${CHECKMARK}" || echo -e "${WARNING}"
+                    else
+                        stop_service "Vault" port 8200 && echo -e "${CHECKMARK}" || echo -e "${WARNING}"
+                    fi
+                fi
+                ;;
+            6379)
+                # Valkey - canonical method per OS
+                echo -ne "${DIM}${ARROW}${RESET} Stopping Valkey (port 6379)... "
+                if [ "$OS" = "linux" ]; then
+                    if check_exists service_systemctl valkey; then
+                        stop_service valkey systemctl && echo -e "${CHECKMARK}" || echo -e "${WARNING}"
+                    else
+                        stop_service "Valkey" port 6379 && echo -e "${CHECKMARK}" || echo -e "${WARNING}"
+                    fi
+                elif [ "$OS" = "macos" ]; then
+                    if check_exists service_brew valkey; then
+                        stop_service valkey brew && echo -e "${CHECKMARK}" || echo -e "${WARNING}"
+                    else
+                        stop_service "Valkey" port 6379 && echo -e "${CHECKMARK}" || echo -e "${WARNING}"
+                    fi
+                fi
+                ;;
+            5432)
+                # PostgreSQL - canonical method per OS
+                echo -ne "${DIM}${ARROW}${RESET} Stopping PostgreSQL (port 5432)... "
+                if [ "$OS" = "linux" ]; then
+                    if check_exists service_systemctl postgresql; then
+                        stop_service postgresql systemctl && echo -e "${CHECKMARK}" || echo -e "${WARNING}"
+                    else
+                        stop_service "PostgreSQL" port 5432 && echo -e "${CHECKMARK}" || echo -e "${WARNING}"
+                    fi
+                elif [ "$OS" = "macos" ]; then
+                    if check_exists service_brew postgresql@17; then
+                        stop_service postgresql@17 brew && echo -e "${CHECKMARK}" || echo -e "${WARNING}"
+                    else
+                        stop_service "PostgreSQL" port 5432 && echo -e "${CHECKMARK}" || echo -e "${WARNING}"
+                    fi
+                fi
+                ;;
+            1993)
+                # MIRA - canonical method per OS
+                echo -ne "${DIM}${ARROW}${RESET} Stopping MIRA (port 1993)... "
+                if [ "$OS" = "linux" ] && check_exists service_systemctl mira; then
+                    stop_service mira systemctl && echo -e "${CHECKMARK}" || echo -e "${WARNING}"
+                else
+                    stop_service "MIRA" port 1993 && echo -e "${CHECKMARK}" || echo -e "${WARNING}"
+                fi
+                ;;
+            *)
+                # Unknown service - use port-based stop
+                echo -ne "${DIM}${ARROW}${RESET} Stopping process on port $PORT... "
+                stop_service "Unknown" port $PORT && echo -e "${CHECKMARK}" || echo -e "${WARNING}"
+                ;;
+        esac
     done
     echo ""
 else
@@ -253,22 +586,24 @@ echo -e "${BOLD}${BLUE}1. Anthropic API Key${RESET} ${DIM}(REQUIRED)${RESET}"
 print_info "Used for: Main LLM operations (Claude models)"
 print_info "Get your key at: https://console.anthropic.com/settings/keys"
 echo ""
-read -p "$(echo -e ${CYAN}Enter your Anthropic API key${RESET}) (or press Enter to skip): " ANTHROPIC_KEY
-if [ -z "$ANTHROPIC_KEY" ]; then
-    ANTHROPIC_KEY="PLACEHOLDER_SET_THIS_LATER"
-    ANTHROPIC_STATUS="${WARNING} NOT SET - You must configure this before using MIRA"
+read -p "$(echo -e ${CYAN}Enter your Anthropic API key${RESET}) (or press Enter to skip): " ANTHROPIC_KEY_INPUT
+if [ -z "$ANTHROPIC_KEY_INPUT" ]; then
+    COMPONENT_CONFIG[anthropic_key]="PLACEHOLDER_SET_THIS_LATER"
+    COMPONENT_STATUS[anthropic]="${WARNING} NOT SET - You must configure this before using MIRA"
 else
     # Basic validation - check if it looks like an Anthropic key
-    if [[ $ANTHROPIC_KEY =~ ^sk-ant- ]]; then
-        ANTHROPIC_STATUS="${CHECKMARK} Configured"
+    if [[ $ANTHROPIC_KEY_INPUT =~ ^sk-ant- ]]; then
+        COMPONENT_CONFIG[anthropic_key]="$ANTHROPIC_KEY_INPUT"
+        COMPONENT_STATUS[anthropic]="${CHECKMARK} Configured"
     else
         print_warning "This doesn't look like a valid Anthropic API key (should start with 'sk-ant-')"
         read -p "$(echo -e ${YELLOW}Continue anyway?${RESET}) (y/n): " CONFIRM
         if [ "$CONFIRM" != "y" ] && [ "$CONFIRM" != "Y" ]; then
-            ANTHROPIC_KEY="PLACEHOLDER_SET_THIS_LATER"
-            ANTHROPIC_STATUS="${WARNING} NOT SET"
+            COMPONENT_CONFIG[anthropic_key]="PLACEHOLDER_SET_THIS_LATER"
+            COMPONENT_STATUS[anthropic]="${WARNING} NOT SET"
         else
-            ANTHROPIC_STATUS="${CHECKMARK} Configured (unvalidated)"
+            COMPONENT_CONFIG[anthropic_key]="$ANTHROPIC_KEY_INPUT"
+            COMPONENT_STATUS[anthropic]="${CHECKMARK} Configured (unvalidated)"
         fi
     fi
 fi
@@ -279,24 +614,45 @@ echo -e "${BOLD}${BLUE}2. Groq API Key${RESET} ${DIM}(REQUIRED)${RESET}"
 print_info "Used for: Fast inference and web extraction operations"
 print_info "Get your key at: https://console.groq.com/keys"
 echo ""
-read -p "$(echo -e ${CYAN}Enter your Groq API key${RESET}) (or press Enter to skip): " GROQ_KEY
-if [ -z "$GROQ_KEY" ]; then
-    GROQ_KEY="PLACEHOLDER_SET_THIS_LATER"
-    GROQ_STATUS="${WARNING} NOT SET - You must configure this before using MIRA"
+read -p "$(echo -e ${CYAN}Enter your Groq API key${RESET}) (or press Enter to skip): " GROQ_KEY_INPUT
+if [ -z "$GROQ_KEY_INPUT" ]; then
+    COMPONENT_CONFIG[groq_key]="PLACEHOLDER_SET_THIS_LATER"
+    COMPONENT_STATUS[groq]="${WARNING} NOT SET - You must configure this before using MIRA"
 else
     # Basic validation - check if it looks like a Groq key
-    if [[ $GROQ_KEY =~ ^gsk_ ]]; then
-        GROQ_STATUS="${CHECKMARK} Configured"
+    if [[ $GROQ_KEY_INPUT =~ ^gsk_ ]]; then
+        COMPONENT_CONFIG[groq_key]="$GROQ_KEY_INPUT"
+        COMPONENT_STATUS[groq]="${CHECKMARK} Configured"
     else
         print_warning "This doesn't look like a valid Groq API key (should start with 'gsk_')"
         read -p "$(echo -e ${YELLOW}Continue anyway?${RESET}) (y/n): " CONFIRM
         if [ "$CONFIRM" != "y" ] && [ "$CONFIRM" != "Y" ]; then
-            GROQ_KEY="PLACEHOLDER_SET_THIS_LATER"
-            GROQ_STATUS="${WARNING} NOT SET"
+            COMPONENT_CONFIG[groq_key]="PLACEHOLDER_SET_THIS_LATER"
+            COMPONENT_STATUS[groq]="${WARNING} NOT SET"
         else
-            GROQ_STATUS="${CHECKMARK} Configured (unvalidated)"
+            COMPONENT_CONFIG[groq_key]="$GROQ_KEY_INPUT"
+            COMPONENT_STATUS[groq]="${CHECKMARK} Configured (unvalidated)"
         fi
     fi
+fi
+echo ""
+
+# Playwright Browser Installation (optional)
+echo -e "${BOLD}${BLUE}3. Playwright Browser Installation${RESET} ${DIM}(OPTIONAL)${RESET}"
+print_info "Enables advanced webpage extraction for JavaScript-heavy sites"
+print_info "MIRA can function without it (basic HTTP requests still work)"
+echo ""
+read -p "$(echo -e ${CYAN}Install Playwright and browser dependencies?${RESET}) (yes/no, default=yes): " PLAYWRIGHT_INPUT
+# Default to yes if user just presses Enter
+if [ -z "$PLAYWRIGHT_INPUT" ]; then
+    PLAYWRIGHT_INPUT="yes"
+fi
+if [ "$PLAYWRIGHT_INPUT" = "yes" ]; then
+    COMPONENT_CONFIG[install_playwright]="yes"
+    COMPONENT_STATUS[playwright]="${CHECKMARK} Will be installed"
+else
+    COMPONENT_CONFIG[install_playwright]="no"
+    COMPONENT_STATUS[playwright]="${YELLOW}Skipped - webpage extraction unavailable${RESET}"
 fi
 echo ""
 
@@ -317,39 +673,46 @@ case "$OS_TYPE" in
         ;;
 esac
 
+# Initialize structured state management
+declare -A COMPONENT_CONFIG  # User configuration choices
+declare -A COMPONENT_STATUS  # Component status for summary display
+
 # Systemd service option (Linux only)
-echo -e "${BOLD}${BLUE}3. Systemd Service${RESET} ${DIM}(OPTIONAL - Linux Only)${RESET}"
+echo -e "${BOLD}${BLUE}4. Systemd Service${RESET} ${DIM}(OPTIONAL - Linux Only)${RESET}"
 if [ "$OS" = "linux" ]; then
     print_info "Configure MIRA to start automatically on system boot?"
     print_info "This creates a systemd service that starts MIRA when the system boots."
     echo ""
-    read -p "$(echo -e ${CYAN}Install MIRA as systemd service?${RESET}) (yes/no): " INSTALL_SYSTEMD
-    if [ "$INSTALL_SYSTEMD" = "yes" ]; then
+    read -p "$(echo -e ${CYAN}Install MIRA as systemd service?${RESET}) (yes/no): " SYSTEMD_INPUT
+    if [ "$SYSTEMD_INPUT" = "yes" ]; then
+        COMPONENT_CONFIG[install_systemd]="yes"
         echo ""
-        read -p "$(echo -e ${CYAN}Start MIRA service immediately after installation?${RESET}) (yes/no): " START_MIRA_NOW
-        if [ "$START_MIRA_NOW" = "yes" ]; then
-            SYSTEMD_STATUS="${CHECKMARK} Will be installed and started"
+        read -p "$(echo -e ${CYAN}Start MIRA service immediately after installation?${RESET}) (yes/no): " START_NOW_INPUT
+        if [ "$START_NOW_INPUT" = "yes" ]; then
+            COMPONENT_CONFIG[start_mira_now]="yes"
+            COMPONENT_STATUS[systemd]="${CHECKMARK} Will be installed and started"
         else
-            START_MIRA_NOW="no"
-            SYSTEMD_STATUS="${CHECKMARK} Will be installed (not started)"
+            COMPONENT_CONFIG[start_mira_now]="no"
+            COMPONENT_STATUS[systemd]="${CHECKMARK} Will be installed (not started)"
         fi
     else
-        INSTALL_SYSTEMD="no"
-        START_MIRA_NOW="no"
-        SYSTEMD_STATUS="${RED}Skipped${RESET}"
+        COMPONENT_CONFIG[install_systemd]="no"
+        COMPONENT_CONFIG[start_mira_now]="no"
+        COMPONENT_STATUS[systemd]="${RED}Skipped${RESET}"
     fi
 elif [ "$OS" = "macos" ]; then
-    INSTALL_SYSTEMD="no"
-    START_MIRA_NOW="no"
+    COMPONENT_CONFIG[install_systemd]="no"
+    COMPONENT_CONFIG[start_mira_now]="no"
     print_info "Systemd service creation only available on Linux (macOS uses launchd)"
-    SYSTEMD_STATUS="${DIM}Not available on macOS${RESET}"
+    COMPONENT_STATUS[systemd]="${DIM}Not available on macOS${RESET}"
 fi
 echo ""
 
 echo -e "${BOLD}Configuration Summary:${RESET}"
-echo -e "  Anthropic:       $ANTHROPIC_STATUS"
-echo -e "  Groq:            $GROQ_STATUS"
-echo -e "  Systemd Service: $SYSTEMD_STATUS"
+echo -e "  Anthropic:       ${COMPONENT_STATUS[anthropic]}"
+echo -e "  Groq:            ${COMPONENT_STATUS[groq]}"
+echo -e "  Playwright:      ${COMPONENT_STATUS[playwright]}"
+echo -e "  Systemd Service: ${COMPONENT_STATUS[systemd]}"
 echo ""
 
 print_header "System Detection"
@@ -544,14 +907,23 @@ print_header "Step 4: Python Environment Setup"
 
 cd /opt/mira/app
 
-run_with_status "Creating virtual environment" \
-    $PYTHON_CMD -m venv venv
+# Check if venv already exists
+echo -ne "${DIM}${ARROW}${RESET} Checking for existing virtual environment... "
+if [ -f venv/bin/python3 ]; then
+    VENV_PYTHON_VERSION=$(venv/bin/python3 --version 2>&1 | awk '{print $2}')
+    echo -e "${CHECKMARK} ${DIM}$VENV_PYTHON_VERSION (existing)${RESET}"
+    print_info "Reusing existing virtual environment"
+else
+    echo -e "${DIM}(not found)${RESET}"
+    run_with_status "Creating virtual environment" \
+        $PYTHON_CMD -m venv venv
 
-run_with_status "Initializing pip" \
-    venv/bin/python3 -m ensurepip
+    run_with_status "Initializing pip" \
+        venv/bin/python3 -m ensurepip
+fi
 
 echo -ne "${DIM}${ARROW}${RESET} Checking PyTorch installation... "
-if venv/bin/pip3 show torch &> /dev/null; then
+if check_exists package torch; then
     TORCH_VERSION=$(venv/bin/pip3 show torch | grep Version | awk '{print $2}')
     echo -e "${CHECKMARK} ${DIM}$TORCH_VERSION (existing)${RESET}"
     print_info "Note: If you have CUDA-enabled PyTorch, it will be preserved"
@@ -586,27 +958,32 @@ else
     fi
 fi
 
-# Verify critical packages installed successfully
-echo -ne "${DIM}${ARROW}${RESET} Verifying sentence-transformers installation... "
-if ! venv/bin/python3 -c "import sentence_transformers" 2>&1; then
-    echo -e "${ERROR}"
-    print_error "sentence-transformers package not found after installation"
-    print_info "Try running: venv/bin/pip3 install sentence-transformers"
-    exit 1
+# Install sentence-transformers separately to ensure proper dependency resolution
+# (torch, transformers, tokenizers must be installed first from requirements.txt)
+echo -ne "${DIM}${ARROW}${RESET} Checking sentence-transformers... "
+if ! check_exists package sentence-transformers; then
+    echo ""
+    install_python_package sentence-transformers
+    if [ $? -ne 0 ]; then
+        print_error "Failed to install sentence-transformers"
+        print_info "Run with --loud flag to see detailed error output"
+        exit 1
+    fi
+else
+    install_python_package sentence-transformers  # This will show version if already installed
 fi
-echo -e "${CHECKMARK}"
 
-echo -ne "${DIM}${ARROW}${RESET} Checking spacy language model... "
-if venv/bin/python3 -c "import spacy; spacy.load('en_core_web_lg')" 2>/dev/null; then
+echo -ne "${DIM}${ARROW}${RESET} Checking spaCy language model... "
+if venv/bin/python3 -c "import spacy.util; exit(0 if spacy.util.is_package('en_core_web_lg') else 1)" 2>/dev/null; then
     echo -e "${CHECKMARK} ${DIM}(already installed)${RESET}"
 else
     echo -e "${DIM}(not found)${RESET}"
     if [ "$LOUD_MODE" = true ]; then
-        print_step "Installing spacy language model..."
+        print_step "Installing spaCy language model..."
         venv/bin/python3 -m spacy download en_core_web_lg
     else
         (venv/bin/python3 -m spacy download en_core_web_lg > /dev/null 2>&1) &
-        show_progress $! "Installing spacy language model"
+        show_progress $! "Installing spaCy language model"
     fi
 fi
 
@@ -691,31 +1068,55 @@ fi
 
 print_header "Step 7: Playwright Browser Setup"
 
-# Check if Playwright Chromium is already installed
-PLAYWRIGHT_CACHE="$HOME/.cache/ms-playwright"
-echo -ne "${DIM}${ARROW}${RESET} Checking Playwright cache... "
-if [ -d "$PLAYWRIGHT_CACHE" ] && ls "$PLAYWRIGHT_CACHE"/chromium-* >/dev/null 2>&1; then
-    echo -e "${CHECKMARK} ${DIM}(already installed)${RESET}"
-    print_info "To update browsers: venv/bin/playwright install chromium"
-else
-    echo -e "${DIM}(not found)${RESET}"
-    if [ "$LOUD_MODE" = true ]; then
-        print_step "Installing Playwright Chromium browser..."
-        venv/bin/playwright install chromium
+if [ "${COMPONENT_CONFIG[install_playwright]}" = "yes" ]; then
+    # Check if Playwright Chromium is already installed
+    PLAYWRIGHT_CACHE="$HOME/.cache/ms-playwright"
+    echo -ne "${DIM}${ARROW}${RESET} Checking Playwright cache... "
+    if [ -d "$PLAYWRIGHT_CACHE" ] && ls "$PLAYWRIGHT_CACHE"/chromium-* >/dev/null 2>&1; then
+        echo -e "${CHECKMARK} ${DIM}(already installed)${RESET}"
+        print_info "To update browsers: venv/bin/playwright install chromium"
     else
-        (venv/bin/playwright install chromium > /dev/null 2>&1) &
-        show_progress $! "Installing Playwright Chromium"
+        echo -e "${DIM}(not found)${RESET}"
+        if [ "$LOUD_MODE" = true ]; then
+            print_step "Installing Playwright Chromium browser..."
+            venv/bin/playwright install chromium
+        else
+            (venv/bin/playwright install chromium > /dev/null 2>&1) &
+            show_progress $! "Installing Playwright Chromium"
+        fi
     fi
-fi
 
-if [ "$OS" = "linux" ]; then
-    run_with_status "Installing Playwright system dependencies" \
-        sudo venv/bin/playwright install-deps || true
-elif [ "$OS" = "macos" ]; then
-    print_info "Playwright browser dependencies are bundled on macOS"
-fi
+    # System dependencies - optional, may fail on newer Ubuntu
+    if [ "$OS" = "linux" ]; then
+        echo -ne "${DIM}${ARROW}${RESET} Installing Playwright system dependencies... "
+        if sudo venv/bin/playwright install-deps > /tmp/playwright-deps.log 2>&1; then
+            echo -e "${CHECKMARK}"
+            rm -f /tmp/playwright-deps.log
+        else
+            echo -e "${WARNING}"
+            print_warning "Some system dependencies failed to install"
 
-print_success "Playwright configured"
+            # Extract specific failed packages if possible
+            FAILED_PACKAGES=$(grep -oP "Unable to locate package \K\S+" /tmp/playwright-deps.log 2>/dev/null | head -3 | tr '\n' ' ')
+            if [ -n "$FAILED_PACKAGES" ]; then
+                print_info "Missing packages: $FAILED_PACKAGES"
+            fi
+
+            print_info "This is common on Ubuntu 24.04+ due to package name changes"
+            print_info "Playwright should still work in headless mode for most sites"
+            print_info "Full log saved to: /tmp/playwright-deps.log"
+        fi
+    elif [ "$OS" = "macos" ]; then
+        print_info "Playwright browser dependencies are bundled on macOS"
+    fi
+
+    print_success "Playwright configured"
+else
+    print_info "Playwright installation skipped (user opted out)"
+    print_info "Note: Advanced webpage extraction will not be available"
+    print_info "Basic HTTP requests and web search will still work"
+    print_success "Playwright setup skipped"
+fi
 
 print_header "Step 8: HashiCorp Vault Setup"
 
@@ -804,9 +1205,7 @@ EOF
     run_with_status "Enabling Vault service" \
         sudo systemctl enable vault.service
 
-    run_with_status "Starting Vault service" \
-        sudo systemctl start vault.service
-
+    start_service vault.service systemctl
     sleep 2
 elif [ "$OS" = "macos" ]; then
     echo -ne "${DIM}${ARROW}${RESET} Starting Vault service... "
@@ -847,105 +1246,11 @@ if [ $VAULT_READY -eq 0 ]; then
 fi
 echo -e "${CHECKMARK} ${DIM}(ready after ${i}s)${RESET}"
 
-# Check Vault initialization state
-echo -ne "${DIM}${ARROW}${RESET} Checking Vault initialization state... "
-
-# Check if init-keys.txt exists first (most reliable indicator)
-if [ -f /opt/vault/init-keys.txt ]; then
-    VAULT_INITIALIZED="true"
-else
-    # Try to query vault status
-    VAULT_STATUS=$(vault status -format=json 2>&1)
-    if echo "$VAULT_STATUS" | grep -q '"initialized"'; then
-        VAULT_INITIALIZED=$(echo "$VAULT_STATUS" | grep -o '"initialized":[^,}]*' | cut -d':' -f2 | tr -d ' ')
-    else
-        VAULT_INITIALIZED="false"
-    fi
-fi
-
-if [ "$VAULT_INITIALIZED" = "true" ]; then
-    echo -e "${WARNING}"
-    print_warning "Vault is already initialized"
-
-    # Check if sealed
-    VAULT_SEALED=$(echo "$VAULT_STATUS" | grep -o '"sealed":[^,}]*' | cut -d':' -f2 | tr -d ' ')
-    if [ "$VAULT_SEALED" = "true" ]; then
-        print_error "Vault is sealed. Unseal it before continuing:"
-        print_info "1. Get unseal key: grep 'Unseal Key 1' /opt/vault/init-keys.txt"
-        print_info "2. Unseal: vault operator unseal <unseal-key>"
-        print_info "3. Re-run this script"
-        exit 1
-    fi
-
-    print_info "Vault already configured - skipping initialization steps"
-    SKIP_VAULT_INIT=true
-else
-    echo -e "${CHECKMARK} ${DIM}(ready for initialization)${RESET}"
-    SKIP_VAULT_INIT=false
-fi
-
 print_header "Step 10: Vault Initialization"
 
-if [ "$SKIP_VAULT_INIT" = "false" ]; then
-    run_with_status "Initializing Vault" \
-        vault operator init -key-shares=1 -key-threshold=1 > /opt/vault/init-keys.txt
-
-    run_quiet chmod 600 /opt/vault/init-keys.txt
-
-    UNSEAL_KEY=$(grep 'Unseal Key 1' /opt/vault/init-keys.txt | awk '{print $NF}')
-    run_with_status "Unsealing Vault" \
-        vault operator unseal "$UNSEAL_KEY" > /dev/null
-
-    ROOT_TOKEN=$(grep 'Initial Root Token' /opt/vault/init-keys.txt | awk '{print $NF}')
-    run_with_status "Authenticating with root token" \
-        vault login "$ROOT_TOKEN" > /dev/null
-
-    run_with_status "Enabling KV2 secrets engine" \
-        vault secrets enable -version=2 -path=secret kv > /dev/null
-
-    run_with_status "Enabling AppRole authentication" \
-        vault auth enable approle > /dev/null
-
-    echo -ne "${DIM}${ARROW}${RESET} Creating Vault policy... "
-    cat > /tmp/mira-policy.hcl <<'EOF'
-# Allow full access to secret/* path
-path "secret/*" {
-  capabilities = ["create", "read", "update", "delete", "list"]
-}
-
-path "secret/metadata/*" {
-  capabilities = ["list", "read", "delete"]
-}
-EOF
-    echo -e "${CHECKMARK}"
-
-    run_with_status "Writing policy to Vault" \
-        vault policy write mira-policy /tmp/mira-policy.hcl > /dev/null
-
-    run_with_status "Creating AppRole" \
-        vault write auth/approle/role/mira policies="mira-policy" token_ttl=1h token_max_ttl=4h > /dev/null
-
-    run_with_status "Getting AppRole credentials" \
-        vault read auth/approle/role/mira/role-id > /opt/vault/role-id.txt
-
-    run_quiet vault write -f auth/approle/role/mira/secret-id > /opt/vault/secret-id.txt
-
-    print_success "Vault fully configured"
-else
-    print_info "Vault already initialized - skipping initialization"
-
-    # Authenticate with existing root token for subsequent steps
-    if [ -f /opt/vault/init-keys.txt ]; then
-        ROOT_TOKEN=$(grep 'Initial Root Token' /opt/vault/init-keys.txt | awk '{print $NF}')
-        run_with_status "Authenticating with existing root token" \
-            vault login "$ROOT_TOKEN" > /dev/null
-        print_success "Using existing Vault configuration"
-    else
-        print_error "Vault is initialized but /opt/vault/init-keys.txt not found"
-        print_info "Cannot proceed without root token. Manual intervention required."
-        exit 1
-    fi
-fi
+# Use unified vault_initialize function (handles check, unseal, auth, policy, AppRole)
+vault_initialize
+print_success "Vault fully configured"
 
 print_header "Step 11: Auto-Unseal Configuration"
 
@@ -954,8 +1259,8 @@ cat > /opt/vault/unseal.sh <<'EOF'
 #!/bin/bash
 export VAULT_ADDR='http://127.0.0.1:8200'
 sleep 5
-UNSEAL_KEY=$(grep 'Unseal Key 1' /opt/vault/init-keys.txt | awk '{print $NF}')
-vault operator unseal "$UNSEAL_KEY"
+UNSEAL_KEY=$(grep 'Unseal Key 1:' /opt/vault/init-keys.txt | awk '{print $4}')
+echo "$UNSEAL_KEY" | vault operator unseal -
 EOF
 echo -e "${CHECKMARK}"
 
@@ -991,11 +1296,8 @@ print_success "Auto-unseal configured"
 if [ "$OS" = "macos" ]; then
     print_header "Step 12: Starting Services"
 
-    run_with_status "Starting Valkey" \
-        brew services start valkey
-
-    run_with_status "Starting PostgreSQL" \
-        brew services start postgresql@17
+    start_service valkey brew
+    start_service postgresql@17 brew
 
     sleep 2
 fi
@@ -1036,14 +1338,12 @@ echo -e "${CHECKMARK} ${DIM}(ready after ${i}s)${RESET}"
 
 print_header "Step 13: PostgreSQL Configuration"
 
-if [ "$OS" = "linux" ]; then
-    # Linux: use postgres system user
-
-    # Check if database exists, create if not
-    echo -ne "${DIM}${ARROW}${RESET} Creating database 'mira_service'... "
-    if sudo -u postgres psql -lqt | cut -d \| -f 1 | grep -qw mira_service; then
-        echo -e "${DIM}(already exists)${RESET}"
-    else
+# Check if database exists, create if not
+echo -ne "${DIM}${ARROW}${RESET} Creating database 'mira_service'... "
+if check_exists db mira_service; then
+    echo -e "${DIM}(already exists)${RESET}"
+else
+    if [ "$OS" = "linux" ]; then
         if sudo -u postgres psql -c "CREATE DATABASE mira_service;" > /dev/null 2>&1; then
             echo -e "${CHECKMARK}"
         else
@@ -1051,13 +1351,23 @@ if [ "$OS" = "linux" ]; then
             print_error "Failed to create database 'mira_service'"
             exit 1
         fi
+    elif [ "$OS" = "macos" ]; then
+        if createdb mira_service > /dev/null 2>&1; then
+            echo -e "${CHECKMARK}"
+        else
+            echo -e "${ERROR}"
+            print_error "Failed to create database 'mira_service'"
+            exit 1
+        fi
     fi
+fi
 
-    # Check if user mira_admin exists, create if not
-    echo -ne "${DIM}${ARROW}${RESET} Creating user 'mira_admin'... "
-    if sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='mira_admin'" | grep -q 1; then
-        echo -e "${DIM}(already exists)${RESET}"
-    else
+# Check if user mira_admin exists, create if not
+echo -ne "${DIM}${ARROW}${RESET} Creating user 'mira_admin'... "
+if check_exists db_user mira_admin; then
+    echo -e "${DIM}(already exists)${RESET}"
+else
+    if [ "$OS" = "linux" ]; then
         if sudo -u postgres psql -c "CREATE USER mira_admin WITH PASSWORD 'changethisifdeployingpwd' SUPERUSER;" > /dev/null 2>&1; then
             echo -e "${CHECKMARK}"
         else
@@ -1065,13 +1375,23 @@ if [ "$OS" = "linux" ]; then
             print_error "Failed to create user 'mira_admin'"
             exit 1
         fi
+    elif [ "$OS" = "macos" ]; then
+        if psql postgres -c "CREATE USER mira_admin WITH PASSWORD 'changethisifdeployingpwd' SUPERUSER;" > /dev/null 2>&1; then
+            echo -e "${CHECKMARK}"
+        else
+            echo -e "${ERROR}"
+            print_error "Failed to create user 'mira_admin'"
+            exit 1
+        fi
     fi
+fi
 
-    # Check if user mira_dbuser exists, create if not
-    echo -ne "${DIM}${ARROW}${RESET} Creating user 'mira_dbuser'... "
-    if sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='mira_dbuser'" | grep -q 1; then
-        echo -e "${DIM}(already exists)${RESET}"
-    else
+# Check if user mira_dbuser exists, create if not
+echo -ne "${DIM}${ARROW}${RESET} Creating user 'mira_dbuser'... "
+if check_exists db_user mira_dbuser; then
+    echo -e "${DIM}(already exists)${RESET}"
+else
+    if [ "$OS" = "linux" ]; then
         if sudo -u postgres psql -c "CREATE USER mira_dbuser WITH PASSWORD 'changethisifdeployingpwd';" > /dev/null 2>&1; then
             echo -e "${CHECKMARK}"
         else
@@ -1079,8 +1399,19 @@ if [ "$OS" = "linux" ]; then
             print_error "Failed to create user 'mira_dbuser'"
             exit 1
         fi
+    elif [ "$OS" = "macos" ]; then
+        if psql postgres -c "CREATE USER mira_dbuser WITH PASSWORD 'changethisifdeployingpwd';" > /dev/null 2>&1; then
+            echo -e "${CHECKMARK}"
+        else
+            echo -e "${ERROR}"
+            print_error "Failed to create user 'mira_dbuser'"
+            exit 1
+        fi
     fi
+fi
 
+# Grant privileges (OS-specific commands)
+if [ "$OS" = "linux" ]; then
     run_with_status "Granting privileges to mira_admin" \
         sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE mira_service TO mira_admin;"
 
@@ -1090,50 +1421,6 @@ if [ "$OS" = "linux" ]; then
     run_with_status "Enabling pgvector extension" \
         sudo -u postgres psql -d mira_service -c "CREATE EXTENSION IF NOT EXISTS vector;"
 elif [ "$OS" = "macos" ]; then
-    # macOS: run as current user (services already started above)
-
-    # Check if database exists, create if not
-    echo -ne "${DIM}${ARROW}${RESET} Creating database 'mira_service'... "
-    if psql -lqt | cut -d \| -f 1 | grep -qw mira_service; then
-        echo -e "${DIM}(already exists)${RESET}"
-    else
-        if createdb mira_service > /dev/null 2>&1; then
-            echo -e "${CHECKMARK}"
-        else
-            echo -e "${ERROR}"
-            print_error "Failed to create database 'mira_service'"
-            exit 1
-        fi
-    fi
-
-    # Check if user mira_admin exists, create if not
-    echo -ne "${DIM}${ARROW}${RESET} Creating user 'mira_admin'... "
-    if psql postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='mira_admin'" 2>/dev/null | grep -q 1; then
-        echo -e "${DIM}(already exists)${RESET}"
-    else
-        if psql postgres -c "CREATE USER mira_admin WITH PASSWORD 'changethisifdeployingpwd' SUPERUSER;" > /dev/null 2>&1; then
-            echo -e "${CHECKMARK}"
-        else
-            echo -e "${ERROR}"
-            print_error "Failed to create user 'mira_admin'"
-            exit 1
-        fi
-    fi
-
-    # Check if user mira_dbuser exists, create if not
-    echo -ne "${DIM}${ARROW}${RESET} Creating user 'mira_dbuser'... "
-    if psql postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='mira_dbuser'" 2>/dev/null | grep -q 1; then
-        echo -e "${DIM}(already exists)${RESET}"
-    else
-        if psql postgres -c "CREATE USER mira_dbuser WITH PASSWORD 'changethisifdeployingpwd';" > /dev/null 2>&1; then
-            echo -e "${CHECKMARK}"
-        else
-            echo -e "${ERROR}"
-            print_error "Failed to create user 'mira_dbuser'"
-            exit 1
-        fi
-    fi
-
     run_with_status "Granting privileges to mira_admin" \
         psql postgres -c "GRANT ALL PRIVILEGES ON DATABASE mira_service TO mira_admin;"
 
@@ -1148,24 +1435,21 @@ print_success "PostgreSQL configured"
 
 print_header "Step 14: Vault Credential Storage"
 
-run_with_status "Storing API keys" \
-    vault kv put secret/mira/api_keys \
-        anthropic_key="$ANTHROPIC_KEY" \
-        groq_key="$GROQ_KEY" > /dev/null
+vault_put_if_not_exists secret/mira/api_keys \
+    anthropic_key="${COMPONENT_CONFIG[anthropic_key]}" \
+    groq_key="${COMPONENT_CONFIG[groq_key]}"
 
-run_with_status "Storing database credentials" \
-    vault kv put secret/mira/database \
-        admin_url="postgresql://mira_admin:changethisifdeployingpwd@localhost:5432/mira_service" \
-        password="changethisifdeployingpwd" \
-        username="mira_dbuser" \
-        service_url="postgresql://mira_dbuser:changethisifdeployingpwd@localhost:5432/mira_service" > /dev/null
+vault_put_if_not_exists secret/mira/database \
+    admin_url="postgresql://mira_admin:changethisifdeployingpwd@localhost:5432/mira_service" \
+    password="changethisifdeployingpwd" \
+    username="mira_dbuser" \
+    service_url="postgresql://mira_dbuser:changethisifdeployingpwd@localhost:5432/mira_service"
 
-run_with_status "Storing service URLs" \
-    vault kv put secret/mira/services \
-        app_url="http://localhost:1993" \
-        valkey_url="valkey://localhost:6379" > /dev/null
+vault_put_if_not_exists secret/mira/services \
+    app_url="http://localhost:1993" \
+    valkey_url="valkey://localhost:6379"
 
-print_success "All credentials stored in Vault"
+print_success "All credentials configured in Vault"
 
 print_header "Step 15: MIRA CLI Setup"
 
@@ -1212,7 +1496,7 @@ fi
 print_success "MIRA CLI configured"
 
 # Systemd service installation (Linux only, if user opted in)
-if [ "$INSTALL_SYSTEMD" = "yes" ] && [ "$OS" = "linux" ]; then
+if [ "${COMPONENT_CONFIG[install_systemd]}" = "yes" ] && [ "$OS" = "linux" ]; then
     print_header "Step 16: Systemd Service Configuration"
 
     # Extract Vault credentials from files
@@ -1224,7 +1508,8 @@ if [ "$INSTALL_SYSTEMD" = "yes" ] && [ "$OS" = "linux" ]; then
         echo -e "${ERROR}"
         print_error "Failed to read Vault credentials from /opt/vault/"
         print_info "Skipping systemd service creation"
-        INSTALL_SYSTEMD="failed"
+        COMPONENT_CONFIG[install_systemd]="failed"
+        COMPONENT_STATUS[mira_service]="${ERROR} Configuration failed"
     else
         echo -e "${CHECKMARK}"
 
@@ -1270,10 +1555,9 @@ EOF
         print_info "Service will auto-start on system boot"
 
         # Start service if user chose to during configuration
-        if [ "$START_MIRA_NOW" = "yes" ]; then
+        if [ "${COMPONENT_CONFIG[start_mira_now]}" = "yes" ]; then
             echo ""
-            run_with_status "Starting MIRA service" \
-                sudo systemctl start mira.service
+            start_service mira.service systemctl
 
             # Give service a moment to start
             sleep 2
@@ -1282,20 +1566,20 @@ EOF
             if sudo systemctl is-active --quiet mira.service; then
                 print_success "MIRA service is running"
                 print_info "View logs: journalctl -u mira -f"
-                MIRA_STARTED="yes"
+                COMPONENT_STATUS[mira_service]="${CHECKMARK} Running"
             else
                 print_warning "MIRA service may have failed to start"
                 print_info "Check status: systemctl status mira"
                 print_info "View logs: journalctl -u mira -n 50"
-                MIRA_STARTED="failed"
+                COMPONENT_STATUS[mira_service]="${ERROR} Start failed"
             fi
         else
             print_info "To start later: sudo systemctl start mira"
             print_info "To view logs: journalctl -u mira -f"
-            MIRA_STARTED="no"
+            COMPONENT_STATUS[mira_service]="${DIM}Not started${RESET}"
         fi
     fi
-elif [ "$INSTALL_SYSTEMD" = "no" ]; then
+elif [ "${COMPONENT_CONFIG[install_systemd]}" = "no" ]; then
     print_header "Step 16: Systemd Service Configuration"
     print_info "Skipping systemd service installation (user opted out)"
 fi
@@ -1374,10 +1658,10 @@ fi
 
 echo ""
 echo -e "${BOLD}${BLUE}API Key Configuration${RESET}"
-echo -e "  Anthropic: $ANTHROPIC_STATUS"
-echo -e "  Groq:      $GROQ_STATUS"
+echo -e "  Anthropic: ${COMPONENT_STATUS[anthropic]}"
+echo -e "  Groq:      ${COMPONENT_STATUS[groq]}"
 
-if [ "$ANTHROPIC_KEY" = "PLACEHOLDER_SET_THIS_LATER" ] || [ "$GROQ_KEY" = "PLACEHOLDER_SET_THIS_LATER" ]; then
+if [ "${COMPONENT_CONFIG[anthropic_key]}" = "PLACEHOLDER_SET_THIS_LATER" ] || [ "${COMPONENT_CONFIG[groq_key]}" = "PLACEHOLDER_SET_THIS_LATER" ]; then
     echo ""
     print_warning "Required API keys not configured!"
     print_info "MIRA will not work until you set both API keys."
@@ -1395,14 +1679,8 @@ if [ "$OS" = "linux" ]; then
     print_info "Valkey: localhost:6379"
     print_info "Vault: http://localhost:8200 (systemd service)"
     print_info "PostgreSQL: localhost:5432 (systemd service)"
-    if [ "$INSTALL_SYSTEMD" = "yes" ]; then
-        if [ "$MIRA_STARTED" = "yes" ]; then
-            print_info "MIRA: http://localhost:1993 (systemd service - running)"
-        elif [ "$MIRA_STARTED" = "failed" ]; then
-            print_info "MIRA: http://localhost:1993 (systemd service - start failed, check logs)"
-        else
-            print_info "MIRA: http://localhost:1993 (systemd service - enabled, not started yet)"
-        fi
+    if [ "${COMPONENT_CONFIG[install_systemd]}" = "yes" ]; then
+        print_info "MIRA: http://localhost:1993 (systemd service - ${COMPONENT_STATUS[mira_service]})"
     fi
 elif [ "$OS" = "macos" ]; then
     print_info "Valkey: localhost:6379 (brew services)"
@@ -1412,13 +1690,13 @@ fi
 
 echo ""
 echo -e "${BOLD}${GREEN}Next Steps${RESET}"
-if [ "$INSTALL_SYSTEMD" = "yes" ] && [ "$OS" = "linux" ]; then
-    if [ "$MIRA_STARTED" = "yes" ]; then
+if [ "${COMPONENT_CONFIG[install_systemd]}" = "yes" ] && [ "$OS" = "linux" ]; then
+    if [[ "${COMPONENT_STATUS[mira_service]}" == *"Running"* ]]; then
         echo -e "  ${CYAN}→${RESET} MIRA is running at: ${BOLD}http://localhost:1993${RESET}"
         echo -e "  ${CYAN}→${RESET} Check status: ${BOLD}systemctl status mira${RESET}"
         echo -e "  ${CYAN}→${RESET} View logs: ${BOLD}journalctl -u mira -f${RESET}"
         echo -e "  ${CYAN}→${RESET} Stop MIRA: ${BOLD}sudo systemctl stop mira${RESET}"
-    elif [ "$MIRA_STARTED" = "failed" ]; then
+    elif [[ "${COMPONENT_STATUS[mira_service]}" == *"failed"* ]]; then
         echo -e "  ${CYAN}→${RESET} Check logs: ${BOLD}journalctl -u mira -n 50${RESET}"
         echo -e "  ${CYAN}→${RESET} Check status: ${BOLD}systemctl status mira${RESET}"
         echo -e "  ${CYAN}→${RESET} Try starting: ${BOLD}sudo systemctl start mira${RESET}"
