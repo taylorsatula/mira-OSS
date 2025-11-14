@@ -285,15 +285,38 @@ vault_is_initialized() {
 
 # Vault helper: Check if Vault is sealed
 vault_is_sealed() {
-    local status=$(vault status -format=json 2>&1 || true)
-    echo "$status" | grep -q '"sealed":true'
+    # vault status returns:
+    # - exit code 0 when unsealed
+    # - exit code 2 when sealed
+    # - exit code 1 on error
+    vault status > /dev/null 2>&1
+    local exit_code=$?
+
+    if [ $exit_code -eq 2 ]; then
+        return 0  # Sealed (true)
+    elif [ $exit_code -eq 0 ]; then
+        return 1  # Unsealed (false)
+    else
+        # Error - assume sealed to be safe
+        return 0
+    fi
 }
 
 # Vault helper: Extract credential from init-keys.txt
 # Usage: vault_extract_credential "Unseal Key 1" or "Initial Root Token"
 vault_extract_credential() {
     local cred_type="$1"
-    grep "$cred_type:" /opt/vault/init-keys.txt | awk '{print $4}'
+
+    # Debug output in loud mode
+    if [ "$LOUD_MODE" = true ]; then
+        echo ""
+        echo "DEBUG: Contents of /opt/vault/init-keys.txt:"
+        cat /opt/vault/init-keys.txt
+        echo ""
+        echo "DEBUG: Attempting to extract: $cred_type"
+    fi
+
+    grep "$cred_type" /opt/vault/init-keys.txt | awk '{print $NF}'
 }
 
 # Vault helper: Unseal vault if sealed
@@ -308,7 +331,8 @@ vault_unseal() {
         return 1
     fi
 
-    echo "$unseal_key" | run_with_status "Unsealing Vault" vault operator unseal -
+    run_with_status "Unsealing Vault" \
+        vault operator unseal "$unseal_key"
 }
 
 # Vault helper: Authenticate with root token
@@ -336,8 +360,18 @@ vault_approle_exists() {
 vault_initialize() {
     if vault_is_initialized; then
         print_info "Vault already initialized - checking state"
+
+        # Unseal if needed (checks sealed state first)
         vault_unseal || return 1
+
+        # Authenticate with root token
         vault_authenticate || return 1
+
+        # Ensure KV2 secrets engine is enabled
+        if ! vault secrets list | grep -q "^secret/"; then
+            run_with_status "Enabling KV2 secrets engine" \
+                vault secrets enable -version=2 -path=secret kv
+        fi
 
         # Ensure AppRole exists
         if ! vault_approle_exists; then
@@ -376,10 +410,15 @@ EOF
     fi
 
     # Full initialization for new Vault
-    run_with_status "Initializing Vault" \
-        vault operator init -key-shares=1 -key-threshold=1 > /opt/vault/init-keys.txt
-
-    run_quiet chmod 600 /opt/vault/init-keys.txt
+    echo -ne "${DIM}${ARROW}${RESET} Initializing Vault... "
+    if vault operator init -key-shares=1 -key-threshold=1 > /opt/vault/init-keys.txt 2>&1; then
+        echo -e "${CHECKMARK}"
+        chmod 600 /opt/vault/init-keys.txt
+    else
+        echo -e "${ERROR}"
+        print_error "Failed to initialize Vault"
+        return 1
+    fi
 
     vault_unseal || return 1
     vault_authenticate || return 1
@@ -432,6 +471,10 @@ vault_put_if_not_exists() {
 # DEPLOYMENT START
 # ============================================================================
 
+# Initialize structured state management (must be before first usage)
+declare -A COMPONENT_CONFIG  # User configuration choices
+declare -A COMPONENT_STATUS  # Component status for summary display
+
 clear
 echo -e "${BOLD}${CYAN}"
 echo "╔════════════════════════════════════════╗"
@@ -458,8 +501,8 @@ echo -e "${CHECKMARK}"
 if [ -d "/opt/mira/app" ]; then
     echo ""
     print_warning "Existing MIRA installation found at /opt/mira/app"
-    read -p "$(echo -e ${YELLOW}This will OVERWRITE the existing installation. Continue? ${RESET})(yes/no): " OVERWRITE
-    if [ "$OVERWRITE" != "yes" ]; then
+    read -p "$(echo -e ${YELLOW}This will OVERWRITE the existing installation. Continue? ${RESET})(y/n): " OVERWRITE
+    if [[ ! "$OVERWRITE" =~ ^[Yy](es)?$ ]]; then
         print_info "Installation cancelled."
         exit 0
     fi
@@ -489,8 +532,8 @@ if [ -n "$PORTS_IN_USE" ]; then
     echo -e "${WARNING}"
     print_warning "The following ports are already in use:$PORTS_IN_USE"
     print_info "MIRA requires: 1993 (app), 8200 (vault), 6379 (valkey), 5432 (postgresql)"
-    read -p "$(echo -e ${YELLOW}Stop existing services and continue?${RESET}) (yes/no): " CONTINUE
-    if [ "$CONTINUE" != "yes" ]; then
+    read -p "$(echo -e ${YELLOW}Stop existing services and continue?${RESET}) (y/n): " CONTINUE
+    if [[ ! "$CONTINUE" =~ ^[Yy](es)?$ ]]; then
         print_info "Installation cancelled. Free up the required ports and try again."
         exit 0
     fi
@@ -598,7 +641,7 @@ else
     else
         print_warning "This doesn't look like a valid Anthropic API key (should start with 'sk-ant-')"
         read -p "$(echo -e ${YELLOW}Continue anyway?${RESET}) (y/n): " CONFIRM
-        if [ "$CONFIRM" != "y" ] && [ "$CONFIRM" != "Y" ]; then
+        if [[ ! "$CONFIRM" =~ ^[Yy](es)?$ ]]; then
             COMPONENT_CONFIG[anthropic_key]="PLACEHOLDER_SET_THIS_LATER"
             COMPONENT_STATUS[anthropic]="${WARNING} NOT SET"
         else
@@ -626,7 +669,7 @@ else
     else
         print_warning "This doesn't look like a valid Groq API key (should start with 'gsk_')"
         read -p "$(echo -e ${YELLOW}Continue anyway?${RESET}) (y/n): " CONFIRM
-        if [ "$CONFIRM" != "y" ] && [ "$CONFIRM" != "Y" ]; then
+        if [[ ! "$CONFIRM" =~ ^[Yy](es)?$ ]]; then
             COMPONENT_CONFIG[groq_key]="PLACEHOLDER_SET_THIS_LATER"
             COMPONENT_STATUS[groq]="${WARNING} NOT SET"
         else
@@ -642,12 +685,12 @@ echo -e "${BOLD}${BLUE}3. Playwright Browser Installation${RESET} ${DIM}(OPTIONA
 print_info "Enables advanced webpage extraction for JavaScript-heavy sites"
 print_info "MIRA can function without it (basic HTTP requests still work)"
 echo ""
-read -p "$(echo -e ${CYAN}Install Playwright and browser dependencies?${RESET}) (yes/no, default=yes): " PLAYWRIGHT_INPUT
+read -p "$(echo -e ${CYAN}Install Playwright and browser dependencies?${RESET}) (y/n, default=y): " PLAYWRIGHT_INPUT
 # Default to yes if user just presses Enter
 if [ -z "$PLAYWRIGHT_INPUT" ]; then
-    PLAYWRIGHT_INPUT="yes"
+    PLAYWRIGHT_INPUT="y"
 fi
-if [ "$PLAYWRIGHT_INPUT" = "yes" ]; then
+if [[ "$PLAYWRIGHT_INPUT" =~ ^[Yy](es)?$ ]]; then
     COMPONENT_CONFIG[install_playwright]="yes"
     COMPONENT_STATUS[playwright]="${CHECKMARK} Will be installed"
 else
@@ -673,22 +716,18 @@ case "$OS_TYPE" in
         ;;
 esac
 
-# Initialize structured state management
-declare -A COMPONENT_CONFIG  # User configuration choices
-declare -A COMPONENT_STATUS  # Component status for summary display
-
 # Systemd service option (Linux only)
 echo -e "${BOLD}${BLUE}4. Systemd Service${RESET} ${DIM}(OPTIONAL - Linux Only)${RESET}"
 if [ "$OS" = "linux" ]; then
     print_info "Configure MIRA to start automatically on system boot?"
     print_info "This creates a systemd service that starts MIRA when the system boots."
     echo ""
-    read -p "$(echo -e ${CYAN}Install MIRA as systemd service?${RESET}) (yes/no): " SYSTEMD_INPUT
-    if [ "$SYSTEMD_INPUT" = "yes" ]; then
+    read -p "$(echo -e ${CYAN}Install MIRA as systemd service?${RESET}) (y/n): " SYSTEMD_INPUT
+    if [[ "$SYSTEMD_INPUT" =~ ^[Yy](es)?$ ]]; then
         COMPONENT_CONFIG[install_systemd]="yes"
         echo ""
-        read -p "$(echo -e ${CYAN}Start MIRA service immediately after installation?${RESET}) (yes/no): " START_NOW_INPUT
-        if [ "$START_NOW_INPUT" = "yes" ]; then
+        read -p "$(echo -e ${CYAN}Start MIRA service immediately after installation?${RESET}) (y/n): " START_NOW_INPUT
+        if [[ "$START_NOW_INPUT" =~ ^[Yy](es)?$ ]]; then
             COMPONENT_CONFIG[start_mira_now]="yes"
             COMPONENT_STATUS[systemd]="${CHECKMARK} Will be installed and started"
         else
@@ -766,21 +805,32 @@ echo ""
 print_header "Step 1: System Dependencies"
 
 if [ "$OS" = "linux" ]; then
-    # Ubuntu/Debian package installation
+    # Add PostgreSQL APT repository for PostgreSQL 17
+    if [ ! -f /etc/apt/sources.list.d/pgdg.list ]; then
+        run_with_status "Adding PostgreSQL APT repository" \
+            bash -c 'sudo apt-get install -y ca-certificates wget > /dev/null 2>&1 && \
+                     sudo install -d /usr/share/postgresql-common/pgdg && \
+                     sudo wget -q -O /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc && \
+                     echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null'
+    fi
+
+    # Detect Python version to use (newest available, 3.12+ required)
+    PYTHON_VER=$(python3 --version 2>&1 | grep -oP '\d+\.\d+' | head -1)
+
     if [ "$LOUD_MODE" = true ]; then
         print_step "Updating package lists..."
         sudo apt-get update
-        print_step "Installing system packages..."
+        print_step "Installing system packages (Python ${PYTHON_VER})..."
         sudo apt-get install -y \
             build-essential \
-            python3.13-venv \
-            python3.13-dev \
+            python${PYTHON_VER}-venv \
+            python${PYTHON_VER}-dev \
             libpq-dev \
             postgresql-server-dev-17 \
             unzip \
             wget \
             curl \
-            postgresql \
+            postgresql-17 \
             postgresql-contrib \
             postgresql-17-pgvector \
             valkey \
@@ -794,8 +844,8 @@ if [ "$OS" = "linux" ]; then
         show_progress $! "Updating package lists"
 
         (sudo apt-get install -y \
-            build-essential python3.13-venv python3.13-dev libpq-dev \
-            postgresql-server-dev-17 unzip wget curl postgresql \
+            build-essential python${PYTHON_VER}-venv python${PYTHON_VER}-dev libpq-dev \
+            postgresql-server-dev-17 unzip wget curl postgresql-17 \
             postgresql-contrib postgresql-17-pgvector valkey \
             libatk1.0-0t64 libatk-bridge2.0-0t64 libatspi2.0-0t64 \
             libxcomposite1 > /dev/null 2>&1) &
@@ -813,16 +863,19 @@ elif [ "$OS" = "macos" ]; then
     fi
     echo -e "${CHECKMARK}"
 
+    # Detect Python version to use (newest available, 3.12+ required)
+    PYTHON_VER=$(python3 --version 2>&1 | grep -oP '\d+\.\d+' | head -1)
+
     if [ "$LOUD_MODE" = true ]; then
         print_step "Updating Homebrew..."
         brew update
-        print_step "Installing dependencies via Homebrew..."
-        brew install python@3.13 wget curl postgresql@17 valkey vault
+        print_step "Installing dependencies via Homebrew (Python ${PYTHON_VER})..."
+        brew install python@${PYTHON_VER} wget curl postgresql@17 valkey vault
     else
         (brew update > /dev/null 2>&1) &
         show_progress $! "Updating Homebrew"
 
-        (brew install python@3.13 wget curl postgresql@17 valkey vault > /dev/null 2>&1) &
+        (brew install python@${PYTHON_VER} wget curl postgresql@17 valkey vault > /dev/null 2>&1) &
         show_progress $! "Installing dependencies via Homebrew (6 packages)"
     fi
 
@@ -833,26 +886,29 @@ print_success "System dependencies installed"
 
 print_header "Step 2: Python Verification"
 
-echo -ne "${DIM}${ARROW}${RESET} Locating Python 3.13... "
+echo -ne "${DIM}${ARROW}${RESET} Locating Python ${PYTHON_VER}+... "
 if [ "$OS" = "linux" ]; then
-    # Check if python3.13 is available
-    if ! command -v python3.13 &> /dev/null; then
+    # Use the version detected in Step 1
+    if ! command -v python${PYTHON_VER} &> /dev/null; then
         echo -e "${ERROR}"
-        print_error "Python 3.13 not found after installation. Check package availability."
+        print_error "Python ${PYTHON_VER} not found after installation."
         exit 1
     fi
-    PYTHON_CMD="python3.13"
+    PYTHON_CMD="python${PYTHON_VER}"
 elif [ "$OS" = "macos" ]; then
-    # On macOS, Homebrew python@3.13 might be at different paths
-    if command -v python3.13 &> /dev/null; then
-        PYTHON_CMD="python3.13"
-    elif [ -f "/opt/homebrew/opt/python@3.13/bin/python3.13" ]; then
-        PYTHON_CMD="/opt/homebrew/opt/python@3.13/bin/python3.13"
-    elif [ -f "/usr/local/opt/python@3.13/bin/python3.13" ]; then
-        PYTHON_CMD="/usr/local/opt/python@3.13/bin/python3.13"
+    # Detect macOS Python version
+    PYTHON_VER=$(python3 --version 2>&1 | grep -oP '\d+\.\d+' | head -1)
+
+    # Check common Homebrew locations
+    if command -v python${PYTHON_VER} &> /dev/null; then
+        PYTHON_CMD="python${PYTHON_VER}"
+    elif [ -f "/opt/homebrew/opt/python@${PYTHON_VER}/bin/python${PYTHON_VER}" ]; then
+        PYTHON_CMD="/opt/homebrew/opt/python@${PYTHON_VER}/bin/python${PYTHON_VER}"
+    elif [ -f "/usr/local/opt/python@${PYTHON_VER}/bin/python${PYTHON_VER}" ]; then
+        PYTHON_CMD="/usr/local/opt/python@${PYTHON_VER}/bin/python${PYTHON_VER}"
     else
         echo -e "${ERROR}"
-        print_error "Python 3.13 not found. Check Homebrew installation."
+        print_error "Python ${PYTHON_VER} not found. Check Homebrew installation."
         exit 1
     fi
 fi
@@ -1121,12 +1177,27 @@ fi
 print_header "Step 8: HashiCorp Vault Setup"
 
 if [ "$OS" = "linux" ]; then
+    # Detect architecture
+    ARCH=$(uname -m)
+    case "$ARCH" in
+        x86_64)
+            VAULT_ARCH="amd64"
+            ;;
+        aarch64|arm64)
+            VAULT_ARCH="arm64"
+            ;;
+        *)
+            print_error "Unsupported architecture: $ARCH"
+            exit 1
+            ;;
+    esac
+
     cd /tmp
-    run_with_status "Downloading Vault 1.18.3" \
-        wget -q https://releases.hashicorp.com/vault/1.18.3/vault_1.18.3_linux_amd64.zip
+    run_with_status "Downloading Vault 1.18.3 (${VAULT_ARCH})" \
+        wget -q https://releases.hashicorp.com/vault/1.18.3/vault_1.18.3_linux_${VAULT_ARCH}.zip
 
     run_with_status "Extracting Vault binary" \
-        unzip -o vault_1.18.3_linux_amd64.zip
+        unzip -o vault_1.18.3_linux_${VAULT_ARCH}.zip
 
     run_with_status "Installing to /usr/local/bin" \
         sudo mv vault /usr/local/bin/
@@ -1598,7 +1669,7 @@ fi
 run_quiet rm -f /tmp/mira-policy.hcl
 
 if [ "$OS" = "linux" ]; then
-    run_quiet rm -f /tmp/vault_1.18.3_linux_amd64.zip
+    run_quiet rm -f /tmp/vault_1.18.3_linux_*.zip
     run_quiet rm -f /tmp/vault
 fi
 
@@ -1724,6 +1795,24 @@ if [ "$OS" = "macos" ]; then
     print_info "After system restart, manually start Vault and unseal:"
     echo -e "${DIM}    /opt/vault/unseal.sh${RESET}"
     print_info "PostgreSQL and Valkey are managed by brew services"
+fi
+
+# Prompt to launch MIRA CLI immediately
+echo ""
+echo -e "${BOLD}${CYAN}Launch MIRA CLI Now?${RESET}"
+print_info "MIRA CLI will auto-start the API server and open an interactive chat."
+echo ""
+read -p "$(echo -e ${CYAN}Start MIRA CLI now?${RESET}) (yes/no): " LAUNCH_MIRA
+if [ "$LAUNCH_MIRA" = "yes" ]; then
+    echo ""
+    print_success "Launching MIRA CLI..."
+    echo ""
+    # Set up Vault environment and launch
+    export VAULT_ADDR='http://127.0.0.1:8200'
+    export VAULT_ROLE_ID=$(grep 'role_id' /opt/vault/role-id.txt | awk '{print $2}')
+    export VAULT_SECRET_ID=$(grep 'secret_id' /opt/vault/secret-id.txt | awk '{print $2}')
+    cd /opt/mira/app
+    exec venv/bin/python3 talkto_mira.py
 fi
 
 echo ""
