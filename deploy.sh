@@ -306,17 +306,7 @@ vault_is_sealed() {
 # Usage: vault_extract_credential "Unseal Key 1" or "Initial Root Token"
 vault_extract_credential() {
     local cred_type="$1"
-
-    # Debug output in loud mode
-    if [ "$LOUD_MODE" = true ]; then
-        echo ""
-        echo "DEBUG: Contents of /opt/vault/init-keys.txt:"
-        cat /opt/vault/init-keys.txt
-        echo ""
-        echo "DEBUG: Attempting to extract: $cred_type"
-    fi
-
-    grep "$cred_type" /opt/vault/init-keys.txt | awk '{print $NF}'
+    grep "$cred_type:" /opt/vault/init-keys.txt | awk '{print $4}'
 }
 
 # Vault helper: Unseal vault if sealed
@@ -1502,6 +1492,19 @@ elif [ "$OS" = "macos" ]; then
         psql -d mira_service -c "CREATE EXTENSION IF NOT EXISTS vector;"
 fi
 
+# Apply database schema
+if [ -f /opt/mira/app/deploy/mira_service_schema.sql ]; then
+    if [ "$OS" = "linux" ]; then
+        run_with_status "Applying database schema" \
+            PGPASSWORD=changethisifdeployingpwd psql -U mira_admin -h localhost -d mira_service \
+                -f /opt/mira/app/deploy/mira_service_schema.sql
+    elif [ "$OS" = "macos" ]; then
+        run_with_status "Applying database schema" \
+            psql -U mira_admin -h localhost -d mira_service \
+                -f /opt/mira/app/deploy/mira_service_schema.sql
+    fi
+fi
+
 print_success "PostgreSQL configured"
 
 print_header "Step 14: Vault Credential Storage"
@@ -1534,11 +1537,30 @@ cat > /opt/mira/mira.sh <<'WRAPPER_EOF'
 
 # Set Vault environment variables
 export VAULT_ADDR='http://127.0.0.1:8200'
-export VAULT_ROLE_ID=$(grep 'role_id' /opt/vault/role-id.txt | awk '{print $2}')
-export VAULT_SECRET_ID=$(grep 'secret_id' /opt/vault/secret-id.txt | awk '{print $2}')
+
+# Check if Vault is sealed and unseal if needed
+if vault status >/dev/null 2>&1; then
+    : # Vault is unsealed and responding
+elif vault status 2>&1 | grep -q "Vault is sealed"; then
+    # Vault is sealed - unseal it
+    UNSEAL_KEY=$(grep 'Unseal Key 1:' /opt/vault/init-keys.txt | awk '{print $4}')
+    if [ -n "$UNSEAL_KEY" ]; then
+        vault operator unseal "$UNSEAL_KEY" >/dev/null 2>&1
+    fi
+fi
+
+# Set Vault credentials
+export VAULT_ROLE_ID=$(grep '^role_id' /opt/vault/role-id.txt | awk '{print $2}')
+export VAULT_SECRET_ID=$(grep '^secret_id ' /opt/vault/secret-id.txt | awk '{print $2}')
+
+# Change to MIRA app directory so relative paths work
+cd /opt/mira/app
+
+# Activate virtual environment
+source /opt/mira/app/venv/bin/activate
 
 # Launch MIRA CLI
-/opt/mira/app/venv/bin/python3 /opt/mira/app/talkto_mira.py "$@"
+python3 /opt/mira/app/talkto_mira.py "$@"
 WRAPPER_EOF
 echo -e "${CHECKMARK}"
 
