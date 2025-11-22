@@ -192,16 +192,11 @@ def get_user_cumulative_activity_days() -> int:
     except RuntimeError:
         raise RuntimeError("No user context set. Cannot get activity days without user context.")
 
-    # Not cached - query users table directly
+    # Not cached - query user activity module and cache result
     user_id = get_current_user_id()
 
-    from clients.postgres_client import PostgresClient
-    db = PostgresClient('mira_service')
-    result = db.execute_single(
-        "SELECT cumulative_activity_days FROM users WHERE id = %s",
-        (user_id,)
-    )
-    activity_days = result['cumulative_activity_days'] if result else 0
+    from utils.user_activity import get_user_cumulative_activity_days as get_activity_days
+    activity_days = get_activity_days(user_id)
 
     # Cache for subsequent calls
     update_current_user({'cumulative_activity_days': activity_days})

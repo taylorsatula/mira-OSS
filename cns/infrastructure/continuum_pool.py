@@ -132,10 +132,10 @@ class ContinuumPool:
             # Check Valkey cache first
             cached_messages = self.valkey_cache.get_continuum()
 
-            # Get or create continuum structure from DB
+            # Get continuum structure from DB (must exist from signup)
             continuum = self.repository.get_continuum(user_id)
             if not continuum:
-                continuum = self.repository.create_continuum(user_id)
+                raise RuntimeError(f"Continuum not found for user {user_id}. Continuum should be created during signup.")
 
             # No callback needed - using Unit of Work pattern
 
@@ -159,6 +159,12 @@ class ContinuumPool:
 
                 # Apply cached messages to continuum
                 continuum.apply_cache(cached_messages)
+
+            # Load thinking budget preference from Valkey (works for both new and continuing sessions)
+            thinking_budget = self.valkey_cache.get_thinking_budget()
+            if thinking_budget is not None:
+                continuum._thinking_budget_preference = thinking_budget
+                logger.debug(f"Loaded thinking budget {thinking_budget} for continuum {continuum.id}")
 
             return continuum
     
@@ -235,7 +241,38 @@ class ContinuumPool:
         """
         self.valkey_cache.set_continuum(messages)
         logger.debug(f"Updated continuum cache for user {user_id}")
-    
+
+    def get_thinking_budget_preference(self) -> Optional[int]:
+        """
+        Get thinking budget preference from Valkey cache.
+
+        Requires: Active user context (set via set_current_user_id during authentication)
+
+        Returns:
+            Thinking budget value if set, None for system default
+
+        Raises:
+            RuntimeError: If no user context is set
+        """
+        return self.valkey_cache.get_thinking_budget()
+
+    def set_thinking_budget_preference(self, budget: Optional[int]) -> None:
+        """
+        Set thinking budget preference in Valkey cache.
+
+        Persists until segment timeout invalidates the session.
+
+        Args:
+            budget: Thinking budget value (None, 0, or positive int)
+
+        Requires: Active user context (set via set_current_user_id during authentication)
+
+        Raises:
+            RuntimeError: If no user context is set
+        """
+        self.valkey_cache.set_thinking_budget(budget)
+        logger.info(f"Set thinking budget preference to {budget}")
+
     def get_session_info(self, user_id: str) -> Dict[str, Any]:
         """
         Get session information for a user.

@@ -7,7 +7,6 @@ This module provides hybrid retrieval that leverages both lexical matching
 import logging
 from typing import List, Tuple, Dict, Any, Optional
 from collections import defaultdict
-import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -149,20 +148,15 @@ class HybridSearcher:
             min_importance=min_importance
         )
 
-        # Calculate similarity scores
+        # Use similarity scores calculated by database
         results = []
-        query_vec = np.array(query_embedding)
-
         for memory in memories:
-            if not memory.embedding:
+            if memory.similarity_score is None:
                 raise RuntimeError(
-                    f"Memory {memory.id} missing required embedding - "
-                    f"this indicates a data integrity issue, not an optional field"
+                    f"Memory {memory.id} missing similarity_score - "
+                    f"this indicates db.search_similar() did not populate the transient field"
                 )
-            mem_vec = np.array(memory.embedding)
-            # Cosine similarity
-            similarity = np.dot(query_vec, mem_vec) / (np.linalg.norm(query_vec) * np.linalg.norm(mem_vec))
-            results.append((memory, float(similarity)))
+            results.append((memory, memory.similarity_score))
 
         return results
 

@@ -61,69 +61,6 @@ class InvokeOtherTool(Tool):
     simple_description = """
     Dynamically load and unload tools to manage context efficiently. Check working memory for available tools."""
 
-    anthropic_implementation = """
-    OPERATIONS:
-
-    - load: Load one or more tools for use
-      Parameters:
-        mode: "load"
-        query: Comma-separated tool names (e.g., "weather_tool" or "weather_tool,calendar_tool")
-
-    - unload: Remove tools from context
-      Parameters:
-        mode: "unload"
-        query: Comma-separated tool names to unload
-
-    - fallback: Emergency mode - load ALL tools for one turn
-      Parameters:
-        mode: "fallback"
-        query: (ignored for this mode)
-
-    USAGE NOTES:
-    - Check working memory for list of available tools and their descriptions
-    - Tools remain loaded until explicitly unloaded or auto-cleaned after 5 idle turns
-    - Essential tools (webaccess_tool, reminder_tool) are always loaded
-    - Fallback mode auto-unloads all tools after one turn
-    """
-
-    description = simple_description + anthropic_implementation
-
-    usage_examples = [
-        {
-            "input": {
-                "mode": "load",
-                "query": "weather_tool"
-            },
-            "output": {
-                "success": True,
-                "loaded": ["weather_tool"],
-                "message": "Successfully loaded: weather_tool"
-            }
-        },
-        {
-            "input": {
-                "mode": "load",
-                "query": "calendar_tool,email_tool"
-            },
-            "output": {
-                "success": True,
-                "loaded": ["calendar_tool", "email_tool"],
-                "message": "Successfully loaded: calendar_tool, email_tool"
-            }
-        },
-        {
-            "input": {
-                "mode": "fallback",
-                "query": ""
-            },
-            "output": {
-                "success": True,
-                "loaded": ["weather_tool", "calendar_tool", "email_tool", "maps_tool", "..."],
-                "message": "Fallback mode: All 12 tools loaded for this turn only"
-            }
-        }
-    ]
-
     anthropic_schema = {
         "name": "invokeother_tool",
         "description": "Dynamically load and unload tools to manage context efficiently. Check working memory for available tools.",
@@ -177,6 +114,15 @@ class InvokeOtherTool(Tool):
                 # Skip essential tools and self
                 if tool_name in self.essential_tools or tool_name == self.name:
                     continue
+
+                # Skip tools disabled in config
+                from config import config
+                tool_config = getattr(config, tool_name, None)
+                if tool_config:
+                    is_enabled = getattr(tool_config, 'enabled', True)
+                    if not is_enabled:
+                        self.logger.debug(f"Skipping disabled tool {tool_name} in hints")
+                        continue
 
                 try:
                     # Get tool instance to access simple_description
@@ -259,6 +205,16 @@ class InvokeOtherTool(Tool):
                 if tool_name not in self.tool_repo.list_all_tools():
                     errors.append(f"{tool_name} not found")
                     continue
+
+                # Check if tool is enabled in config
+                from config import config
+                tool_config = getattr(config, tool_name, None)
+                if tool_config:
+                    is_enabled = getattr(tool_config, 'enabled', True)
+                    if not is_enabled:
+                        errors.append(f"{tool_name} is disabled in config (enabled=false)")
+                        self.logger.warning(f"Attempted to load disabled tool: {tool_name}")
+                        continue
 
                 # Check if already enabled
                 if self.tool_repo.is_tool_enabled(tool_name):

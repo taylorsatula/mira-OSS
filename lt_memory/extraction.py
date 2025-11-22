@@ -325,6 +325,36 @@ class ExtractionService:
 
         return extraction_prompt
 
+    def _validate_memory_list_structure(self, parsed: Any) -> bool:
+        """
+        Validate that parsed result is a list of memory dicts.
+
+        Ensures the parsed JSON matches the expected schema: a list where each
+        element is a dictionary containing at minimum a "text" field.
+
+        Args:
+            parsed: Result from json.loads()
+
+        Returns:
+            True if valid structure, False otherwise
+        """
+        if not isinstance(parsed, list):
+            logger.warning(f"Parse result is not a list: {type(parsed).__name__}")
+            return False
+
+        for idx, item in enumerate(parsed):
+            if not isinstance(item, dict):
+                logger.warning(
+                    f"Memory list item {idx} is not a dict: {type(item).__name__} = {item}"
+                )
+                return False
+
+            if "text" not in item:
+                logger.warning(f"Memory list item {idx} missing required 'text' field")
+                return False
+
+        return True
+
     def _parse_extraction_response(self, response_text: str) -> List[Dict[str, Any]]:
         """
         Parse JSON extraction response from LLM.
@@ -347,43 +377,25 @@ class ExtractionService:
 
         # Handle empty responses (LLM returned nothing)
         if not response_text:
-            logger.warning("Empty response from LLM - no memories extracted")
+            logger.debug("Empty response from LLM - no memories extracted")
             return []
 
         # Try parsing as-is first (handles compliant responses)
         try:
             parsed = json.loads(response_text)
-            # Successfully parsed, continue to format handling below
-        except json.JSONDecodeError:
-            # Failed - try extracting JSON from surrounding text/markdown
-            # Look for JSON array boundaries (first '[' to last ']')
-            first_bracket = response_text.find('[')
-            last_bracket = response_text.rfind(']')
-
-            if first_bracket != -1 and last_bracket != -1 and last_bracket > first_bracket:
-                # Extract substring containing the JSON array
-                json_candidate = response_text[first_bracket:last_bracket + 1]
-                logger.debug(
-                    f"Extracted JSON from response (removed {first_bracket} leading "
-                    f"and {len(response_text) - last_bracket - 1} trailing chars)"
-                )
-                response_text = json_candidate
-            else:
-                # No array brackets found - will fail below or try repair
-                logger.warning("No JSON array brackets found in response")
-
-        # Parse the cleaned response
-        try:
-            parsed = json.loads(response_text)
 
             # Handle different response formats
             if isinstance(parsed, list):
+                if not self._validate_memory_list_structure(parsed):
+                    raise ValueError("Parsed list contains invalid memory structures")
                 return parsed
             elif isinstance(parsed, dict):
                 # Single memory object or {"memories": [...]} wrapper
                 if "memories" in parsed:
                     memories = parsed["memories"]
                     if isinstance(memories, list):
+                        if not self._validate_memory_list_structure(memories):
+                            raise ValueError("Parsed 'memories' field contains invalid structures")
                         return memories
                     else:
                         return [memories] if memories else []
@@ -396,8 +408,14 @@ class ExtractionService:
                 )
 
         except json.JSONDecodeError as e:
-            logger.warning(f"Malformed JSON: {e}")
-            logger.debug(f"Response text: {response_text[:500]}")
+            # Check if it's actually an empty response that looks like whitespace/special chars
+            if not response_text or response_text.isspace():
+                logger.debug("Response contains only whitespace - no memories extracted")
+                return []
+
+            # Log the actual error with the first part of the response for debugging
+            logger.debug(f"JSON parsing failed: {e}")
+            logger.debug(f"Response text (first 200 chars): {response_text[:200]!r}")
 
             # Try json_repair if available
             try:
@@ -409,17 +427,29 @@ class ExtractionService:
 
             try:
                 repaired = repair_json(response_text)
-                parsed = json.loads(repaired)
 
-                logger.info("Successfully repaired malformed JSON")
+                # Check if repair actually changed something
+                if repaired == response_text:
+                    logger.debug("json_repair returned unchanged text - likely not JSON format")
+                    # Return empty list for non-JSON responses
+                    return []
+
+                parsed = json.loads(repaired)
+                logger.debug("Successfully repaired malformed JSON")
 
                 # Handle repaired response formats
                 if isinstance(parsed, list):
+                    if not self._validate_memory_list_structure(parsed):
+                        logger.debug(f"Repaired JSON has invalid structure: {parsed}")
+                        raise ValueError("Repaired JSON does not match memory list schema")
                     return parsed
                 elif isinstance(parsed, dict):
                     if "memories" in parsed:
                         memories = parsed["memories"]
                         if isinstance(memories, list):
+                            if not self._validate_memory_list_structure(memories):
+                                logger.debug(f"Repaired JSON 'memories' field invalid: {memories}")
+                                raise ValueError("Repaired JSON memories field does not match schema")
                             return memories
                         else:
                             return [memories] if memories else []
@@ -430,9 +460,13 @@ class ExtractionService:
                         f"Invalid extraction response format after repair: expected list or dict, got {type(parsed).__name__}"
                     )
 
+            except json.JSONDecodeError:
+                # Even after repair, still not valid JSON
+                logger.debug(f"Response not valid JSON even after repair attempt")
+                return []
             except Exception as repair_error:
-                logger.error(f"JSON repair failed: {repair_error}")
-                raise ValueError(f"Invalid JSON response: {e}")
+                logger.debug(f"JSON repair or parsing failed: {repair_error}")
+                return []
 
     def _remap_short_ids_to_full(
         self,
@@ -486,6 +520,11 @@ class ExtractionService:
         Returns:
             True if valid (possibly after fixes), False if unrecoverable
         """
+        # REJECT: Not a dictionary (defensive type guard)
+        if not isinstance(memory_dict, dict):
+            logger.warning(f"Rejecting memory: expected dict, got {type(memory_dict).__name__}")
+            return False
+
         # REJECT: Missing or invalid text (unrecoverable)
         if not memory_dict.get("text"):
             logger.warning("Rejecting memory: no text field")

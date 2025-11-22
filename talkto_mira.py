@@ -44,6 +44,11 @@ import requests
 
 from clients.vault_client import get_api_key
 
+# Test user constants (from test fixtures)
+TEST_USER_1_EMAIL = "test@example.com"
+TEST_USER_1_ID = "443a898d-ed56-495a-b9de-0551c80169fe"
+TEST_USER_2_EMAIL = "test2@example.com"
+TEST_USER_2_ID = "7b8e4c2a-f3d1-4a5b-9e6c-1d2f3a4b5c6d"
 
 # Configuration
 MIRA_API_URL = os.getenv("MIRA_API_URL", "http://localhost:1993")
@@ -62,15 +67,18 @@ RESET_PROMPT = "\001\033[0m\002"
 # Plain ANSI codes for print statements
 CYAN = "\033[36m"
 GREEN = "\033[32m"
+BOLD = "\033[1m"
+RED = "\033[31m"
 RESET = "\033[0m"
 
 
 class LoadingIndicator:
     """Scanning loading animation for clean mode."""
 
-    def __init__(self):
+    def __init__(self, centered: bool = False):
         self.stop_event = threading.Event()
         self.thread = None
+        self.centered = centered
 
     def _animate(self):
         """Animation loop that scans through LOADING text."""
@@ -95,7 +103,13 @@ class LoadingIndicator:
 
         idx = 0
         while not self.stop_event.is_set():
-            print(f"\r{frames[idx]}", end="", flush=True)
+            frame = frames[idx]
+            if self.centered:
+                # Center the frame
+                centered_frame = center_text(frame)
+                print(f"\r{centered_frame}", end="", flush=True)
+            else:
+                print(f"\r{frame}", end="", flush=True)
             idx = (idx + 1) % len(frames)
             time.sleep(0.15)
 
@@ -110,7 +124,11 @@ class LoadingIndicator:
         self.stop_event.set()
         if self.thread:
             self.thread.join(timeout=1)
-        print("\r" + " " * 20, end="")  # Clear the line
+        if self.centered:
+            width, _ = get_terminal_size()
+            print("\r" + " " * width, end="")  # Clear the entire line
+        else:
+            print("\r" + " " * 20, end="")  # Clear the line
         print("\r", end="")
 
 
@@ -159,16 +177,106 @@ def clear_screen():
     os.system('clear' if os.name != 'nt' else 'cls')
 
 
+def get_terminal_size() -> tuple[int, int]:
+    """Get terminal dimensions.
+
+    Returns:
+        tuple[int, int]: (width, height) of terminal
+    """
+    try:
+        size = os.get_terminal_size()
+        return size.columns, size.lines
+    except OSError:
+        return 80, 24  # Fallback dimensions
+
+
+def center_text(text: str, width: int = None) -> str:
+    """Center text horizontally in terminal.
+
+    Args:
+        text: Text to center
+        width: Terminal width (auto-detect if None)
+
+    Returns:
+        str: Centered text with padding
+    """
+    if width is None:
+        width, _ = get_terminal_size()
+
+    text_width = len(text)
+    if text_width >= width:
+        return text
+
+    padding = (width - text_width) // 2
+    return " " * padding + text
+
+
+def print_centered(text: str, color: str = "") -> None:
+    """Print text centered in terminal.
+
+    Args:
+        text: Text to print
+        color: Optional ANSI color code
+    """
+    centered = center_text(text)
+    if color:
+        print(f"{color}{centered}{RESET}")
+    else:
+        print(centered)
+
+
+def move_cursor_to_center(text_lines: int = 1) -> None:
+    """Move cursor to vertical center of screen.
+
+    Args:
+        text_lines: Number of text lines to account for
+    """
+    _, height = get_terminal_size()
+    vertical_padding = (height - text_lines) // 2
+    print("\n" * vertical_padding, end="")
+
+
+def show_boot_screen() -> None:
+    """Display MIRA boot screen for 2 seconds.
+
+    Skips boot screen if terminal width is less than 80 characters.
+    """
+    width, _ = get_terminal_size()
+
+    # Skip boot screen if terminal is too narrow for ASCII art
+    if width < 80:
+        clear_screen()
+        return
+
+    clear_screen()
+
+    # ASCII art
+    logo = [
+        "                                               @@@@@@@@@@@                      ",
+        "@@@@@@@        @@        @@@@@@         @      @@@@@@@@@@@    @@@@@@      @@@@@@",
+        "@@ @  @        @@        @@@@@@        @ @     @@@@@@@@@@@    @    @      @@@@@@",
+        "@@ @  @        @@        @   @        @ @@@    @@@@@@@@@@@    @@@@@@      @@@@@@",
+        "                                               @@@@@@@@@@@                       "
+    ]
+
+    # Center vertically
+    move_cursor_to_center(len(logo))
+
+    # Print each line centered horizontally
+    for line in logo:
+        print_centered(line, CYAN)
+
+    time.sleep(2)
+    clear_screen()
+
+
 def get_separator() -> str:
     """Get a separator line that spans the terminal width.
 
     Returns:
         str: Separator with newlines above and below
     """
-    try:
-        width = os.get_terminal_size().columns
-    except OSError:
-        width = 80  # Fallback width
+    width, _ = get_terminal_size()
     return f"\n{'=' * width}\n"
 
 
@@ -249,6 +357,59 @@ def shutdown_server():
             pass  # Already terminated
         finally:
             _server_process = None
+
+
+def select_user() -> dict:
+    """Prompt user to select which MIRA user to chat as.
+
+    Returns:
+        dict with 'name' and 'email' keys
+    """
+    clear_screen()
+    print(f"{CYAN}═══════════════════════════════════{RESET}")
+    print(f"{BOLD}     Select User{RESET}")
+    print(f"{CYAN}═══════════════════════════════════{RESET}\n")
+
+    print(f"  {GREEN}1.{RESET} Main User")
+    print(f"  {GREEN}2.{RESET} Test User 1 ({TEST_USER_1_EMAIL})")
+    print(f"  {GREEN}3.{RESET} Test User 2 ({TEST_USER_2_EMAIL})")
+    print()
+
+    while True:
+        try:
+            choice = input(f"{CYAN}Select user (1-3):{RESET} ").strip()
+            if choice == "1":
+                return {"name": "Main User", "email": "main"}
+            elif choice == "2":
+                return {"name": "Test User 1", "email": TEST_USER_1_EMAIL}
+            elif choice == "3":
+                return {"name": "Test User 2", "email": TEST_USER_2_EMAIL}
+            else:
+                print(f"  {RED}Invalid choice. Please enter 1, 2, or 3.{RESET}")
+        except KeyboardInterrupt:
+            print("\n\nGoodbye!")
+            sys.exit(0)
+
+
+def get_token_for_user(user_selection: dict) -> str:
+    """Get API key from Vault for single-user OSS mode.
+
+    Args:
+        user_selection: User selection dict (unused in single-user mode)
+
+    Returns:
+        str: API key from Vault
+
+    Raises:
+        RuntimeError: If API key cannot be retrieved
+    """
+    try:
+        api_key = get_api_key('mira_api')
+        if not api_key:
+            raise RuntimeError("API key 'mira_api' not found in Vault")
+        return api_key
+    except Exception as e:
+        raise RuntimeError(f"Failed to retrieve API key from Vault: {e}")
 
 
 def one_shot(token: str, message: str) -> None:
@@ -368,34 +529,44 @@ Examples:
     # Auto-start server only for interactive mode
     server_started = False
     if not args.headless:
-        # Interactive mode - clear screen for clean interface
-        clear_screen()
+        # Interactive mode - show boot screen
+        show_boot_screen()
 
         # Start server if needed
         if not is_api_running():
-            print(f"{CYAN}Starting MIRA API server...{RESET}")
+            # Center the startup message
+            move_cursor_to_center(2)  # Account for message + loading indicator
+            print_centered("Starting MIRA API server...", CYAN)
 
             try:
                 start_api_server()
                 server_started = True
 
-                # Show loading indicator while waiting for server
-                indicator = LoadingIndicator()
+                # Show centered loading indicator while waiting for server
+                indicator = LoadingIndicator(centered=True)
                 indicator.start()
 
                 if not wait_for_api_ready():
                     indicator.stop()
-                    print(f"\n✗ Server failed to start within {SERVER_STARTUP_TIMEOUT} seconds", file=sys.stderr)
+                    clear_screen()
+                    move_cursor_to_center(1)
+                    print_centered(f"✗ Server failed to start within {SERVER_STARTUP_TIMEOUT} seconds", "")
                     shutdown_server()
                     sys.exit(1)
 
                 indicator.stop()
-                print(f"{GREEN}✓{RESET} MIRA API server ready\n")
+                clear_screen()
+                move_cursor_to_center(1)
+                print_centered(f"✓ MIRA API server ready", GREEN)
+                time.sleep(1)
+                clear_screen()
 
             except Exception as e:
                 if 'indicator' in locals():
                     indicator.stop()
-                print(f"\n✗ Failed to start API server: {e}", file=sys.stderr)
+                clear_screen()
+                move_cursor_to_center(1)
+                print_centered(f"✗ Failed to start API server: {e}", "")
                 shutdown_server()
                 sys.exit(1)
 
@@ -403,6 +574,9 @@ Examples:
             atexit.register(shutdown_server)
             signal.signal(signal.SIGINT, lambda sig, frame: (shutdown_server(), sys.exit(0)))
             signal.signal(signal.SIGTERM, lambda sig, frame: (shutdown_server(), sys.exit(0)))
+        else:
+            # Server already running - just clear screen for chat
+            clear_screen()
 
     try:
         # Get token from Vault

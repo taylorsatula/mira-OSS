@@ -54,7 +54,7 @@ class WeatherToolConfig(BaseModel):
     """
     # Standard configuration parameter - all tools should include this
     enabled: bool = Field(
-        default=True, 
+        default=False,
         description="Whether this tool is enabled by default"
     )
     
@@ -467,7 +467,9 @@ class WeatherTool(Tool):
     """
     
     name = "weather_tool"
-    
+
+    simple_description = "Get weather forecasts and heat stress analysis for any location."
+
     anthropic_schema = {
         "name": "weather_tool",
         "description": "Retrieves weather forecast data and calculates heat stress indices for specified locations. Use this tool to get weather forecasts, heat stress information, and related data for planning field work activities based on expected weather conditions.",
@@ -520,41 +522,6 @@ class WeatherTool(Tool):
             }
         }
 
-    description = """
-    Retrieves weather forecast data and calculates heat stress indices for specified locations.
-    Use this tool to get weather forecasts, heat stress information, and related data for planning
-    field work activities based on expected weather conditions.
-    
-    OPERATIONS:
-    - get_forecast: Retrieves weather forecast data for a specific location
-      Parameters:
-        latitude (required): Latitude of the location (-90 to 90)
-        longitude (required): Longitude of the location (-180 to 180)
-        forecast_type (optional): Type of forecast to retrieve (hourly, daily). Default is hourly.
-        forecast_days (optional): Number of days to include in the forecast (1-16). Default is 7 days.
-        date (optional): Specific date for forecast in ISO format (YYYY-MM-DD). If not provided, returns forecast from current date.
-        parameters (optional): Specific parameters to retrieve, comma-separated or as a list. If not provided, returns all available parameters.
-        
-    - get_heat_stress: Retrieves weather data and calculates heat stress indices for a specific location
-      Parameters:
-        latitude (required): Latitude of the location (-90 to 90)
-        longitude (required): Longitude of the location (-180 to 180)
-        forecast_type (optional): Type of forecast to retrieve (hourly, daily). Default is hourly.
-        forecast_days (optional): Number of days to include in the forecast (1-16). Default is 7 days.
-        date (optional): Specific date for forecast in ISO format (YYYY-MM-DD). If not provided, returns forecast from current date.
-        parameters (optional): Additional specific parameters to retrieve beyond those needed for heat stress calculation.
-    
-    RESPONSE FORMAT:
-    - For get_forecast operations: Weather data including requested parameters
-    - For get_heat_stress operations: Weather data plus WBGT values and heat stress risk levels
-    
-    LIMITATIONS:
-    - Forecasts are limited to 16 days into the future (default is 7 days)
-    - Historical data is not available through this tool
-    - Heat stress calculations are approximations and should be used as guidance, not as definitive safety indicators
-    - Some parameters may not be available for all locations or time periods
-    """
-    
     # Common hourly parameters available in the API
     _available_hourly_params = [
         "temperature_2m", "relative_humidity_2m", "dew_point_2m", "apparent_temperature",
@@ -592,135 +559,7 @@ class WeatherTool(Tool):
         "temperature_2m", "wet_bulb_temperature_2m", 
         "shortwave_radiation", "wind_speed_10m"
     ]
-    
-    usage_examples = [
-        {
-            "input": {
-                "operation": "get_forecast",
-                "latitude": 34.7304,
-                "longitude": -86.5859,
-                "forecast_type": "hourly",
-                "parameters": "temperature_2m,precipitation,wind_speed_10m"
-            },
-            "output": {
-                "success": True,
-                "location": {
-                    "latitude": 34.7304,
-                    "longitude": -86.5859
-                },
-                "forecast_type": "hourly",
-                "forecast": {
-                    "hourly": {
-                        "time": ["2025-05-06T00:00", "2025-05-06T01:00"],
-                        "temperature_2m": [12.7, 12.2],
-                        "precipitation": [0, 0],
-                        "wind_speed_10m": [6.7, 6.6]
-                    },
-                    "hourly_units": {
-                        "temperature_2m": "°C",
-                        "precipitation": "mm",
-                        "wind_speed_10m": "km/h"
-                    }
-                }
-            }
-        },
-        {
-            "input": {
-                "operation": "get_heat_stress",
-                "latitude": 34.7304,
-                "longitude": -86.5859
-            },
-            "output": {
-                "success": True,
-                "location": {
-                    "latitude": 34.7304,
-                    "longitude": -86.5859
-                },
-                "forecast_type": "hourly",
-                "forecast": {
-                    "hourly": {
-                        "time": ["2025-05-06T12:00", "2025-05-06T13:00"],
-                        "temperature_2m": [20.6, 21.4],
-                        "wet_bulb_temperature_2m": [14.9, 15.0],
-                        "shortwave_radiation": [955.0, 997.5],
-                        "wind_speed_10m": [4.0, 2.2],
-                        "wbgt": [16.2, 17.1],
-                        "heat_stress_risk": ["Low", "Low"]
-                    },
-                    "hourly_units": {
-                        "temperature_2m": "°C",
-                        "wet_bulb_temperature_2m": "°C",
-                        "shortwave_radiation": "W/m²",
-                        "wind_speed_10m": "km/h",
-                        "wbgt": "°C"
-                    }
-                }
-            }
-        },
-        {
-            "input": {
-                "operation": "get_forecast",
-                "location": "New York",
-                "forecast_type": "daily",
-                "forecast_days": 3,
-                "parameters": "temperature_2m_max,temperature_2m_min,precipitation_sum"
-            },
-            "output": {
-                "success": True,
-                "location": {
-                    "latitude": 40.7128,
-                    "longitude": -74.0060
-                },
-                "forecast_type": "daily",
-                "forecast": {
-                    "daily": {
-                        "time": ["2025-05-06", "2025-05-07", "2025-05-08"],
-                        "temperature_2m_max": [18.2, 20.1, 19.5],
-                        "temperature_2m_min": [8.4, 10.2, 9.8],
-                        "precipitation_sum": [0.2, 1.5, 0.0]
-                    },
-                    "daily_units": {
-                        "temperature_2m_max": "°C",
-                        "temperature_2m_min": "°C",
-                        "precipitation_sum": "mm"
-                    }
-                }
-            }
-        },
-        {
-            "input": {
-                "operation": "get_heat_stress",
-                "location": "Phoenix, Arizona"
-            },
-            "output": {
-                "success": True,
-                "location": {
-                    "latitude": 33.4484,
-                    "longitude": -112.0740
-                },
-                "forecast_type": "hourly",
-                "forecast": {
-                    "hourly": {
-                        "time": ["2025-05-06T12:00", "2025-05-06T13:00"],
-                        "temperature_2m": [38.6, 39.4],
-                        "wet_bulb_temperature_2m": [28.2, 28.8],
-                        "shortwave_radiation": [1055.0, 1097.5],
-                        "wind_speed_10m": [8.0, 6.2],
-                        "wbgt": [32.8, 33.5],
-                        "heat_stress_risk": ["Extreme", "Extreme"]
-                    },
-                    "hourly_units": {
-                        "temperature_2m": "°C",
-                        "wet_bulb_temperature_2m": "°C",
-                        "shortwave_radiation": "W/m²",
-                        "wind_speed_10m": "km/h",
-                        "wbgt": "°C"
-                    }
-                }
-            }
-        }
-    ]
-    
+
     def __init__(self):
         """Initialize the weather tool."""
         super().__init__()

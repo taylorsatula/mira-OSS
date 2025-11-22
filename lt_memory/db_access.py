@@ -75,11 +75,19 @@ class LTMemoryDB:
 
         Raises:
             ValueError: If no user_id available from either source
+            RuntimeError: If ambient context lookup fails when user_id is None
         """
-        resolved = user_id or get_current_user_id()
-        if not resolved:
-            raise ValueError("No user_id provided and no ambient user context available")
-        return resolved
+        if user_id is not None:
+            return str(user_id)  # Convert UUID to string if needed
+
+        # Only attempt ambient context lookup when user_id truly absent
+        try:
+            return get_current_user_id()
+        except RuntimeError:
+            raise ValueError(
+                "No user_id provided and no ambient user context available. "
+                "Scheduled tasks must pass explicit user_id."
+            )
 
     @contextmanager
     def transaction(self, user_id: Optional[str] = None):
@@ -1471,6 +1479,30 @@ class LTMemoryDB:
             updates['batch_id'] = str(batch_id)
             session.execute_update(query, updates)
 
+    def increment_extraction_batch_retry(
+        self,
+        batch_id: UUID,
+        user_id: Optional[str] = None
+    ) -> None:
+        """
+        Increment retry counter for extraction batch.
+
+        Used to track processing attempts and prevent infinite retry loops.
+
+        Args:
+            batch_id: Batch UUID
+            user_id: User ID (uses ambient context if None)
+        """
+        resolved_user_id = self._resolve_user_id(user_id)
+
+        with self.session_manager.get_session(resolved_user_id) as session:
+            query = """
+            UPDATE extraction_batches
+            SET retry_count = retry_count + 1
+            WHERE id = %(batch_id)s
+            """
+            session.execute_update(query, {'batch_id': str(batch_id)})
+
     def delete_extraction_batch(
         self,
         batch_id: UUID,
@@ -1492,6 +1524,39 @@ class LTMemoryDB:
                 WHERE id = %(batch_id)s
                 """
                 session.execute_update(query, {'batch_id': str(batch_id)})
+
+    def cleanup_old_extraction_batches(
+        self,
+        retention_hours: int,
+        user_id: Optional[str] = None
+    ) -> int:
+        """
+        Delete extraction batches in terminal states older than retention period.
+
+        Terminal states: failed, expired, cancelled
+
+        Args:
+            retention_hours: Hours to retain terminal-state batches
+            user_id: User ID (uses ambient context if None)
+
+        Returns:
+            Number of batches deleted
+        """
+        resolved_user_id = self._resolve_user_id(user_id)
+
+        with self.session_manager.get_session(resolved_user_id) as session:
+            with session.transaction():
+                query = """
+                DELETE FROM extraction_batches
+                WHERE user_id = %(user_id)s
+                  AND status IN ('failed', 'expired', 'cancelled')
+                  AND created_at < NOW() - INTERVAL '%(retention_hours)s hours'
+                """
+                result = session.execute_update(query, {
+                    'user_id': resolved_user_id,
+                    'retention_hours': retention_hours
+                })
+                return result
 
     # ==================== RELATIONSHIP BATCH TRACKING ====================
 
@@ -1613,6 +1678,30 @@ class LTMemoryDB:
             updates['batch_id'] = str(batch_id)
             session.execute_update(query, updates)
 
+    def increment_relationship_batch_retry(
+        self,
+        batch_id: UUID,
+        user_id: Optional[str] = None
+    ) -> None:
+        """
+        Increment retry counter for relationship batch.
+
+        Used to track processing attempts and prevent infinite retry loops.
+
+        Args:
+            batch_id: Batch UUID
+            user_id: User ID (uses ambient context if None)
+        """
+        resolved_user_id = self._resolve_user_id(user_id)
+
+        with self.session_manager.get_session(resolved_user_id) as session:
+            query = """
+            UPDATE post_processing_batches
+            SET retry_count = retry_count + 1
+            WHERE id = %(batch_id)s
+            """
+            session.execute_update(query, {'batch_id': str(batch_id)})
+
     def delete_relationship_batch(
         self,
         batch_id: UUID,
@@ -1634,6 +1723,94 @@ class LTMemoryDB:
                 WHERE id = %(batch_id)s
                 """
                 session.execute_update(query, {'batch_id': str(batch_id)})
+
+    def cleanup_old_relationship_batches(
+        self,
+        retention_hours: int,
+        user_id: Optional[str] = None
+    ) -> int:
+        """
+        Delete relationship batches in terminal states older than retention period.
+
+        Terminal states: failed, expired, cancelled
+
+        Args:
+            retention_hours: Hours to retain terminal-state batches
+            user_id: User ID (uses ambient context if None)
+
+        Returns:
+            Number of batches deleted
+        """
+        resolved_user_id = self._resolve_user_id(user_id)
+
+        with self.session_manager.get_session(resolved_user_id) as session:
+            with session.transaction():
+                query = """
+                DELETE FROM post_processing_batches
+                WHERE user_id = %(user_id)s
+                  AND status IN ('failed', 'expired', 'cancelled')
+                  AND created_at < NOW() - INTERVAL '%(retention_hours)s hours'
+                """
+                result = session.execute_update(query, {
+                    'user_id': resolved_user_id,
+                    'retention_hours': retention_hours
+                })
+                return result
+
+    def get_extraction_timestamp(self, user_id: Optional[str] = None) -> Optional[datetime]:
+        """
+        Get the last extraction timestamp for incremental processing.
+
+        Args:
+            user_id: User ID (uses ambient context if None)
+
+        Returns:
+            Last extraction timestamp or None if never run
+        """
+        resolved_user_id = self._resolve_user_id(user_id)
+
+        with self.session_manager.get_admin_session() as session:
+            result = session.execute_single("""
+                SELECT daily_manipulation_last_run
+                FROM users
+                WHERE id = %(user_id)s
+            """, {'user_id': resolved_user_id})
+
+            return result['daily_manipulation_last_run'] if result else None
+
+    def update_extraction_timestamp(self, user_id: Optional[str] = None) -> None:
+        """
+        Update the last extraction timestamp for incremental processing.
+
+        This timestamp tracks when extraction last ran so the system knows
+        which messages are "new" for incremental extraction.
+
+        Args:
+            user_id: User ID to update (uses ambient context if None)
+        """
+        resolved_user_id = self._resolve_user_id(user_id)
+
+        with self.session_manager.get_admin_session() as session:
+            session.execute_update("""
+                UPDATE users
+                SET daily_manipulation_last_run = %(timestamp)s
+                WHERE id = %(user_id)s
+            """, {'timestamp': utc_now(), 'user_id': resolved_user_id})
+
+    def get_users_with_memory_enabled(self) -> List[Dict[str, Any]]:
+        """
+        Get all users with memory extraction enabled.
+
+        Returns:
+            List of user dictionaries with id, email, and memory settings
+        """
+        with self.session_manager.get_admin_session() as session:
+            return session.execute_query("""
+                SELECT id, email, memory_manipulation_enabled, daily_manipulation_last_run, timezone
+                FROM users
+                WHERE memory_manipulation_enabled = TRUE
+                AND is_active = TRUE
+            """)
 
     def cleanup(self):
         """

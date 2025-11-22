@@ -238,11 +238,14 @@ class LTMemorySession:
         """Exit session context - handle transactions and return connection."""
         if self._closed:
             return
-        
+
         try:
-            if exc_type and self._transaction_depth > 0:
+            if exc_type:
+                # Rollback on exception regardless of transaction depth
                 self._conn.rollback()
-            elif self._transaction_depth > 0:
+            else:
+                # Always commit on success (matches AdminSession behavior)
+                # PostgreSQL connection pool requires explicit commits
                 self._conn.commit()
         except Exception as e:
             logger.error(f"Error during session cleanup: {e}")

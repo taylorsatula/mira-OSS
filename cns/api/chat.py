@@ -2,16 +2,18 @@
 Chat API endpoint - simple request/response over HTTP.
 
 Provides a non-streaming JSON API to send a user message and receive
-the assistant's response plus structured metadata.
+the assistant's response plus structured metadata. Authenticated via
+Bearer token (header) or session cookie.
 """
 import base64
 import logging
 from typing import Dict, Any, Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from main import get_current_user
 from utils.distributed_lock import UserRequestLock
 from utils.text_sanitizer import sanitize_message_content
 from utils.timezone_utils import utc_now, format_utc_iso
@@ -146,15 +148,12 @@ class ChatEndpoint(BaseHandler):
 
 
 @router.post("/chat")
-async def chat_endpoint(request: ChatRequest):
+async def chat_endpoint(request: ChatRequest, current_user=Depends(get_current_user)):
     """Send a message and receive assistant response as JSON."""
-    from utils.user_context import get_current_user_id
-
     try:
-        user_id = get_current_user_id()
         handler = ChatEndpoint()
         response = handler.handle_request(
-            user_id=user_id,
+            user_id=current_user["user_id"],
             message=request.message,
             image=request.image,
             image_type=request.image_type,

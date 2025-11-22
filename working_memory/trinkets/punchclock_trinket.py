@@ -40,10 +40,10 @@ class PunchclockTrinket(EventAwareTrinket):
         if not running and not paused and not completed:
             return ""
 
-        content_lines: List[str] = ["# Punchclock Overview"]
+        content_lines: List[str] = ["=== PUNCHCLOCK OVERVIEW ==="]
 
         if running:
-            content_lines.append("## Running Sessions")
+            content_lines.append("= RUNNING SESSIONS =")
             for item in running:
                 line = self._format_running_entry(item, user_tz)
                 content_lines.append(line)
@@ -52,7 +52,7 @@ class PunchclockTrinket(EventAwareTrinket):
                     content_lines.append(note_line)
 
         if paused:
-            content_lines.append("## Paused Sessions")
+            content_lines.append("= PAUSED SESSIONS =")
             for item in paused:
                 line = self._format_paused_entry(item, user_tz)
                 content_lines.append(line)
@@ -61,7 +61,7 @@ class PunchclockTrinket(EventAwareTrinket):
                     content_lines.append(note_line)
 
         if completed:
-            content_lines.append("## Recently Completed")
+            content_lines.append("= RECENTLY COMPLETED =")
             for item in completed[:3]:
                 line = self._format_completed_entry(item, user_tz)
                 content_lines.append(line)

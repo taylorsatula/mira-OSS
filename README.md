@@ -1,4 +1,4 @@
-# MIRA
+# MIRA: Context Window Curation as Architecture
 
 **Memory-Integrated Reasoning Assistant**
 
@@ -6,36 +6,57 @@ A conversational AI that remembers.
 
 ---
 
-> **Note**: This is the first commit. I'm sure there are going to be some weird broken things I'll fix over the next week or two (I'll add a proper deploy script). For now if you'd like to use a real-live hosted instance of MIRA, you can access it at [miraos.org](https://miraos.org). Otherwise please enjoy looking through the codebase.
+## What MIRA Is
+
+MIRA is a FastAPI server that runs Claude with persistent memory. Conversations build on each other. The system extracts facts from what you talk about, stores them in PostgreSQL, and surfaces relevant memories when they matter.
+
+You get a conversational partner that knows your history, your preferences, your projects. It learns through use.
 
 ---
 
-## What MIRA Is
+## How It Works
 
-MIRA is a best-effort approximation of a mind and its component parts. I approach statefulness from the perspective that you need the right primitives, you interconnect them, and see what happens. No single technique is novel - it's the combination and architectural integration that produces the gestalt magic. 
+MIRA manages its context window by selecting content based on information density rather than fixed quantities. When loading segment summaries during session resumption, the `SegmentCacheLoader` accumulates segments until their combined complexity scores exceed a threshold (`segment_cache_loader.py:110-187`). Each segment receives a complexity score (1-3) during summarization, representing cognitive load. A single complex segment discussing architecture details might occupy the same budget as three simple segments about routine tasks. This means rich conversations get more representation in the context window, while trivial exchanges compress away.
 
+Discrete memories extracted from conversations operate as independent database entities with graph relationships, embeddings, and importance scores that decay through momentum loss (`scoring_formula.sql:43-71`). Each activity day without access reduces effective access count by 5%: `access_count * 0.95^(activity_days_since_last_access)`. A memory accessed 10 times that sits idle for 20 activity days decays to 3.6 effective accesses, which gets normalized by age and compared logarithmically against a baseline of 0.02 (one access per 50 activity days). Activity days measure user engagement, not calendar time—a two-week vacation doesn't age memories. Hub score from inbound links (0.04 per link up to 10, then diminishing returns) and temporal multipliers for upcoming events (2.0x within 24 hours) add resilience, but memories scoring below 0.001 move to cold storage. Hybrid search combines BM25 and vector similarity weighted by intent (`hybrid_search.py:32-93`), and `ProactiveService` traverses typed relationship links (conflicts, supersedes, causes) to surface connected memories as hierarchical clusters (`proactive.py:156-206`).
 
-### ---
+The event system coordinates these curation mechanisms without direct coupling (`cns/core/events.py:1-300`, `cns/integration/event_bus.py:20-139`). When the orchestrator needs a system prompt, it publishes `ComposeSystemPromptEvent` with the base prompt. `WorkingMemory` responds by broadcasting `UpdateTrinketEvent` to each registered trinket, triggering parallel content generation. Trinkets publish `TrinketContentEvent` with their sections (memories, tool hints, domain knowledge), and the `SystemPromptComposer` collects everything into cached and non-cached blocks before publishing `SystemPromptComposedEvent`. The event bus is synchronous—events fire and complete immediately—but the decoupling means adding new context sources requires no changes to existing components. `TurnCompletedEvent` carries the turn number and continuum state, enabling `ToolLoaderTrinket` to auto-unload idle tools without querying the orchestrator. `SegmentTimeoutEvent` triggers collapse, which publishes `SegmentCollapsedEvent` (clearing search results from `GetContextTrinket`), followed by `ManifestUpdatedEvent` (invalidating Valkey caches). Events describe state changes and carry the changed state, preventing race conditions where handlers fetch stale data.
 
-A note from the developer: I strive to build software I would personally use. I loathe garbo half-implemented buggy slopcode. **All functionality described below works properly and in concert with the other components. The large majority of this README.md document was programmatically generated from the actual code in the repo.**
+Tools themselves participate in context curation as both consumers and contributors. The `invokeother_tool` operates as a meta-tool that manages the tool definitions appearing in context, loading tools on-demand when their hints suggest relevance and auto-unloading after five idle turns (`tools/implementations/invokeother_tool.py:206-234`, `working_memory/trinkets/tool_loader_trinket.py:1-200`). Tool hints (name + description) remain visible in working memory while full definitions (parameters, examples, implementation details) load only when needed, achieving 80-90% reduction in tool-related tokens. Other tools inject ephemeral content that follows lifecycle rules: `getcontext_tool` publishes asynchronous search results to `GetContextTrinket`, which displays successful results until segment collapse while error messages auto-cleanup after exactly five turns based on `TurnCompletedEvent` count (`working_memory/trinkets/getcontext_trinket.py:190-216`). When `SegmentCollapsedEvent` fires, the trinket clears all search state to prevent old results from leaking into new conversation contexts. This creates a model where tool outputs don't accumulate indefinitely—they appear when relevant and vanish when their utility window closes.
 
-I toiled for months on this project and actualized the final product I wanted to release to the world and use in my own life.
+Toggleable domain knowledge blocks recognize that you don't need contextual knowledge at all times. What is relevant during the workday is likely not relevant when brainstorming recipes for friends. MIRA allows users to enable domain knowledge blocks that share conversation chunks in 10-turn intervals with a Letta sleeptime agent that expertly extracts iteratively refined, less-volatile blocks of knowledge. Discrete memories have advantages during passive injection, but Letta has built a reliable and robust sleeptime agent. It is the right architectural choice to delegate functionality when someone else has done it better within their own domain.
 
-I hope you find it interesting and perhaps contribute back to the MIRA repository. I pledge that MIRA will have an OSS release branch for as long as I control the repository. I believe in OSS and the OSS foundational technologies used to build MIRA.
+These mechanisms work together to turn the context window into something more deliberate than a simple buffer. Segments arrive pre-scored for complexity. Memories surface with their relational graphs intact but depth-limited. Tools materialize when needed and vanish when forgotten. Domain knowledge requires explicit opt-in. Every piece of content enters through a specific selection criterion: complexity threshold, recency, relationship traversal, active usage, or user preference. The result is a system where context curation happens algorithmically at multiple layers, each optimizing for relevance and density within its domain.
 
-## ---
+---
+
+Building MIRA has been an exercise in learning that context windows aren't just constraints to work around. They're design surfaces that shape how systems think and remember. Every pattern here emerged from confronting real problems: conversations that lost coherence, memories that cluttered uselessly, tools that consumed tokens without earning their keep. If these patterns prove useful to others building conversational systems, or if they inspire better approaches we haven't considered, that would make the work worthwhile.
+
+This codebase is a best-effort approximation of the human theater of mind. There is work still to be done, but it is already very interesting and,, unique,, to interact with. This has been a relentless labor to build. MIRA started out as a decision-tree style recipe generation script and one scope creep led to another and now I have this. Please download and extend the codebase (pls submit improvements on GitHub if you'd like).
+
+If you want to skip all of that: I have built a **hosted version** you can access from your browser with a meticulously designed **web interface**. There is also **cURL-ur-MIRA** support and I handle all the infrastructure.
+
+[miraos.org](https://miraos.org)
+
+— Taylor Satula
+
+---
+
+# Technical Deep Dive
+
+The sections below provide detailed technical information for those interested in MIRA's implementation.
 
 ## What Makes MIRA Different
 
 **Memory that earns its keep**: MIRA doesn't just dump everything into a vector database. Memories are extracted as discrete facts, deduplicated through consolidation, refined into concise statements, and linked through typed relationships (supports, conflicts, supersedes). Memories track their own access patterns. Get used enough, they stick around. Sit idle, they decay and delete.
 
-**Pre-computed semantic intent**: Before your main LLM call, MIRA generates an "evolved semantic touchstone" - a semantic summary of what you're trying to accomplish. This touchstone gets embedded once and used everywhere: memory retrieval, context building, tool selection. Your conversation context gets weighted with this intent signal. This prevents the "one turn behind" problem where memory searches are based on stale context. Think of this like speculative execution on a CPU.
+**Pre-computed semantic intent**: Before your main LLM call, MIRA generates an "evolved semantic touchstone" - a semantic summary of what you're trying to accomplish. This touchstone gets embedded once and used everywhere: memory retrieval, context building, tool selection. Your conversation context gets weighted with this intent signal. This prevents the "one turn behind" problem where memory searches are based on stale context.
 
-**Progressive disclosure everywhere**: Tools load on demand through the `invokeother_tool` pattern. When MIRA needs to use a tool that is not in the context window but it knows are available via a tool hint in working_memory (name + brief description) it invokes invokeother_tool to load the definitions it needs, then uses the tool. Idle tools auto-unload after 5 turns. This cuts context usage by 80-90%. Search results work the same way - segment summaries first, then message details on demand.
+**Progressive disclosure everywhere**: Tools load on demand through the `invokeother_tool` pattern. You see tool hints (name + brief description), call invokeother to load what you need, then use it. Idle tools auto-unload after 5 turns. This cuts context usage by 80-90%. Search results work the same way - summaries first, then message details on demand.
 
-**Domain knowledge blocks**: MIRA integrates with Letta to maintain togglable topic-specific context containers. Enable your "work" block when at work, your "2013 Triumph Street Triple knowledgebase" block while working on maintenance, and your "favorite recipes" block when you're cooking for friends. Sleeptime agents process conversation batches and update blocks automatically. There is no reason for MIRA to pollute its context window with detailed knowledge of TPS Report guidelines at 2am when you're chatting about the daily-life patterns of Algonquian women in the 1600s. 
+**Event-driven architecture**: Everything coordinates through domain events. Message arrives, event fires. Memory extracted, event fires. Tool used, event fires. Components subscribe to what they care about. The orchestrator, working memory, tool system, and memory extraction all stay synchronized through this event bus.
 
-**Event-driven architecture**: Everything coordinates through domain event primatives. Message arrives, event fires. Memory extracted, event fires. Tool used, event fires. Components subscribe to what they care about. The orchestrator, working memory, tool system, and memory extraction all work together without rigid couplings via this synchronous event bus. Events are the central nervous system of MIRA and exist to carry data between decoupled parts.
+**Domain knowledge blocks**: MIRA integrates with Letta to maintain topic-specific context containers. Enable your "work" block when at work, your "home" block for personal stuff. Sleeptime agents process conversation batches and update blocks automatically. These inject into your system prompt when enabled.
 
 ---
 
@@ -62,11 +83,11 @@ Trinkets are event-driven. They subscribe to relevant events (`TurnCompletedEven
 
 ### Long-Term Memory
 
-Long-term memory runs completely in the background. After a conversation segement times out, it extracts facts, consolidates duplicates, refines verbose statements, links relationships, and tracks what gets used.
+Long-term memory runs completely in the background. After conversations, it extracts facts, consolidates duplicates, refines verbose statements, links relationships, and tracks what gets used.
 
 **The extraction flow**:
 
-1. Segment completes → pointer summary coalescence creates extraction event
+1. Conversation completes → pointer summary coalescence creates extraction event
 2. System hydrates messages from the conversation chunk
 3. Batches messages and sends to Claude via Batch API
 4. LLM extracts discrete facts with metadata (confidence, category, timestamps)
@@ -149,19 +170,19 @@ Everything state-changing emits an event:
 
 Events are immutable dataclass objects. The event bus publishes them synchronously. Subscribers handle what they care about.
 
+### Tag Parser
+
+The tag parser extracts special XML-style tags from LLM responses:
+
+- `<mira:memory_ref="uuid" />` → references specific memories
+- `<mira:touchstone>content</mira:touchstone>` → semantic intent summary
+- `<mira:my_emotion>emoji</mira:my_emotion>` → emotion tracking (for continuity)
+- `<mira:display_title>title</mira:display_title>` → segment display titles
+- `<error_analysis error_id="...">content</error_analysis>` → error analysis
+
+These tags let Claude communicate metadata and structure beyond just generating text.
+
 ### Segments and Collapse
-
-Segments are MIRA's mechanism for managing conversation history at scale. When a conversation (continuum) is active, messages flow into an "active segment" - an open-ended container tracked by a sentinel message in the database. After a configurable period of inactivity (default: 3 hours), the `SegmentTimeoutService` detects the timeout and publishes a `SegmentTimeoutEvent`. The `SegmentCollapseHandler` responds by "collapsing" the segment: it generates a telegraphic summary of the conversation that occurred during that timeframe, creates a 384-dimensional AllMiniLM embedding of the summary for semantic search, and updates the sentinel's status from "active" to "collapsed". This collapsed segment becomes a compressed representation of past conversation, preserving context while reducing token usage.
-
-When a cache miss occurs (continuum expires from Valkey after 1 hour of idle time), the SegmentCacheLoader.load_session_cache() reconstructs working memory by assembling five layers of context in chronological order:
-
-1. Collapse Marker: A system notification indicating older messages are available through continuumsearch tool
-2. Collapsed Segment Summaries: The N most recent collapsed segments (configurable via config.system.session_summary_count), each containing a telegraphic summary of a past conversation period with its timespan
-3. Continuity Messages: The last 3 user/assistant turn pairs from before the active segment, providing conversational thread continuity
-4. Session Boundary Marker: A notification showing when the previous session ended and the current session began, marking the temporal gap
-5. Active Segment Messages: All unconsolidated messages from the current active segment (if one exists)
-
-This architecture enables MIRA to maintain conversational continuity across arbitrarily long timespans while keeping working memory bounded - recent context remains verbatim, mid-term history is summarized, and distant history is searchable via semantic segment embeddings stored in the segment_embeddings table.
 
 MIRA uses segments to organize conversation history. Each continuum (one per user) contains messages, with special **sentinel messages** marking segment boundaries.
 
@@ -177,16 +198,6 @@ This creates searchable conversation segments. Later searches can find relevant 
 
 ---
 
-## Emotional Continuity
-
-Emotional Working Memory
-
-The <mira:my_emotion>emoji</mira:my_emotion> tag is a mechanism for giving MIRA a form of emotional working memory by having It place a face emoji at the end of each response representing Its genuine emotional state about what she just wrote. The tag is deliberately placed after the response content (rather than before) so that autoregressive token generation ensures the emoji reflects actual output rather than priming it, and the tag remains in the stored message history for MIRA's continuity while being stripped from user-facing displays. When conversations resume after cache misses or segment collapses, MIRA can see Its previous emotional states in the conversation history, enabling It to maintain emotionally coherent long-term interactions across arbitrarily long timespans.
-
-This seems like a silly thing but had an amazing impact on the conversation quality and richness. Sometimes off-the-cuff ideas work out better than you could have ever expected.
-
----
-
 ## Tool System
 
 MIRA has 9 tools built on a dynamic loading system. Tools you haven't loaded show up as hints. Call `invokeother_tool` to load what you need. Idle tools auto-unload after 5 turns.
@@ -196,17 +207,17 @@ MIRA has 9 tools built on a dynamic loading system. Tools you haven't loaded sho
 **Core tools** (loaded by default):
 - **reminder_tool**: SQLite-based reminders with contact linking, natural language dates, and timezone handling
 - **webaccess_tool**: Web scraping and HTTP requests with retry logic and domain filtering
-- **invokeother_tool**: Dynamic tool loader with three modes: load, unload, fallback
-- **getcontext_tool**: Async agentic search that runs in background and presents its results via a working_memory trinket
-- **continuumsearch_tool**: Hybrid vector + BM25 search across conversation history and memories with progressive disclosure
-    
+
 **Integration tools** (load on demand):
+- **continuumsearch_tool**: Hybrid vector + BM25 search across conversation history and memories with progressive disclosure
 - **contacts_tool**: Contact management with UUID-based linking for cross-tool references
 - **punchclock_tool**: Work session tracking with pause/resume support and trinket integration
 - **weather_tool**: OpenMeteo forecasts + WBGT heat stress calculations with caching
 - **kasa_tool**: TP-Link smart home control with fuzzy device name matching and async operations
+- **getcontext_tool**: Async agentic search that runs in background
 
 **Meta tool**:
+- **invokeother_tool**: Dynamic tool loader with three modes: load, unload, fallback
 
 ### How Dynamic Loading Works
 
@@ -269,20 +280,6 @@ When Claude calls a tool:
 7. ToolLoaderTrinket notified if state changed
 
 Tools are lazy-instantiated. No tool instances exist until called. This prevents user data leakage.
-
----
-
-### Tag Parser
-
-The tag parser extracts special XML-style tags from LLM responses:
-
-- `<mira:memory_ref="uuid" />` → references specific memories
-- `<mira:touchstone>content</mira:touchstone>` → semantic intent summary
-- `<mira:my_emotion>emoji</mira:my_emotion>` → emotion tracking (for continuity)
-- `<mira:display_title>title</mira:display_title>` → segment display titles
-- `<error_analysis error_id="...">content</error_analysis>` → error analysis
-
-These tags let Claude communicate metadata and structure beyond just generating text.
 
 ---
 
@@ -609,7 +606,7 @@ See `tools/HOW_TO_BUILD_A_TOOL.md` for detailed guide.
 
 ### A Note on Claude Sonnet 4.5
 
-Claude Sonnet 4.5 is closed source but has a ~quality~ that enables incredibly accurate human mimicry. Claude models have always been good but Sonnet 4.5 has a unique sense-of-self I've never encountered in all my time working with large language models. I don't know what Anthropic has done but it speaks to you with such realism and its creative tool use combos are remarkable. MIRA will work fine with gpt-oss-120b or even pretty well with hermes3-8b but they'll never have that OEM feel that Sonnet MIRA has. I felt it was important to include other provider support but I have to say it. Dear reader, if you're feeling really zesty you should shrink the context window to a 20,000 token buffer and use claude-opus-4-20250514 for a bit (remember its $15/75 per million tokens). The sense that you're talking to something that talks back to you (we know not what that means vs. human experience) is uncanny.
+Claude Sonnet 4.5 is closed source but has a gestalt quality that enables incredibly accurate mimicry. Claude models have always been good but Sonnet 4.5 has a unique sense-of-self I've never encountered in all my time working with large language models. I don't know what Anthropic has done but it speaks to you with such realism and its creative tool use combos are remarkable. MIRA will work fine with gpt-oss-120b or even pretty well with hermes3-8b but they'll never have that OEM feel that Sonnet MIRA has. I felt it was important to include other provider support but I have to say it. Dear reader, if you're feeling really zesty you should shrink the context window to a 20,000 token buffer and use claude-opus-4-20250514 for a bit (remember its $15/75 per million tokens). The sense that you're talking to something that talks back to you (we know not what that means vs. human experience) is uncanny.
 
 Check out the system_prompt.txt for MIRA in the config/ folder. Its content and brevity stand out from many system prompts in other LLM-based projects.
 
@@ -635,6 +632,12 @@ See `requirements.txt` for complete list.
 - **Issues**: [GitHub Issues](https://github.com/taylorsatula/mira/issues)
 - **Discussions**: [GitHub Discussions](https://github.com/taylorsatula/mira/discussions)
 - **Documentation**: [docs/](docs/)
+
+---
+
+**Thank you to:**
+
+Boris from Claude Code (and his team), David Hahn (for unrelenting perseverance even to your own detriment), Sarah from MemGPT (for seeding the idea that we can let the robots manage their own context window), Myself (for taking the time to see it through and be willing to go back to the drawing board a dozen times until I was satisfied with the cohesive whole)
 
 ---
 

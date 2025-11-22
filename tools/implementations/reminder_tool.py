@@ -46,54 +46,8 @@ class ReminderTool(Tool):
     """
 
     name = "reminder_tool"
-    simple_description = """
-    Manages scheduled reminders with contact information integration. Use this tool when the user
-    wants to create, view, or manage reminders about tasks, follow-ups, or appointments. You can
-    also create internal reminders for yourself using category='internal' to track things you need
-    to remember or follow up on later.
+    simple_description = "Create and manage scheduled reminders. Link reminders to contacts. Query by date (today, tomorrow, upcoming, overdue). Supports both user-facing and internal (MIRA's own) reminders."
 
-    ⏰ IMPORTANT: If a reminder is due/overdue you MUST notify the user in-continuum even if y'all are talking about an unrelated topic. The user CANNOT see the reminders unless you notify them verbally. You MUST interrupt the continuum with an aside and keep it front-of-mind until the user either completes, cancels, or reschedules the reminder. ⏰ """
-    
-    implementation_details = """
-    
-    IMPORTANT: This tool requires parameters to be passed as a JSON string in the "kwargs" field.
-    The tool supports these operations:
-    
-    1. add_reminder: Create a new reminder with a date, description, and optional contact info.
-       - Required: title (brief description), date (when to be reminded)
-       - Optional: description (details), contact_name (will link to existing contact by UUID),
-         category ('user' or 'internal', default 'user')
-       - Use category='internal' for your own reminders that shouldn't be shown to the user
-       - If a contact name is provided, attempts to find matching contact and link by UUID
-       - Returns the created reminder with a unique identifier
-    
-    2. get_reminders: Retrieve reminders for a specific date range.
-       - Required: date_type ("today", "tomorrow", "upcoming", "past", "all", "date" or "range")
-       - Optional: category ('user', 'internal', or 'all', default 'user')
-       - If date_type is "date", requires specific_date parameter
-       - If date_type is "range", requires start_date and end_date parameters
-       - Returns list of reminders matching the criteria with current contact information
-    
-    3. mark_completed: Mark a reminder as completed.
-       - Required: reminder_id (the ID of the reminder to mark as completed)
-       - Returns the updated reminder
-       
-    4. update_reminder: Update an existing reminder's details.
-       - Required: reminder_id (the ID of the reminder to update)
-       - Optional: Any fields to update (title, description, date, contact_name to link)
-       - Returns the updated reminder
-       
-    5. delete_reminder: Remove a reminder.
-       - Required: reminder_id (the ID of the reminder to delete)
-       - Returns confirmation of deletion
-       
-    This tool automatically integrates with the user's contacts when contact names are provided,
-    linking to existing contacts by UUID. Contact details are fetched dynamically when displaying
-    reminders to ensure current information is always shown.
-    """
-    
-    description = simple_description + implementation_details
-    
     anthropic_schema = {
         "name": "reminder_tool",
         "description": "Manages scheduled reminders with contact information integration. Use this tool when the user wants to create, view, or manage reminders about tasks, follow-ups, or appointments. You can also create internal reminders for yourself using category='internal' to track things you need to remember or follow up on later.",
@@ -156,43 +110,6 @@ class ReminderTool(Tool):
                 "additionalProperties": False
             }
         }
-
-    usage_examples = [
-        {
-            "input": {
-                "operation": "add_reminder",
-                "kwargs": "{\"title\": \"Window cleaning follow-up\", \"date\": \"in 3 weeks\", \"description\": \"Call to schedule window cleaning service\", \"contact_name\": \"John Smith\"}"
-            },
-            "output": {
-                "reminder": {
-                    "id": "rem_123456",
-                    "title": "Window cleaning follow-up",
-                    "description": "Call to schedule window cleaning service",
-                    "reminder_date": "2025-05-13T12:00:00",
-                    "contact_name": "John Smith",
-                    "contact_email": "john.smith@example.com",
-                    "contact_phone": "256-555-1234"
-                }
-            }
-        },
-        {
-            "input": {
-                "operation": "get_reminders",
-                "kwargs": "{\"date_type\": \"upcoming\"}"
-            },
-            "output": {
-                "reminders": [
-                    {
-                        "id": "rem_123456",
-                        "title": "Window cleaning follow-up",
-                        "description": "Call to schedule window cleaning service",
-                        "reminder_date": "2025-05-13T12:00:00",
-                        "contact_name": "John Smith"
-                    }
-                ]
-            }
-        }
-    ]
 
     def __init__(self):
         """Initialize the reminder tool with SQLite storage."""
@@ -581,27 +498,62 @@ class ReminderTool(Tool):
             "message": f"Found {len(reminder_list)} reminder(s) {date_description}"
         }
 
+    def _get_reminder_not_found_error(self, reminder_id: str) -> str:
+        """
+        Generate a helpful error message when a reminder is not found.
+
+        Args:
+            reminder_id: The ID that was not found
+
+        Returns:
+            Error message string with available reminder IDs
+        """
+        # Get active reminders
+        active_reminders = self.db.select('reminders', 'completed = 0')
+
+        error_msg = f"Reminder with ID '{reminder_id}' not found."
+
+        if not active_reminders:
+            error_msg += " No active reminders available."
+        else:
+            # Format available reminders
+            available = []
+            for r in active_reminders[:5]:  # Show first 5
+                title = r.get('encrypted__title', 'Untitled')
+                available.append(f"  - {r['id']}: {title}")
+
+            error_msg += f"\n\nAvailable active reminders ({len(active_reminders)} total):\n"
+            error_msg += "\n".join(available)
+
+            if len(active_reminders) > 5:
+                error_msg += f"\n  ... and {len(active_reminders) - 5} more"
+
+        return error_msg
+
     def _mark_completed(self, reminder_id: str) -> Dict[str, Any]:
         """
         Mark a reminder as completed.
-        
+
         Args:
             reminder_id: ID of the reminder to mark as completed
-            
+
         Returns:
             Dict containing the updated reminder
-            
+
         Raises:
             ValueError: If reminder_id is invalid or not found
         """
-        
+
         # Find the reminder
         reminders = self.db.select('reminders', 'id = :id', {'id': reminder_id})
-        
+
         if not reminders:
             self.logger.error(f"Reminder with ID '{reminder_id}' not found")
-            raise ValueError(f"Reminder with ID '{reminder_id}' not found")
-        
+            return {
+                "success": False,
+                "error": "reminder_not_found",
+                "message": f"Reminder '{reminder_id}' not found. Valid reminder IDs start with 'rem_' followed by 8 characters (e.g., 'rem_a1b2c3d4'). You can list all reminders to see valid IDs."
+            }
         # Update reminder
         update_data = {
             'completed': 1,
@@ -652,14 +604,18 @@ class ReminderTool(Tool):
         Raises:
             ValueError: If reminder_id is invalid or not found
         """
-        
+
         # Find the reminder
         reminders = self.db.select('reminders', 'id = :id', {'id': reminder_id})
-        
+
         if not reminders:
             self.logger.error(f"Reminder with ID '{reminder_id}' not found")
-            raise ValueError(f"Reminder with ID '{reminder_id}' not found")
-        
+            return {
+                "success": False,
+                "error": "reminder_not_found",
+                "message": f"Reminder '{reminder_id}' not found. Valid reminder IDs start with 'rem_' followed by 8 characters (e.g., 'rem_a1b2c3d4'). You can list all reminders to see valid IDs."
+            }
+
         # Build update data
         update_data = {}
         changes = []
@@ -737,16 +693,20 @@ class ReminderTool(Tool):
         Raises:
             ValueError: If reminder_id is invalid or not found
         """
-        
+
         # Find the reminder first to get its title for confirmation
         reminders = self.db.select('reminders', 'id = :id', {'id': reminder_id})
-        
+
         if not reminders:
             self.logger.error(f"Reminder with ID '{reminder_id}' not found")
-            raise ValueError(f"Reminder with ID '{reminder_id}' not found")
-        
+            return {
+                "success": False,
+                "error": "reminder_not_found",
+                "message": f"Reminder '{reminder_id}' not found. Valid reminder IDs start with 'rem_' followed by 8 characters (e.g., 'rem_a1b2c3d4'). You can list all reminders to see valid IDs."
+            }
+
         reminder = reminders[0]
-        
+
         # Delete from database
         rows_deleted = self.db.delete(
             'reminders',

@@ -41,13 +41,13 @@ class ToolGuidanceTrinket(EventAwareTrinket):
             return ""
         
         # Generate tool guidance section
-        parts = ["# Tool Usage Tips"]
-        
+        parts = ["=== TOOL USAGE TIPS ==="]
+
         # Add each tool's hints
         for tool_name, hint in sorted(valid_hints.items()):
             # Format tool name nicely (remove _tool suffix)
-            display_name = tool_name.replace('_tool', '').replace('_', ' ').title()
-            parts.append(f"\n## {display_name}")
+            display_name = tool_name.replace('_tool', '').replace('_', ' ').title().upper()
+            parts.append(f"\n= {display_name} =")
             parts.append(hint.strip())
         
         result = "\n".join(parts)

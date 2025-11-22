@@ -16,9 +16,12 @@ logger = logging.getLogger(__name__)
 class ComposerConfig:
     """Configuration for the system prompt composer."""
     section_order: List[str] = field(default_factory=lambda: [
-        'base_prompt',
+        'base_prompt',           # Cached (static system prompt)
+        'user_information',      # Cached (user's overarching knowledge - name, preferences, etc.)
+        'conversation_manifest', # Cached (segment summaries - changes infrequently)
+        # IMPORTANT: All cached trinkets (cache_policy=True) must be sequential above this line
+        # for Claude's prefix caching to work efficiently. Non-cached trinkets go below.
         'datetime_section',
-        'conversation_manifest',
         'active_reminders',
         'punchclock_status',
         'tool_guidance',

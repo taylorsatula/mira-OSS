@@ -201,7 +201,7 @@ class ManifestQueryService:
         grouped = self._group_segments_by_date(segments, user_tz)
 
         # Build ASCII tree
-        lines = ["CONVERSATION MANIFEST"]
+        lines = ["=== CONVERSATION MANIFEST ==="]
 
         date_groups = list(grouped.items())
         for date_idx, (date_label, date_segments) in enumerate(date_groups):
@@ -270,12 +270,12 @@ class ManifestQueryService:
 
             # Determine date label
             if segment_date == today:
-                date_label = "Today"
+                date_label = "TODAY"
             elif segment_date == yesterday:
-                date_label = "Yesterday"
+                date_label = "YESTERDAY"
             else:
-                # Format as "Jan 18" or similar
-                date_label = segment_date.strftime("%b %d")
+                # Format as "JAN 18" or similar
+                date_label = segment_date.strftime("%b %d").upper()
 
             # Add to grouped dict
             if date_label not in grouped:
@@ -311,20 +311,20 @@ class ManifestQueryService:
             start_time_local = convert_from_utc(start_time_utc, timezone)
 
             if status == 'active':
-                # Active segment - show start time and "Active"
-                start_str = start_time_local.strftime("%-I:%M%p").lower()
-                return f"[{start_str} - Active]"
+                # Active segment - show start time and "ACTIVE"
+                start_str = start_time_local.strftime("%-I:%M%p").upper()
+                return f"[{start_str} - ACTIVE]"
             else:
                 # Collapsed segment - show time range
                 if end_time_str:
                     end_time_utc = datetime.fromisoformat(end_time_str)
                     end_time_local = convert_from_utc(end_time_utc, timezone)
 
-                    start_str = start_time_local.strftime("%-I:%M%p").lower()
-                    end_str = end_time_local.strftime("%-I:%M%p").lower()
+                    start_str = start_time_local.strftime("%-I:%M%p").upper()
+                    end_str = end_time_local.strftime("%-I:%M%p").upper()
                     return f"[{start_str} - {end_str}]"
                 else:
-                    start_str = start_time_local.strftime("%-I:%M%p").lower()
+                    start_str = start_time_local.strftime("%-I:%M%p").upper()
                     return f"[{start_str}]"
 
         except Exception as e:

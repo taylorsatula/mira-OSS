@@ -71,13 +71,18 @@ NOTE: Default to **null** when uncertain - sparse, high-confidence links are mor
 
 OUTPUT FORMAT:
 
-Respond with valid JSON only:
+Claude, respond with only a valid JSON object. No additional text, formatting, or markup.
 
+Start your response with { and end with }
+
+Format your response like this:
 {
-  "relationship_type": "conflicts|supersedes|causes|instance_of|invalidated_by|motivated_by|null",
-  "confidence": 0.0-1.0,
-  "reasoning": "Brief explanation of why this relationship was chosen"
+  "relationship_type": "conflicts",
+  "confidence": 0.91,
+  "reasoning": "Mutually exclusive approaches to TypeScript strictness"
 }
+
+Valid relationship_type values: "conflicts", "supersedes", "causes", "instance_of", "invalidated_by", "motivated_by", "null"
 
 EXAMPLES:
 

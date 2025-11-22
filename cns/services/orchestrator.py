@@ -92,7 +92,7 @@ class ContinuumOrchestrator:
     ) -> tuple[Continuum, str, Dict[str, Any]]:
         """
         Process user message through complete continuum flow.
-        
+
         Args:
             continuum: Current continuum state
             user_message: User's input message (string or multimodal content array)
@@ -101,7 +101,7 @@ class ContinuumOrchestrator:
             stream_callback: Callback for streaming chunks
             _tried_loading_all_tools: Internal flag to prevent infinite need_tool loops
             unit_of_work: Optional UnitOfWork for batching persistence operations
-            
+
         Returns:
             Tuple of (updated_continuum, final_response, metadata)
         """
@@ -213,16 +213,29 @@ class ContinuumOrchestrator:
 
         # Pass structured system content
         complete_messages = [{"role": "system", "content": system_blocks}] + messages
-        
+
         # Process through streaming events API
         events = []
         response_text = ""
         raw_response = None
 
+        # Apply thinking budget preference if set
+        llm_kwargs = {}
+        thinking_pref = continuum.thinking_budget_preference
+        if thinking_pref is not None:
+            if thinking_pref == 0:
+                # Explicit disable
+                llm_kwargs['thinking_enabled'] = False
+            else:
+                # Explicit enable with budget
+                llm_kwargs['thinking_enabled'] = True
+                llm_kwargs['thinking_budget'] = thinking_pref
+
         # Collect events from generator
         for event in self.llm_provider.stream_events(
             messages=complete_messages,
-            tools=available_tools
+            tools=available_tools,
+            **llm_kwargs
         ):
             from cns.core.stream_events import TextEvent, ThinkingEvent, CompleteEvent
 
@@ -303,6 +316,11 @@ class ContinuumOrchestrator:
             "referenced_memories": parsed_tags.get('referenced_memories', []),
             "surfaced_memories": [m['id'] for m in surfaced_memories]  # Add surfaced memory IDs
         }
+
+        # Add emotion if present
+        if parsed_tags.get('emotion'):
+            assistant_metadata["emotion"] = parsed_tags['emotion']
+
         assistant_msg_obj, response_events = continuum.add_assistant_message(
             clean_response_text, assistant_metadata
         )

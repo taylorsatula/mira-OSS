@@ -974,12 +974,19 @@ class LLMProvider:
 
             # Execute tools concurrently
             tool_results = []
-            # Capture context to propagate to worker threads
-            ctx = contextvars.copy_context()
+            # Capture context value to propagate to worker threads
+            from utils.user_context import _user_context
+            user_context_value = _user_context.get()
+
+            def invoke_with_context(tool_name: str, tool_input: Dict[str, Any]):
+                """Wrapper that sets context in worker thread without re-entry issues"""
+                _user_context.set(user_context_value)
+                return self.tool_repo.invoke_tool(tool_name, tool_input)
+
             with concurrent.futures.ThreadPoolExecutor() as executor:
-                # Submit all tool executions with context propagation
+                # Submit all tool executions with manual context propagation
                 future_to_tool = {
-                    executor.submit(ctx.run, self.tool_repo.invoke_tool, tc["tool_name"], tc["input"]): tc
+                    executor.submit(invoke_with_context, tc["tool_name"], tc["input"]): tc
                     for tc in tool_calls
                 }
 

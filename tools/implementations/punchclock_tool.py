@@ -129,21 +129,7 @@ class PunchclockTool(Tool):
 
     name = REGISTRY_NAME
 
-    simple_description = (
-        "Track time spent on labelled work sessions. Supports punch in/out, pause, and resume."
-    )
-
-    implementation_details = (
-        "Operations:\n"
-        "- punch_in: start a new session with a label (optional notes and start_time).\n"
-        "- pause: pause a running session.\n"
-        "- resume: resume a paused session.\n"
-        "- punch_out: complete a session.\n"
-        "- status: inspect active/paused/completed sessions.\n"
-        "Times accept ISO strings or offsets like '-5m', '15m ago', '+1h'."
-    )
-
-    description = f"{simple_description}\n\n{implementation_details}"
+    simple_description = "Log work time with labeled sessions. Punch in to start, pause/resume as needed, punch out when done. Supports time offsets like '-10m'. Check status to see active and completed sessions."
 
     anthropic_schema = {
         "name": name,
@@ -196,32 +182,6 @@ class PunchclockTool(Tool):
                 "additionalProperties": False,
             },
         }
-
-    usage_examples = [
-        {
-            "input": {
-                "operation": "punch_in",
-                "kwargs": json.dumps({"label": "Weekly planning", "start_time": "now"}),
-            },
-            "output": {
-                "session": {
-                    "status": "running",
-                    "label": "Weekly planning",
-                }
-            },
-        },
-        {
-            "input": {
-                "operation": "status",
-                "kwargs": json.dumps({"include_completed": False}),
-            },
-            "output": {
-                "running": [],
-                "paused": [],
-                "completed": [],
-            },
-        },
-    ]
 
     tool_hints = (
         "Use punchclock_tool to keep lightweight time logs: punch_in with a label, pause/resume as needed,"

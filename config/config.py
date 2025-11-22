@@ -61,11 +61,14 @@ class ApiServerConfig(BaseModel):
     workers: int = Field(default=1, description="Number of uvicorn workers")
     log_level: str = Field(default="warning", description="Log level for uvicorn server")
     enable_cors: bool = Field(default=True, description="Enable CORS middleware")
-    cors_origins: List[str] = Field(default=["*"], description="Allowed CORS origins")
+    cors_origins: List[str] = Field(
+        default=["https://miraos.org", "http://localhost:1993", "http://127.0.0.1:1993"],
+        description="Allowed CORS origins (production and local development)"
+    )
     request_timeout: int = Field(default=300, description="Request timeout in seconds")
     rate_limit_rpm: int = Field(default=10, description="Maximum API requests per minute")
     burst_limit: int = Field(default=5, description="Maximum number of requests allowed in a burst")
-    extended_thinking: bool = Field(default=True, description="Whether to enable extended thinking capability")
+    extended_thinking: bool = Field(default=False, description="Whether to enable extended thinking capability")
     extended_thinking_budget: int = Field(default=1024, description="Token budget for extended thinking when enabled (min: 1024)")
 
 
@@ -91,13 +94,12 @@ class ToolConfig(BaseModel):
     """Tool-related configuration settings."""
 
     enabled: bool = Field(default=True, description="Whether tools are enabled")
-    auto_discovery: bool = Field(default=True, description="Whether automatic tool discovery is enabled")
     timeout: int = Field(default=30, description="Default timeout in seconds for tool operations")
-    essential_tools: List[str] = Field(default=["webaccess_tool", "reminder_tool", "invokeother_tool"], description="List of essential tools to always load")
+    essential_tools: List[str] = Field(default=["webaccess_tool", "reminder_tool", "invokeother_tool"], description="List of essential tools (warns if disabled)")
     invokeother_tool: InvokeOtherToolConfig = Field(default_factory=InvokeOtherToolConfig, description="Configuration for the invokeother_tool dynamic loader")
     # Synthetic data generator settings
     synthetic_data_analysis_model: str = Field(default="claude-3-7-sonnet-20250219", description="LLM model to use for code analysis and example review in synthetic data analysis")
-    synthetic_data_generation_model: str = Field(default="claude-3-5-haiku-20241022", description="LLM model to use for example generation in synthetic data generation")
+    synthetic_data_generation_model: str = Field(default="claude-haiku-4-5", description="LLM model to use for example generation in synthetic data generation")
     # Synthetic data now uses unified BGE-M3 for deduplication
 
 class EmbeddingsFastModelConfig(BaseModel):
@@ -156,7 +158,7 @@ class DomainKnowledgeConfig(BaseModel):
 class SystemConfig(BaseModel):
     """System-level configuration settings."""
 
-    log_level: str = Field(default="DEBUG", description="Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)")
+    log_level: str = Field(default="INFO", description="Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)")
     timezone: str = Field(default="America/Chicago", description="Default timezone for date/time operations (must be a valid IANA timezone name like 'America/New_York', 'Europe/London')")
     streaming: bool = Field(default=True, description="Whether to stream responses from the API")
     json_indent: int = Field(default=2, description="Indentation level for JSON output")
@@ -173,8 +175,19 @@ class SystemConfig(BaseModel):
     manifest_cache_ttl: int = Field(default=3600, description="TTL for manifest cache in seconds (1 hour default)")
     manifest_summary_truncate_length: int = Field(default=60, description="Maximum characters for segment summary in manifest display")
 
-    # Session Cache Settings
-    session_summary_count: int = Field(default=3, description="Number of recent segment summaries to load for new sessions")
+    # Session Cache Settings (Complexity-Based Loading)
+    session_summary_complexity_limit: int = Field(
+        default=8,
+        description="Maximum total complexity score for loaded segment summaries (accumulates until limit reached)"
+    )
+    session_summary_max_count: int = Field(
+        default=5,
+        description="Maximum number of segment summaries to load regardless of complexity"
+    )
+    session_summary_query_window: int = Field(
+        default=9,
+        description="Number of recent segments to query for complexity-based selection"
+    )
 
 
 # ============================================================================
@@ -237,15 +250,32 @@ class BatchingConfig(BaseModel):
     )
     max_chunk_size: int = Field(
         default=100,
-        description="Maximum messages per processing chunk"
+        description="Maximum messages per processing chunk for boot extraction"
+    )
+    segment_chunk_size: int = Field(
+        default=40,
+        description="Maximum messages per chunk for segment-based extraction (smaller chunks for better quality)"
     )
     boot_check_enabled: bool = Field(
         default=True,
         description="Whether to run extraction sweep on application boot"
     )
-    min_messages_for_extraction: int = Field(
+    min_messages_for_boot_extraction: int = Field(
         default=20,
-        description="Minimum messages required before running extraction for a user"
+        description="Minimum messages required before running boot extraction (segment extraction has no minimum)"
+    )
+    max_retry_count: int = Field(
+        default=3,
+        description="Maximum retry attempts for failed batch processing before permanent failure"
+    )
+    # Batch processing timeouts and limits
+    batch_max_age_hours: int = Field(
+        default=48,
+        description="Maximum age in hours for batches to poll (Anthropic results expire after 24h)"
+    )
+    batch_processing_timeout_seconds: int = Field(
+        default=300,
+        description="Maximum seconds to spend processing a single batch result (5 minutes)"
     )
     relationship_model: str = Field(
         default="claude-3-5-haiku-20241022",

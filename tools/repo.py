@@ -505,20 +505,29 @@ class ToolRepository:
                 self.register_tool_class(attr, attr.name)
     
     def enable_tools_from_config(self) -> None:
+        """Enable only essential tools at startup. Other tools loaded on-demand via invokeother_tool."""
         config = get_config()
-        auto_discovery = config.tools.auto_discovery
+        essential_tools = config.tools.essential_tools
 
-        if auto_discovery:
-            self.logger.info("Auto-discovery ON: Enabling all discovered tools")
-            self.enable_all_tools()
-        else:
-            # Manual mode: only enable explicitly configured essential tools
-            # Essential tools must enable successfully or startup fails
-            essential_tools = config.tools.essential_tools
-            self.logger.info(f"Auto-discovery OFF: Enabling only essential tools: {essential_tools}")
+        self.logger.info(f"Enabling essential tools at startup: {essential_tools}")
 
-            for name in essential_tools:
+        for name in essential_tools:
+            # Check if tool is actually enabled in its config
+            tool_config = getattr(config, name, None)
+            if tool_config is None:
+                self.logger.warning(f"No config found for essential tool {name}, enabling anyway")
                 self.enable_tool(name)
+                continue
+
+            is_enabled = getattr(tool_config, 'enabled', True)
+
+            if is_enabled:
+                self.enable_tool(name)
+            else:
+                self.logger.warning(
+                    f"Essential tool {name} is disabled in config (enabled=false). "
+                    f"This may break core functionality. Skipping."
+                )
     
     def enable_all_tools(self) -> None:
         self.logger.info("Enabling all registered tools")

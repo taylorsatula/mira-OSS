@@ -86,14 +86,14 @@ Be systematic and thorough."""
         """Get LLM client using execution model from config."""
         from config.config_manager import config
         from clients.llm_provider import GenericProviderClient
-        from auth.vault_manager import vault_manager
+        from clients.vault_client import get_api_key
 
-        api_key = vault_manager.get_secret(config.execution_api_key_name)
+        api_key = get_api_key(config.api.execution_api_key_name)
 
         return GenericProviderClient(
             api_key=api_key,
-            model=config.execution_model,
-            api_endpoint=config.execution_endpoint,
+            model=config.api.execution_model,
+            api_endpoint=config.api.execution_endpoint,
             temperature=0.3,
             max_tokens=1000
         )
@@ -316,28 +316,19 @@ Return JSON:
 # -------------------- MAIN TOOL CLASS --------------------
 
 class GetContextTool(Tool):
-    """Asynchronous context search across memory, conversations, and web."""
+    """Asynchronous agentic context search across memory, conversations, and web."""
 
     name = "getcontext_tool"
-    simple_description = "searches for context asynchronously across multiple sources"
 
-    description = """
-    Asynchronously searches for contextual information across user memory,
-    conversation history, and the web. Returns immediately while a background
-    agent performs iterative search until sufficient context is found.
-
-    The search agent will:
-    - Decompose your query into search strategies
-    - Search iteratively across different sources
-    - Determine when sufficient context has been found
-    - Summarize findings in a structured format
-
-    Results will appear as a trinket in the conversation when ready.
+    simple_description = """
+    Launches an autonomous search agent that gathers context from conversations, memories, and web.
+    Returns instantly - search runs in background. Use liberally whenever additional context might exist.
+    Agent handles search planning and synthesis automatically. Results appear in context window when ready.
     """
 
     anthropic_schema = {
         "name": "getcontext_tool",
-        "description": "Asynchronously searches for contextual information. Returns immediately while background search runs.",
+        "description": "Launches background search agent across conversations, memories, and web. Returns instantly - agent autonomously plans searches, gathers context, synthesizes findings. Use liberally when additional context might exist. Results appear in context window asynchronously.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -405,6 +396,15 @@ class GetContextTool(Tool):
         if not search_scope:
             search_scope = ['conversation', 'memory', 'web']
 
+        # Publish pending state immediately
+        self._publish_pending_result(
+            continuum_id=continuum_id,
+            task_id=task_id,
+            query=query,
+            search_scope=search_scope,
+            search_mode=search_mode
+        )
+
         # Capture ambient context to propagate to background thread
         from contextvars import copy_context
         ctx = copy_context()
@@ -429,11 +429,16 @@ class GetContextTool(Tool):
 
     def _async_search_worker(self, task_id: str, continuum_id: str,
                            query: str, search_scope: List[str], search_mode: str):
-        """Background worker that performs iterative search.
+        """Background worker that performs iterative search with timeout enforcement.
 
         Note: Runs within copied context from parent thread, so ambient context
         (user_id, etc.) is available via get_current_user_id().
+
+        Thread owns its outcome - publishes success, timeout, or failure events directly.
         """
+        start_time = utc_now()
+        timeout_seconds = self.config.search_result_ttl  # 300 seconds (5 minutes)
+
         try:
             self.logger.info(f"Starting context search {task_id[:8]} for query: {query}")
 
@@ -448,7 +453,7 @@ class GetContextTool(Tool):
             search_plan = agent.plan_search(query, search_scope)
             self.logger.debug(f"Search plan: {search_plan}")
 
-            # Iterative search loop
+            # Iterative search loop with timeout checking
             iteration = 0
             min_iterations = (self.config.deep_completion_threshold
                             if search_mode == 'deep'
@@ -456,6 +461,23 @@ class GetContextTool(Tool):
 
             while iteration < self.config.max_iterations:
                 iteration += 1
+
+                # CHECK TIMEOUT EACH ITERATION
+                elapsed = (utc_now() - start_time).total_seconds()
+                if elapsed > timeout_seconds:
+                    self.logger.warning(
+                        f"Search {task_id[:8]} timed out after {elapsed:.1f}s at iteration {iteration}"
+                    )
+                    self._publish_timeout_result(
+                        continuum_id=continuum_id,
+                        task_id=task_id,
+                        query=query,
+                        iteration=iteration,
+                        elapsed=elapsed,
+                        search_mode=search_mode,
+                        findings_count=len(agent.scratchpad)
+                    )
+                    return  # Exit early on timeout
 
                 # Determine next search
                 next_search = agent.determine_next_search(query, search_plan)
@@ -490,37 +512,31 @@ class GetContextTool(Tool):
             if iteration >= self.config.max_iterations:
                 self.logger.warning(f"Search hit iteration limit of {self.config.max_iterations}")
 
-            # Summarize findings
+            # SUCCESS PATH - Summarize findings
             final_summary = agent.summarize_findings(query)
             final_summary['iterations'] = iteration
             final_summary['search_mode'] = search_mode
             final_summary['task_id'] = task_id
 
-            # Store results in Valkey (get user_id from ambient context)
-            user_id = get_current_user_id()
-            result_key = f"context_search:{user_id}:{task_id}"
-            self.valkey.setex(
-                result_key,
-                self.config.search_result_ttl,
-                json.dumps(final_summary)
-            )
-
             self.logger.info(f"Context search {task_id[:8]} complete with {len(agent.scratchpad)} findings")
 
-            # Trigger trinket update
-            if self.working_memory and self.event_bus:
-                from cns.core.events import UpdateTrinketEvent
-                self.event_bus.publish(UpdateTrinketEvent.create(
-                    continuum_id=continuum_id,
-                    target_trinket='GetContextTrinket',
-                    context={'task_id': task_id}
-                ))
-            else:
-                self.logger.warning("No working memory or event bus available for trinket update")
+            # Publish success result
+            self._publish_success_result(
+                continuum_id=continuum_id,
+                task_id=task_id,
+                summary=final_summary
+            )
 
         except Exception as e:
-            self.logger.error(f"Context search failed: {e}", exc_info=True)
-            raise
+            # FAILURE PATH - Thread crashed
+            self.logger.error(f"Context search {task_id[:8]} failed: {e}", exc_info=True)
+            self._publish_failure_result(
+                continuum_id=continuum_id,
+                task_id=task_id,
+                query=query,
+                error=str(e),
+                error_type=type(e).__name__
+            )
 
     def _search_conversation(self, query: str) -> List[Dict[str, Any]]:
         """Use continuumsearch_tool to search conversation history."""
@@ -565,4 +581,78 @@ class GetContextTool(Tool):
             max_results=3
         )
         return result.get('results', [])
+
+    def _publish_success_result(self, continuum_id: str, task_id: str,
+                                summary: Dict[str, Any]) -> None:
+        """Publish successful search results to trinket."""
+        if self.event_bus is None:
+            return
+        from cns.core.events import UpdateTrinketEvent
+        self.event_bus.publish(UpdateTrinketEvent.create(
+            continuum_id=continuum_id,
+            target_trinket='GetContextTrinket',
+            context={
+                'task_id': task_id,
+                'status': 'success',
+                'summary': summary
+            }
+        ))
+
+    def _publish_timeout_result(self, continuum_id: str, task_id: str,
+                                query: str, iteration: int, elapsed: float,
+                                search_mode: str, findings_count: int) -> None:
+        """Publish timeout notification to trinket."""
+        if self.event_bus is None:
+            return
+        from cns.core.events import UpdateTrinketEvent
+        self.event_bus.publish(UpdateTrinketEvent.create(
+            continuum_id=continuum_id,
+            target_trinket='GetContextTrinket',
+            context={
+                'task_id': task_id,
+                'status': 'timeout',
+                'query': query,
+                'iteration': iteration,
+                'elapsed': elapsed,
+                'search_mode': search_mode,
+                'findings_count': findings_count
+            }
+        ))
+
+    def _publish_failure_result(self, continuum_id: str, task_id: str,
+                                query: str, error: str, error_type: str) -> None:
+        """Publish failure notification to trinket."""
+        if self.event_bus is None:
+            return
+        from cns.core.events import UpdateTrinketEvent
+        self.event_bus.publish(UpdateTrinketEvent.create(
+            continuum_id=continuum_id,
+            target_trinket='GetContextTrinket',
+            context={
+                'task_id': task_id,
+                'status': 'failed',
+                'query': query,
+                'error': error,
+                'error_type': error_type
+            }
+        ))
+
+    def _publish_pending_result(self, continuum_id: str, task_id: str,
+                                 query: str, search_scope: List[str],
+                                 search_mode: str) -> None:
+        """Publish pending/searching notification to trinket."""
+        if self.event_bus is None:
+            return
+        from cns.core.events import UpdateTrinketEvent
+        self.event_bus.publish(UpdateTrinketEvent.create(
+            continuum_id=continuum_id,
+            target_trinket='GetContextTrinket',
+            context={
+                'task_id': task_id,
+                'status': 'pending',
+                'query': query,
+                'search_scope': search_scope,
+                'search_mode': search_mode
+            }
+        ))
 

@@ -29,6 +29,7 @@ class Continuum:
         self._message_cache = []  # Hot cache of recent messages
         self._cumulative_tokens = 0  # Running token count for cache breakpoint calculation
         self._cached_up_to_tokens = 0  # Tracks how many tokens are already cached
+        self._thinking_budget_preference: Optional[int] = None  # User's thinking budget preference for this conversation
 
     @classmethod
     def create_new(cls, user_id: str) -> 'Continuum':
@@ -63,6 +64,33 @@ class Continuum:
     def last_touchstone_embedding(self) -> Optional[List[float]]:
         """Get last generated touchstone embedding from metadata."""
         return self._state.metadata.get('last_touchstone_embedding')
+
+    @property
+    def thinking_budget_preference(self) -> Optional[int]:
+        """
+        Get user's thinking budget preference for this conversation.
+
+        Returns:
+            None: Use system config default
+            0: Explicitly disable thinking
+            Positive int: Explicitly enable with specific budget
+        """
+        return self._thinking_budget_preference
+
+    def set_thinking_budget_preference(self, budget: Optional[int]) -> None:
+        """
+        Set user's thinking budget preference for this conversation.
+
+        Args:
+            budget: None (system default), 0 (disabled), or positive int (enabled with budget)
+
+        Raises:
+            ValueError: If budget is negative or not a valid value
+        """
+        if budget is not None and budget < 0:
+            raise ValueError("Thinking budget must be None, 0, or a positive integer")
+        self._thinking_budget_preference = budget
+        logger.debug(f"Set thinking budget preference to {budget} for continuum {self.id}")
 
     def apply_cache(self, messages: List[Message]) -> None:
         """
@@ -218,8 +246,8 @@ class Continuum:
                 })
 
         # Apply ultra-fine-grained caching: cache everything once we hit 1024 tokens
-        # and have new tokens to cache
-        if self._cumulative_tokens >= 1024 and self._cumulative_tokens > self._cached_up_to_tokens:
+        # ALWAYS apply cache_control to maintain and grow the cache
+        if self._cumulative_tokens >= 1024:
             # Find last assistant message and mark it for caching
             for i in range(len(formatted_messages) - 1, -1, -1):
                 if formatted_messages[i]["role"] == "assistant":
@@ -236,8 +264,8 @@ class Continuum:
                         formatted_messages[i]["content"] = content
                         logger.debug(
                             f"Applied ultra-fine cache control to message {i} "
-                            f"(will cache {self._cumulative_tokens} tokens, "
-                            f"previously cached: {self._cached_up_to_tokens})"
+                            f"(cumulative: {self._cumulative_tokens} tokens, "
+                            f"cached: {self._cached_up_to_tokens} tokens)"
                         )
                     break
 

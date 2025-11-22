@@ -151,6 +151,7 @@ class CNSIntegrationFactory:
             # Create and register trinkets with event bus
             from working_memory.trinkets.time_manager import TimeManager
             from working_memory.trinkets.reminder_manager import ReminderManager
+            from working_memory.trinkets.user_info_trinket import UserInfoTrinket
             from working_memory.trinkets.manifest_trinket import ManifestTrinket
             from working_memory.trinkets.proactive_memory_trinket import ProactiveMemoryTrinket
             from working_memory.trinkets.tool_guidance_trinket import ToolGuidanceTrinket
@@ -161,6 +162,7 @@ class CNSIntegrationFactory:
             # Trinkets self-register with working memory
             TimeManager(event_bus, self._working_memory)
             ReminderManager(event_bus, self._working_memory)
+            UserInfoTrinket(event_bus, self._working_memory)
             ManifestTrinket(event_bus, self._working_memory)
             ProactiveMemoryTrinket(event_bus, self._working_memory)
             ToolGuidanceTrinket(event_bus, self._working_memory)

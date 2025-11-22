@@ -2,6 +2,16 @@
 
 *Technical guide based on successful tool development patterns*
 
+## 🚀 START HERE
+
+Tools in MIRA follow consistent patterns. This guide shows you where to find each pattern in existing, battle-tested implementations. Use the **Pattern Index** below to jump directly to the code that demonstrates what you need.
+
+**Learning approach:**
+1. Scan the Pattern Index to see what's available
+2. Find the pattern you need in an existing tool
+3. Read that specific implementation with line numbers provided
+4. Copy the pattern and adapt it to your use case
+
 ## Core Concepts
 
 Effective tool building leverages two different types of pattern recognition:
@@ -9,6 +19,60 @@ Effective tool building leverages two different types of pattern recognition:
 - **AI perspective**: System architecture, technical constraints, code consistency
 
 Neither perspective alone produces optimal tools. The best solutions emerge from the intersection.
+
+## 📋 Pattern Index
+
+### Essential Patterns
+
+Every tool needs these core patterns:
+
+| Pattern | Where to Find | What It Shows |
+|---------|---------------|---------------|
+| **Tool Structure** | reminder_tool.py:38-96 | Required metadata (name, descriptions, schema) |
+| **Configuration** | weather_tool.py:48-104 | Pydantic config with Field descriptions, multiple options |
+| | reminder_tool.py:38-63 | Simpler config example |
+| **Initialization** | reminder_tool.py:179-233 | Deferred table creation with has_user_context() check |
+| | contacts_tool.py:127-150 | Another initialization example |
+| **Database Schema** | reminder_tool.py:199-233 | Tables with encrypted__ fields, proper indexes |
+| | contacts_tool.py:132-150 | Schema with foreign keys |
+| **Operation Routing** | reminder_tool.py:303-335 | JSON kwargs parsing, operation dispatch, error handling |
+| | contacts_tool.py:152-199 | Clean operation routing pattern |
+| **Input Validation** | weather_tool.py:211-456 | Collecting all errors before raising, specific messages |
+| | reminder_tool.py:362-390 | Required field validation |
+| **CRUD Operations** | contacts_tool.py:201-579 | Complete CRUD with UUID generation, encryption |
+| | reminder_tool.py:337-582 | CRUD with cross-tool linking |
+| **Timezone Handling** | reminder_tool.py:849-917 | UTC storage, natural language parsing, display conversion |
+| | punchclock_tool.py:180-250 | Timezone conversion for display |
+| **Encryption** | contacts_tool.py:201-260 | encrypted__ prefix for automatic encryption/decryption |
+| | reminder_tool.py:362-430 | Encrypted fields in database operations |
+| **Search & Scoring** | contacts_tool.py:314-400 | Score-based fuzzy matching with relevance |
+| | kasa_tool.py:1234-1401 | Device name matching with similarity scoring |
+| **File Operations** | weather_tool.py:107-200 | Cache file management, TTL checking |
+| | kasa_tool.py:1214-1232 | JSON file read/write for config |
+| **Response Formatting** | reminder_tool.py:805-847 | Consistent {"success": bool, ...} format with display data |
+| | contacts_tool.py:580-650 | Formatting with linked entity data |
+| **Error Handling** | reminder_tool.py:584-614 | Helpful errors with available options |
+| | weather_tool.py:211-280 | Validation with collected error messages |
+
+### Specialized Patterns
+
+For advanced functionality, reference these specific implementations:
+
+| Pattern | Tool | Lines | When You Need It |
+|---------|------|-------|------------------|
+| **Async Operations** | kasa_tool.py | 567-622 | Async device discovery, network calls |
+| **API Retry Logic** | webaccess_tool.py | 469-675 | Exponential backoff, circuit breaker |
+| **Fuzzy Name Matching** | contacts_tool.py | 314-400 | Scoring partial matches, handling ambiguity |
+| | kasa_tool.py | 1234-1401 | Device name matching with suggestions |
+| **Working Memory Integration** | punchclock_tool.py | 600-610 | Publishing trinket updates, UI refresh |
+| **Complex API Caching** | weather_tool.py | 107-200 | File-based cache with TTL, cache invalidation |
+| **Credential Management** | UserCredentialService | - | Per-user API keys, OAuth tokens |
+| **UUID Cross-Tool Linking** | reminder_tool.py | 805-847 | Linking to contacts, fetching fresh data |
+| | contacts_tool.py | 314-579 | Managing linked entities |
+| **Natural Language Dates** | reminder_tool.py | 849-917 | Parsing "tomorrow", "next week", etc. |
+| **LLM Integration** | webaccess_tool.py | 800-950 | Using LLM for content analysis and processing |
+| **Batch Operations** | - | - | *Not yet implemented - good opportunity!* |
+| **Rate Limiting** | - | - | *Not yet implemented - good opportunity!* |
 
 ## Development Process
 
@@ -39,59 +103,43 @@ Example: If a spec mentions "no notification fatigue," this implies rate limitin
 
 ### Phase 3: Codebase Pattern Study
 
+**Use the Pattern Index above** to find exactly what you need. Each entry shows the tool and line numbers where the pattern is implemented.
+
+**Recommended reading order:**
+1. **Start simple**: `reminder_tool.py` - Clean CRUD operations, timezone handling, basic patterns
+2. **Add complexity**: `contacts_tool.py` - Fuzzy search, encryption, UUID linking
+3. **Learn caching**: `weather_tool.py` - API integration, file-based caching, validation
+4. **Go async**: `kasa_tool.py` - Async operations, device management
+5. **Advanced features**: `webaccess_tool.py` - Retry logic, LLM integration
+
+**Infrastructure references:**
 ```python
-# Required reading before implementation
-tools/implementations/reminder_tool.py    # Complete tool example
-tools/implementations/contacts_tool.py    # Tool with UUID linking
-tools/implementations/punchclock_tool.py  # Tool with dependency injection
-tools/repo.py                             # Base class and ToolRepository
-utils/userdata_manager.py                 # Database API reference
+tools/repo.py                   # Base Tool class, ToolRepository
+utils/userdata_manager.py       # Database API (self.db operations)
+utils/timezone_utils.py         # utc_now(), format_utc_iso(), etc.
+utils/user_context.py           # get_current_user_id(), get_user_timezone()
 ```
 
-Deviating from established patterns causes integration issues and maintenance debt.
+**Critical:** Deviating from established patterns causes integration issues and maintenance debt. Always check the Pattern Index first.
 
 ### Phase 4: Incremental Implementation
 
 Build order matters:
-1. Data models (foundational structure)
-2. Basic CRUD operations  
-3. Core business logic
-4. Complex features
-5. Security/validation layers
+1. **Tool structure** - Define class, metadata, schema (see reminder_tool.py:38-96)
+2. **Database schema** - Create tables with indexes (see reminder_tool.py:199-233)
+3. **Basic CRUD** - Add/get/update/delete operations (see contacts_tool.py:201-579)
+4. **Core business logic** - Your domain-specific code
+5. **Advanced features** - Search, export, etc. as needed
 
-```python
-# Progress tracking
-TodoWrite({
-    "todos": [
-        {"content": "Create data models", "activeForm": "Creating data models", "status": "pending"},
-        {"content": "Implement basic operations", "activeForm": "Implementing basic operations", "status": "pending"},
-        {"content": "Add validation", "activeForm": "Adding validation", "status": "pending"}
-    ]
-})
+**Key implementation principles:**
 
-# Error handling pattern
-def _add_item(self, title: str, **kwargs) -> Dict[str, Any]:
-    if not title:
-        self.logger.error("Title is required")
-        raise ValueError("Title is required for this operation")
-
-    try:
-        # Implementation
-        item_id = str(uuid.uuid4())
-        timestamp = format_utc_iso(utc_now())
-
-        self.db.insert('items', {
-            'id': item_id,
-            'title': title,
-            'created_at': timestamp
-        })
-
-        return {"success": True, "item_id": item_id}
-
-    except Exception as e:
-        self.logger.error(f"Failed to add item: {e}")
-        raise
-```
+- **Track progress**: Use TodoWrite to break down complex implementations
+- **Validate inputs**: Collect ALL errors before raising (see weather_tool.py:211-280)
+- **Log before raising**: Always log errors before propagating (see reminder_tool.py:303-335)
+- **Consistent responses**: Use `{"success": bool, "message": str, ...}` format (see reminder_tool.py:805-847)
+- **Timezone everywhere**: Use `utc_now()` and `format_utc_iso()` for all timestamps (see reminder_tool.py:849-917)
+- **Encrypted fields**: Prefix sensitive data with `encrypted__` (see contacts_tool.py:201-260)
+- **Helpful errors**: Include suggestions and available options (see reminder_tool.py:584-614)
 
 ### Phase 5: Collaborative Solution Design
 
@@ -210,265 +258,209 @@ This feedback indicates design misalignment. Parse for:
 
 ### User Scoping
 
-Each tool automatically gets access to comprehensive user-scoped resources via `self.db`:
+**Every tool automatically gets user-scoped access via `self.db`** - no manual filtering needed.
 
-**1. User-Scoped SQLite Database**
-Dedicated SQLite database per user with automatic encryption for fields marked with `encrypted__` prefix:
+**See reminder_tool.py:199-233** for complete database patterns including:
+- Table creation with proper schema
+- Encrypted fields (use `encrypted__` prefix)
+- Indexes for performance
+- CRUD operations
 
+**Key Points:**
+
+1. **Automatic User Scoping**: All `self.db` operations are scoped to the current user
+2. **Automatic Encryption**: Fields prefixed with `encrypted__` are encrypted on write, decrypted on read
+3. **Prefix Handling**: On read, the `encrypted__` prefix is automatically stripped from field names
+
+**Example:**
 ```python
-# All database operations are automatically user-scoped
-reminders = self.db.select('reminders', 'completed = 0')
-reminder = self.db.select('reminders', 'id = :id', {'id': reminder_id})
+# Creating a table with encrypted fields
+schema = """
+    id TEXT PRIMARY KEY,
+    encrypted__title TEXT NOT NULL,
+    encrypted__notes TEXT,
+    created_at TEXT NOT NULL
+"""
+self.db.create_table('my_items', schema)
 
-# Fields with encrypted__ prefix are automatically encrypted/decrypted
-self.db.insert('contacts', {
-    'id': contact_id,
-    'encrypted__name': 'John Doe',  # Encrypted on write, decrypted on read
-    'encrypted__email': 'john@example.com',  # Encrypted
-    'encrypted__phone': '555-1234',  # Encrypted
-    'created_at': timestamp,  # Not encrypted
-    'updated_at': timestamp  # Not encrypted
+# Insert - encryption happens automatically
+self.db.insert('my_items', {
+    'id': item_id,
+    'encrypted__title': 'Secret Meeting',  # Will be encrypted
+    'encrypted__notes': 'Confidential',     # Will be encrypted
+    'created_at': timestamp
 })
 
-# On read, encrypted__ prefix is stripped and values are decrypted
-contacts = self.db.select('contacts')  # Returns {'id': ..., 'name': 'John Doe', 'email': ..., ...}
+# Select - decryption happens automatically, prefix stripped
+items = self.db.select('my_items')
+# Returns: [{'id': '...', 'title': 'Secret Meeting', 'notes': 'Confidential', ...}]
+#          ^^^^ Note: 'title' not 'encrypted__title'
 ```
 
-**2. Credential Storage**
-Store and retrieve user API keys, passwords, and other credentials securely using UserCredentialService:
+### Credential Storage
+
+For API keys and sensitive credentials, use `UserCredentialService`:
 
 ```python
-from auth.user_credentials import UserCredentialService
+from utils.user_credentials import UserCredentialService
 
-# Initialize service (auto-detects current user)
 cred_service = UserCredentialService()
-
-# Store credentials
-cred_service.store_credential(user_id, 'api_key', 'openweather', user_api_key)
-cred_service.store_credential(user_id, 'oauth_token', 'spotify', token)
-
-# Retrieve credentials
-api_key = cred_service.get_credential(user_id, 'api_key', 'openweather')
-token = cred_service.get_credential(user_id, 'oauth_token', 'spotify')
-
-# List all user credentials
-creds = cred_service.list_user_credentials(user_id)
-
-# Delete credentials
-cred_service.delete_credential(user_id, 'api_key', 'openweather')
+api_key = cred_service.get_credential(user_id, 'api_key', 'service_name')
+cred_service.store_credential(user_id, 'api_key', 'service_name', key_value)
 ```
 
-**3. Tool-Specific File Storage**
-Each tool gets a dedicated directory for JSON files, downloads, or other file-based data:
+### File Operations
 
+**See weather_tool.py:107-200** for cache file management and kasa_tool.py:1214-1232 for JSON config files.
+
+Tools get automatic file methods:
+- `self.open_file(filename, mode)` - Open file in tool's directory
+- `self.get_file_path(filename)` - Get full path to file
+- `self.file_exists(filename)` - Check if file exists
+- `self.make_dir(path)` - Create subdirectory
+
+**Example:**
 ```python
-# Get tool's data directory (automatically created)
-data_dir = self.db.get_tool_data_dir(self.name)
+# Export data to JSON
+filename = f"export_{utc_now().strftime('%Y%m%d_%H%M%S')}.json"
+with self.open_file(filename, 'w') as f:
+    json.dump(data, f, indent=2)
 
-# Store files
-config_file = data_dir / "settings.json"
-with open(config_file, 'w') as f:
-    json.dump(settings, f)
-
-# Access other user directories
-conversations_dir = self.db.conversations_dir
-config_path = self.db.config_path
+full_path = self.get_file_path(filename)
+return {"success": True, "file_path": str(full_path)}
 ```
 
-**4. User Context Access**
-Access user preferences and metadata:
+### Timezone Handling
+
+**See reminder_tool.py:849-917** for natural language date parsing and **punchclock_tool.py:171-176** for display conversion.
+
+**CRITICAL: Always use UTC internally, convert only for display**
 
 ```python
-from utils.user_context import get_current_user_id, get_user_timezone
+from utils.timezone_utils import (
+    utc_now, format_utc_iso, parse_utc_time_string,
+    get_user_timezone, convert_from_utc
+)
 
-user_id = get_current_user_id()  # Current user's ID
-timezone = get_user_timezone()  # User's timezone preference
+# Store as UTC ISO strings (ALWAYS)
+timestamp = format_utc_iso(utc_now())
+self.db.insert('items', {'created_at': timestamp})
+
+# Parse stored UTC strings
+stored_dt = parse_utc_time_string(item['created_at'])
+
+# Convert to user's timezone ONLY for display
+user_tz = get_user_timezone()
+local_dt = convert_from_utc(stored_dt, user_tz)
+display_string = format_datetime(local_dt, "date_time_short")
 ```
 
-### Time Handling
+### Code Organization
+
+Tools don't require specific section markers, but consistency helps. Look at existing tools for organization patterns:
+
 ```python
-from utils.timezone_utils import utc_now, format_utc_iso, parse_time_string
-from utils.user_context import get_user_timezone
-
-# Never use datetime.now() or datetime.now(UTC) directly
-# All timestamps stored as UTC ISO format strings
-timestamp = format_utc_iso(utc_now())  # "2025-01-15T10:30:00Z"
-
-# All database datetime columns store ISO strings, not datetime objects
+# Standard tool structure
+import statements
+logging setup
+configuration class (if needed)
+tool class with:
+    - metadata (name, descriptions)
+    - anthropic_schema
+    - __init__
+    - run() method
+    - operation handlers (_add_item, _get_items, etc.)
+    - helper methods
 ```
 
 ### Tool Registration and Auto-Discovery
 
-Tools are automatically discovered and loaded - no manual registration required:
+**See reminder_tool.py:38-63** and **weather_tool.py:48-104** for configuration examples.
 
-**How It Works**:
-1. Place your tool file in `tools/implementations/`
-2. Restart the MIRA process
+**Auto-Discovery**: Place your tool in `tools/implementations/` and restart MIRA. Done.
 
-That's it. The system automatically:
-- Scans `tools/implementations/` for Tool subclasses
-- Creates a default configuration (with `enabled=True`)
-- Creates user data directories
-- Makes the tool available to the AI
-
-**Optional Custom Configuration**:
-
-If your tool needs custom configuration options beyond `enabled`, define and register a config class:
-
+**Configuration (Optional)**:
 ```python
 from pydantic import BaseModel, Field
 from tools.registry import registry
 
-class PagerToolConfig(BaseModel):
-    enabled: bool = Field(default=True, description="Whether this tool is enabled")
-    max_message_length: int = Field(default=300, description="Maximum message length")
-    ttl_hours: int = Field(default=24, description="Message time-to-live in hours")
+class MyToolConfig(BaseModel):
+    enabled: bool = Field(default=True, description="Whether enabled")
+    max_items: int = Field(default=10, description="Max items to return")
 
-# Registration is OPTIONAL - only needed if you want custom config options
-registry.register("pager_tool", PagerToolConfig)
+# Only register if you have custom config beyond 'enabled'
+registry.register("my_tool", MyToolConfig)
 ```
-
-**Without registration**: Tool gets a default config with just `enabled=True`
-**With registration**: Tool gets your custom config with all your defined options
-
-No setup files, no environment variables, no manual wiring - the system handles everything.
 
 ### Tool Descriptions
 
-Tools require two description fields with different purposes:
+**See reminder_tool.py:38-96** for complete metadata examples.
 
-```python
-# Simple description - MUST be extremely concise action phrase
-simple_description = "checks the weather"  # Good: short, actionable
-simple_description = "sends messages to other people"  # Good: clear, brief
-simple_description = "controls Kasa smart home devices"  # Good: specific, concise
-
-# Bad examples - too wordy or explanatory
-simple_description = "This tool allows you to check weather conditions"  # Too verbose
-simple_description = "Weather checking functionality"  # Too formal
-```
+Two required fields:
+- `simple_description`: Ultra-concise action phrase ("manages reminders")
+- `description`: Detailed explanation with features and use cases
 
 ### Anthropic Schema
-```python
-# Required class attribute defining tool interface
-anthropic_schema = {
-    "name": "tool_name",
-    "description": "Clear description of what this tool does and when to use it",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "operation": {
-                "type": "string",
-                "enum": ["add_item", "get_items", "update_item", "delete_item"],
-                "description": "The operation to perform"
-            },
-            "item_id": {
-                "type": "string",
-                "description": "Unique identifier for the item (required for update/delete)"
-            }
-        },
-        "required": ["operation"],
-        "additionalProperties": False
-    }
-}
-```
+
+**See reminder_tool.py:97-158** for complete schema with operations.
+
+**Critical points:**
+- Set `"additionalProperties": false` - prevents unexpected params
+- Use `enum` for fixed options
+- Clear descriptions - Claude uses these
+- Mark required fields in `"required"` array
 
 ### Database Operations
-```python
-# UserDataManager provides these methods via self.db property
 
-# Create table (call once in __init__ or on first use)
+**See reminder_tool.py:199-233** for schema creation and **contacts_tool.py:201-579** for CRUD patterns.
+
+**Quick reference:**
+```python
+# Create table
 schema = """
     id TEXT PRIMARY KEY,
-    title TEXT NOT NULL,
+    encrypted__title TEXT NOT NULL,
     created_at TEXT NOT NULL
 """
 self.db.create_table('items', schema)
 
-# Insert record
-self.db.insert('items', {
-    'id': item_id,
-    'title': 'Example',
-    'created_at': format_utc_iso(utc_now())
-})
+# Create indexes
+self.db.execute("CREATE INDEX IF NOT EXISTS idx_items_created ON items(created_at)")
 
-# Select records
-all_items = self.db.select('items')  # All records
-active = self.db.select('items', 'status = :status', {'status': 'active'})
-single = self.db.select('items', 'id = :id', {'id': item_id})
-
-# Update record
-self.db.update('items',
-    {'title': 'New Title', 'updated_at': format_utc_iso(utc_now())},
-    'id = :id',
-    {'id': item_id}
-)
-
-# Delete record
-self.db.delete('items', 'id = :id', {'id': item_id})
-
-# Execute raw SQL
-results = self.db.execute('SELECT * FROM items WHERE created_at > :date',
-    {'date': cutoff_date}
-)
-
-# Automatic encryption: title, description, name, email, phone, content fields
-# are automatically encrypted on insert/update and decrypted on select
+# CRUD operations
+self.db.insert('items', {'id': id, 'encrypted__title': title, 'created_at': timestamp})
+items = self.db.select('items', 'status = :status', {'status': 'active'})
+self.db.update('items', {'encrypted__title': new_title}, 'id = :id', {'id': id})
+self.db.delete('items', 'id = :id', {'id': id})
 ```
 
-### Standard Imports
+### Quick Start Template
+
+Start with this minimal structure, then add patterns from the index as needed:
+
 ```python
-# Every tool should import these
-import json
 import logging
 import uuid
-from typing import Dict, Any, Optional, List
-
+from typing import Dict, Any
 from tools.repo import Tool
-from utils.timezone_utils import utc_now, format_utc_iso, parse_time_string
-from utils.user_context import get_current_user_id, get_user_timezone
-
-# Optional imports
-from pydantic import BaseModel, Field  # Only if defining custom config
-from tools.registry import registry  # Only if registering custom config
-from datetime import datetime, timedelta  # Common but not always needed
-```
-
-### Tool Structure Template
-```python
-from typing import Dict, Any, Optional
-import logging
-import uuid
-
-from pydantic import BaseModel, Field
-from tools.repo import Tool
-from tools.registry import registry
 from utils.timezone_utils import utc_now, format_utc_iso
 
-# Configuration (OPTIONAL - only if you need custom config beyond enabled=True)
-class MyToolConfig(BaseModel):
-    """Configuration for my_tool."""
-    enabled: bool = Field(default=True, description="Whether this tool is enabled")
-    # Add custom configuration options here
+logger = logging.getLogger(__name__)
 
-# Registration is OPTIONAL - only needed if you defined a custom config above
-registry.register("my_tool", MyToolConfig)
-
-# Tool implementation
 class MyTool(Tool):
     name = "my_tool"
-    description = "Brief description of what this tool does"
-    simple_description = "concise action phrase"  # KEEP SUPER CONCISE: "checks the weather", "sends messages", "controls smart devices"
+    simple_description = "does something useful"
+    description = "Detailed explanation of what this tool does"
 
     anthropic_schema = {
         "name": "my_tool",
-        "description": "Detailed description for the AI",
+        "description": "What this tool does and when to use it",
         "input_schema": {
             "type": "object",
             "properties": {
                 "operation": {
                     "type": "string",
-                    "enum": ["operation1", "operation2"],
+                    "enum": ["add", "get", "delete"],
                     "description": "The operation to perform"
                 }
             },
@@ -478,108 +470,59 @@ class MyTool(Tool):
     }
 
     def __init__(self):
-        """Initialize the tool and create database tables."""
         super().__init__()
         self.logger = logging.getLogger(__name__)
-        self._ensure_table()
+        self._ensure_tables()
 
-    def _ensure_table(self):
-        """Create database table if it doesn't exist."""
+    def _ensure_tables(self):
         schema = """
             id TEXT PRIMARY KEY,
+            encrypted__data TEXT,
             created_at TEXT NOT NULL
         """
         self.db.create_table('my_data', schema)
 
     def run(self, operation: str, **kwargs) -> Dict[str, Any]:
-        """Execute the requested operation."""
         try:
-            # Handle kwargs JSON string if needed
-            if "kwargs" in kwargs and isinstance(kwargs["kwargs"], str):
-                try:
-                    params = json.loads(kwargs["kwargs"])
-                    kwargs = params
-                except json.JSONDecodeError as e:
-                    raise ValueError(f"Invalid JSON in kwargs: {e}")
-
-            # Route to operation handlers
-            if operation == "operation1":
-                return self._operation1(**kwargs)
-            elif operation == "operation2":
-                return self._operation2(**kwargs)
+            if operation == "add":
+                return self._add(**kwargs)
+            elif operation == "get":
+                return self._get(**kwargs)
             else:
                 raise ValueError(f"Unknown operation: {operation}")
-
         except Exception as e:
-            self.logger.error(f"Error executing {operation}: {e}")
+            self.logger.error(f"Error in {operation}: {e}")
             raise
 
-    def _operation1(self, **kwargs) -> Dict[str, Any]:
-        """Implementation of operation1."""
-        # Validate inputs
-        # Perform operation
-        # Return structured response
-        return {"success": True, "message": "Operation completed"}
+    def _add(self, **kwargs) -> Dict[str, Any]:
+        # Your implementation
+        return {"success": True, "message": "Added"}
 ```
 
 ### Error Handling
-```python
-# Use standard Python exceptions
-# ValueError: Invalid input parameters
-if not required_param:
-    self.logger.error("Required parameter missing")
-    raise ValueError("Parameter 'required_param' is required")
 
-# RuntimeError: Failed operations
-if api_call_failed:
-    self.logger.error(f"API call failed: {error_details}")
-    raise RuntimeError(f"Failed to complete operation: {error_details}")
+**See reminder_tool.py:584-614** and **weather_tool.py:211-280** for error patterns.
 
-# TimeoutError: Operation exceeded time limits
-if elapsed > timeout:
-    raise TimeoutError(f"Operation timed out after {timeout}s")
-
-# ConnectionError: Network issues
-if not connected:
-    raise ConnectionError("Unable to connect to service")
-
-# Always log errors before raising
-self.logger.error(f"Operation failed: {error_message}")
-raise
-
-# Structured error responses
-return {
-    "success": False,
-    "message": "Clear error message for the AI",
-    "details": {"additional": "context"}
-}
-```
+**Key principles:**
+- Always log before raising: `self.logger.error(f"Error: {e}")` then `raise`
+- Use `ValueError` for invalid input, `RuntimeError` for operation failures
+- Provide helpful messages with suggestions
+- Collect all validation errors before raising
 
 ### Dependency Injection
+
+**See punchclock_tool.py:231-233** for working memory integration.
+
+Tools can request dependencies in `__init__`:
 ```python
-# Tools can declare dependencies in __init__ signature
-# ToolRepository automatically injects known types
-
-from typing import Optional
-
-class MyTool(Tool):
-    def __init__(self,
-                 tool_repo: Optional['ToolRepository'] = None,
-                 working_memory: Optional['WorkingMemory'] = None):
-        """
-        Args:
-            tool_repo: Injected by ToolRepository
-            working_memory: Injected by ToolRepository
-        """
-        super().__init__()
-        self.tool_repo = tool_repo
-        self.working_memory = working_memory
-
-# Supported injection types:
-# - LLMProvider / LLMBridge
-# - ToolRepository
-# - WorkingMemory
+def __init__(self, working_memory: Optional["WorkingMemory"] = None):
+    super().__init__()
+    self._working_memory = working_memory
 ```
+
+Supported types: `LLMProvider`, `LLMBridge`, `ToolRepository`, `WorkingMemory`
+
+ToolRepository automatically injects these when creating instances.
 
 ## Common Failure Patterns
 

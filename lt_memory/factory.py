@@ -26,6 +26,16 @@ from lt_memory.batching import BatchingService
 from lt_memory.proactive import ProactiveService
 from lt_memory.entity_extraction import EntityExtractor
 from lt_memory.entity_gc import EntityGCService
+from lt_memory.processing.memory_processor import MemoryProcessor
+from lt_memory.processing.extraction_engine import ExtractionEngine
+from lt_memory.processing.execution_strategy import create_execution_strategy
+from lt_memory.processing.orchestrator import ExtractionOrchestrator
+from lt_memory.processing.batch_coordinator import BatchCoordinator
+from lt_memory.processing.consolidation_handler import ConsolidationHandler
+from lt_memory.batch_result_handlers import (
+    ExtractionBatchResultHandler,
+    RelationshipBatchResultHandler
+)
 from utils.database_session_manager import LTMemorySessionManager, get_shared_session_manager
 
 logger = logging.getLogger(__name__)
@@ -159,6 +169,79 @@ class LTMemoryFactory:
             raise RuntimeError(f"Failed to initialize RefinementService: {e}") from e
 
         try:
+            # Layer 3.5: New processing components (depend on db + vector_ops)
+            logger.debug("Initializing MemoryProcessor...")
+            self.memory_processor = MemoryProcessor(
+                config=self.config.extraction,
+                vector_ops=self.vector_ops
+            )
+            self._service_init_order.append(self.memory_processor)
+
+            logger.debug("Initializing ExtractionEngine...")
+            self.extraction_engine = ExtractionEngine(
+                config=self.config.extraction,
+                db=self.db
+            )
+            self._service_init_order.append(self.extraction_engine)
+
+            logger.debug("Initializing ExecutionStrategy...")
+            self.execution_strategy = create_execution_strategy(
+                extraction_engine=self.extraction_engine,
+                memory_processor=self.memory_processor,
+                vector_ops=self.vector_ops,
+                db=self.db,
+                llm_provider=self._llm_provider,
+                anthropic_client=self._anthropic_client,
+                batching_config=self.config.batching,
+                extraction_config=self.config.extraction
+            )
+            self._service_init_order.append(self.execution_strategy)
+
+            logger.debug("Initializing ExtractionOrchestrator...")
+            self.extraction_orchestrator = ExtractionOrchestrator(
+                config=self.config.batching,
+                extraction_engine=self.extraction_engine,
+                execution_strategy=self.execution_strategy,
+                continuum_repo=self._conversation_repo,
+                db=self.db
+            )
+            self._service_init_order.append(self.extraction_orchestrator)
+
+            logger.debug("Initializing BatchCoordinator...")
+            self.batch_coordinator = BatchCoordinator(
+                config=self.config.batching,
+                db=self.db,
+                anthropic_client=self._anthropic_client
+            )
+            self._service_init_order.append(self.batch_coordinator)
+
+            logger.debug("Initializing ConsolidationHandler...")
+            self.consolidation_handler = ConsolidationHandler(
+                vector_ops=self.vector_ops,
+                db=self.db
+            )
+            self._service_init_order.append(self.consolidation_handler)
+
+            logger.debug("Initializing result handlers...")
+            self.extraction_result_handler = ExtractionBatchResultHandler(
+                anthropic_client=self._anthropic_client,
+                memory_processor=self.memory_processor,
+                vector_ops=self.vector_ops,
+                db=self.db,
+                linking_service=self.linking
+            )
+            self._service_init_order.append(self.extraction_result_handler)
+
+            self.relationship_result_handler = RelationshipBatchResultHandler(
+                anthropic_client=self._anthropic_client,
+                linking_service=self.linking,
+                db=self.db
+            )
+            self._service_init_order.append(self.relationship_result_handler)
+        except Exception as e:
+            raise RuntimeError(f"Failed to initialize processing components: {e}") from e
+
+        try:
             # Layer 4: Higher-level services (depend on multiple services)
             logger.debug("Initializing BatchingService...")
             self.batching = BatchingService(
@@ -227,8 +310,9 @@ class LTMemoryFactory:
     def __repr__(self) -> str:
         """String representation for debugging."""
         return (
-            f"LTMemoryFactory(services=[db, vector_ops, extraction, linking, "
-            f"refinement, batching, proactive, entity_gc])"
+            f"LTMemoryFactory(services=[db, vector_ops, extraction, linking, refinement, "
+            f"memory_processor, extraction_engine, execution_strategy, extraction_orchestrator, "
+            f"batch_coordinator, consolidation_handler, batching, proactive, entity_gc])"
         )
 
 

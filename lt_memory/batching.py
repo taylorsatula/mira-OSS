@@ -25,8 +25,7 @@ from lt_memory.extraction import ExtractionService
 from lt_memory.linking import LinkingService
 from lt_memory.vector_ops import VectorOps
 from utils.timezone_utils import utc_now
-from auth import set_current_user_id
-from auth.database import AuthDatabase
+from utils.user_context import set_current_user_id, clear_user_context
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +59,6 @@ class BatchingService:
         self.anthropic_client = anthropic_client
         self.conversation_repo = conversation_repo
         self.llm_provider = llm_provider
-        self.auth_db = AuthDatabase()
 
         # Load prompts
         self.extraction_prompt = self._load_prompt("memory_extraction_system.txt")
@@ -93,97 +91,6 @@ class BatchingService:
     # Entry Points - Extraction Orchestration
     # ============================================================================
 
-    def run_daily_extraction(self, user_id: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Safety net extraction for failed segment collapses.
-
-        Primary extraction happens during segment collapse. This job catches
-        collapsed segments where extraction failed and retries them.
-
-        Args:
-            user_id: Optional specific user. If None, processes all users.
-
-        Returns:
-            Extraction statistics
-        """
-        logger.info(f"Starting daily extraction safety sweep{f' for user {user_id}' if user_id else ''}")
-
-        users = [{"id": user_id}] if user_id else self.auth_db.get_users_with_memory_enabled()
-        results = {"segments_retried": 0, "users_processed": 0, "errors": []}
-
-        for user in users:
-            uid = str(user["id"])
-            try:
-                # Find collapsed segments that failed extraction
-                failed_segments = self._get_failed_extraction_segments(uid)
-
-                if not failed_segments:
-                    continue
-
-                logger.info(f"Found {len(failed_segments)} failed segments for user {uid}")
-                set_current_user_id(uid)
-
-                for segment in failed_segments:
-                    segment_id = segment['segment_id']
-
-                    # Load messages for this segment
-                    messages = self._load_segment_messages(segment['message_id'], uid)
-
-                    if not messages:
-                        logger.warning(f"No messages found for segment {segment_id}")
-                        continue
-
-                    # Retry extraction using existing method
-                    if self.submit_segment_extraction(uid, messages, segment_id):
-                        results["segments_retried"] += 1
-                        logger.info(f"Retried extraction for segment {segment_id}")
-
-                results["users_processed"] += 1
-
-            except Exception as e:
-                logger.error(f"Error processing user {uid}: {e}", exc_info=True)
-                results["errors"].append(str(e))
-            finally:
-                set_current_user_id(None)
-
-        logger.info(f"Daily extraction safety sweep complete: {results['segments_retried']} segments retried")
-        return results
-
-    def run_boot_extraction(self) -> Dict[str, Any]:
-        """
-        Run on-boot extraction sweep.
-
-        Returns:
-            Boot extraction statistics
-        """
-        logger.info("Starting on-boot extraction sweep")
-
-        users = self.auth_db.get_users_with_memory_enabled()
-        results = {"users_checked": len(users), "batches_submitted": 0, "users_skipped": 0, "errors": []}
-
-        for user in users:
-            uid = str(user["id"])
-            try:
-                # Safety valve: skip if pending batches
-                if self.db.get_pending_extraction_batches_for_user(uid):
-                    results["users_skipped"] += 1
-                    continue
-
-                set_current_user_id(uid)
-                chunks = self._load_conversation_chunks(uid)
-
-                if chunks:
-                    batch_id = self._submit_extraction_batch(uid, chunks)
-                    if batch_id:
-                        results["batches_submitted"] += 1
-            except Exception as e:
-                logger.error(f"Error in boot extraction for {uid}: {e}", exc_info=True)
-                results["errors"].append(str(e))
-            finally:
-                set_current_user_id(None)
-
-        logger.info(f"Boot extraction complete: {results['batches_submitted']} batches submitted")
-        return results
 
     def submit_segment_extraction(
         self,
@@ -192,11 +99,11 @@ class BatchingService:
         segment_id: str
     ) -> bool:
         """
-        Submit segment messages for memory extraction.
+        Submit segment messages for memory extraction with chunking.
 
-        Called when a segment collapses. Builds a single processing chunk
-        from the segment's messages and submits to Batch API (or executes
-        immediately if in fallback mode).
+        Called when a segment collapses. Chunks the segment's messages using
+        segment_chunk_size and submits to Batch API (or executes immediately
+        if in fallback mode). No minimum message requirement for segments.
 
         Args:
             user_id: User ID
@@ -209,38 +116,38 @@ class BatchingService:
         Raises:
             Exception: If batch submission fails
         """
-        # Check minimum messages
-        conversational = [m for m in messages if m.role in ('user', 'assistant')]
-        if len(conversational) < self.config.min_messages_for_extraction:
-            logger.info(
-                f"Skipping segment {segment_id}: only {len(conversational)} conversational messages "
-                f"(minimum {self.config.min_messages_for_extraction} required)"
+        # Build chunks from segment messages using segment_chunk_size
+        chunks = []
+        chunk_size = self.config.segment_chunk_size
+
+        for i in range(0, len(messages), chunk_size):
+            chunk_messages = messages[i:i + chunk_size]
+            chunk = ProcessingChunk.from_conversation_messages(
+                chunk_messages,
+                chunk_index=i // chunk_size
             )
-            return False
 
-        # Build single chunk from segment messages
-        chunk = ProcessingChunk.from_conversation_messages(
-            messages,
-            chunk_index=0
-        )
+            # Build memory context for this chunk (only referenced memories)
+            memory_context = self._build_memory_context(chunk_messages, user_id)
+            chunk.memory_context_snapshot = memory_context
 
-        # Build memory context for this chunk (only referenced memories)
-        memory_context = self._build_memory_context(messages, user_id)
-        chunk.memory_context_snapshot = memory_context
+            chunks.append(chunk)
+
+        logger.info(f"Built {len(chunks)} chunks from segment {segment_id} ({len(messages)} messages)")
 
         # Submit via existing batch infrastructure
         set_current_user_id(user_id)
         try:
-            batch_id = self._submit_extraction_batch(user_id, [chunk])
+            batch_id = self._submit_extraction_batch(user_id, chunks)
 
             if batch_id:
-                logger.info(f"Submitted segment {segment_id} for extraction (batch: {batch_id})")
+                logger.info(f"Submitted segment {segment_id} for extraction (batch: {batch_id}, {len(chunks)} chunks)")
                 return True
             else:
                 logger.warning(f"Failed to submit segment {segment_id} for extraction")
                 return False
         finally:
-            set_current_user_id(None)
+            clear_user_context()
 
     # ============================================================================
     # Batch Polling - APScheduler Jobs
@@ -291,15 +198,47 @@ class BatchingService:
                     stats["expired"] += len(batches)
                     continue
 
-                # Query Anthropic
-                batch_info = self.anthropic_client.beta.messages.batches.retrieve(batch_id)
+                # Query Anthropic (let SDK handle retries)
+                try:
+                    batch_info = self.anthropic_client.beta.messages.batches.retrieve(batch_id)
+                except Exception as e:
+                    logger.error(f"Error retrieving batch {batch_id}: {e}", exc_info=True)
+                    for b in batches:
+                        # Increment retry counter
+                        self.db.increment_extraction_batch_retry(b.id, user_id=user_id)
+
+                        # Fail permanently after max retries
+                        if b.retry_count + 1 >= self.config.max_retry_count:
+                            self.db.update_extraction_batch_status(
+                                b.id, "failed",
+                                error_message=f"Failed after {self.config.max_retry_count} retries: {str(e)}",
+                                user_id=user_id
+                            )
+                            stats["failed"] += 1
+                    continue
 
                 if batch_info.processing_status == "ended":
                     for b in batches:
-                        if self._process_extraction_result(batch_id, b):
-                            stats["completed"] += 1
-                        else:
+                        try:
+                            if self._process_extraction_result(batch_id, b):
+                                stats["completed"] += 1
+                            else:
+                                raise RuntimeError("Processing returned False")
+                        except Exception as e:
+                            logger.error(f"Error processing batch {b.id}: {e}", exc_info=True)
+
+                            # Increment retry counter
+                            self.db.increment_extraction_batch_retry(b.id, user_id=user_id)
+
+                            # Fail permanently after max retries
+                            if b.retry_count + 1 >= self.config.max_retry_count:
+                                self.db.update_extraction_batch_status(
+                                    b.id, "failed",
+                                    error_message=f"Failed after {self.config.max_retry_count} retries: {str(e)}",
+                                    user_id=user_id
+                                )
                             stats["failed"] += 1
+
                 elif batch_info.processing_status == "in_progress":
                     for b in batches:
                         if b.status != "processing":
@@ -313,7 +252,7 @@ class BatchingService:
                         )
                     stats["failed"] += len(batches)
 
-        logger.info(f"Extraction polling: {stats['completed']} completed, {stats['failed']} failed")
+        logger.info(f"Extraction polling: {stats['completed']} completed, {stats['failed']} failed, {stats['expired']} expired")
         return stats
 
     def poll_linking_batches(self) -> Dict[str, int]:
@@ -363,26 +302,58 @@ class BatchingService:
                             stats["expired"] += len(batches)
                             continue
 
-                        # Query Anthropic
-                        batch_info = self.anthropic_client.beta.messages.batches.retrieve(batch_id)
+                        # Query Anthropic (let SDK handle retries)
+                        try:
+                            batch_info = self.anthropic_client.beta.messages.batches.retrieve(batch_id)
+                        except Exception as e:
+                            logger.error(f"Error retrieving relationship batch {batch_id}: {e}", exc_info=True)
+                            for b in batches:
+                                # Increment retry counter
+                                self.db.increment_relationship_batch_retry(b.id, user_id=user_id)
+
+                                # Fail permanently after max retries
+                                if b.retry_count + 1 >= self.config.max_retry_count:
+                                    self.db.update_relationship_batch_status(
+                                        b.id, "failed",
+                                        error_message=f"Failed after {self.config.max_retry_count} retries: {str(e)}",
+                                        user_id=user_id
+                                    )
+                                    stats["failed"] += 1
+                            continue
 
                         if batch_info.processing_status == "ended":
                             for b in batches:
-                                # Route to correct processor based on batch type
-                                if b.batch_type == "relationship_classification":
-                                    success = self._process_relationship_result(batch_id, b)
-                                elif b.batch_type == "consolidation":
-                                    success = self._process_consolidation_result(batch_id, b)
-                                elif b.batch_type == "consolidation_review":
-                                    success = self._process_consolidation_review_result(batch_id, b)
-                                else:
-                                    logger.error(f"Unknown batch type: {b.batch_type}")
-                                    success = False
+                                try:
+                                    # Route to correct processor based on batch type
+                                    if b.batch_type == "relationship_classification":
+                                        success = self._process_relationship_result(batch_id, b)
+                                    elif b.batch_type == "consolidation":
+                                        success = self._process_consolidation_result(batch_id, b)
+                                    elif b.batch_type == "consolidation_review":
+                                        success = self._process_consolidation_review_result(batch_id, b)
+                                    else:
+                                        logger.error(f"Unknown batch type: {b.batch_type}")
+                                        success = False
 
-                                if success:
-                                    stats["completed"] += 1
-                                else:
+                                    if success:
+                                        stats["completed"] += 1
+                                    else:
+                                        raise RuntimeError("Processing returned False")
+                                except Exception as e:
+                                    logger.error(f"Error processing relationship batch {b.id}: {e}", exc_info=True)
+
+                                    # Increment retry counter
+                                    self.db.increment_relationship_batch_retry(b.id, user_id=user_id)
+
+                                    # Fail permanently after max retries
+                                    if b.retry_count + 1 >= self.config.max_retry_count:
+                                        self.db.update_relationship_batch_status(
+                                            b.id, "failed",
+                                            error_message=f"Failed after {self.config.max_retry_count} retries: {str(e)}",
+                                            user_id=user_id
+                                        )
                                     stats["failed"] += 1
+
                         elif batch_info.processing_status == "in_progress":
                             for b in batches:
                                 if b.status != "processing":
@@ -402,7 +373,7 @@ class BatchingService:
             except Exception as e:
                 logger.error(f"Error polling batches for user {user_id}: {e}", exc_info=True)
 
-        logger.info(f"Relationship polling: {stats['completed']} completed, {stats['failed']} failed")
+        logger.info(f"Relationship polling: {stats['completed']} completed, {stats['failed']} failed, {stats['expired']} expired")
         return stats
 
     # ============================================================================
@@ -490,83 +461,6 @@ class BatchingService:
         logger.debug(f"Loaded {len(messages)} messages for segment {segment_message_id}")
         return messages
 
-    def _load_conversation_chunks(self, user_id: str) -> List[ProcessingChunk]:
-        """
-        Load continuum messages and build chunks with memory context.
-
-        Args:
-            user_id: User ID
-
-        Returns:
-            List of ProcessingChunk objects
-
-        Raises:
-            Exception: If database query or continuum operations fail
-        """
-        # Get continuum
-        continuum = self.conversation_repo.get_continuum(user_id)
-        if not continuum:
-            continuum = self.conversation_repo.create_continuum(user_id)
-
-        # Get last extraction timestamp
-        user_details = self.auth_db.get_user_by_id(user_id)
-        last_run = user_details.get('daily_manipulation_last_run')
-
-        # Load messages since last run
-        db_client = self.conversation_repo._get_client(user_id)
-        query = """
-        SELECT * FROM messages
-        WHERE continuum_id = %s
-        """ + (
-            "AND created_at > %s" if last_run else ""
-        ) + """
-        AND (metadata->>'system_notification' IS NULL OR metadata->>'system_notification' = 'false')
-        ORDER BY created_at
-        """
-
-        params = (str(continuum.id), last_run) if last_run else (str(continuum.id),)
-        message_rows = db_client.execute_query(query, params)
-
-        # Convert to Message objects
-        messages = []
-        for row in message_rows:
-            metadata = self._parse_metadata(row.get('metadata', {}))
-            messages.append(Message(
-                id=row['id'],
-                content=row['content'],
-                role=row['role'],
-                created_at=row['created_at'],
-                metadata=metadata
-            ))
-
-        # Check minimum messages
-        conversational = [m for m in messages if m.role in ('user', 'assistant')]
-        if len(conversational) < self.config.min_messages_for_extraction:
-            logger.info(
-                f"Skipping user {user_id}: only {len(conversational)} conversational messages "
-                f"(minimum {self.config.min_messages_for_extraction} required)"
-            )
-            return []
-
-        # Build chunks with memory context
-        chunks = []
-        chunk_size = self.config.max_chunk_size
-
-        for i in range(0, len(messages), chunk_size):
-            chunk_messages = messages[i:i + chunk_size]
-            chunk = ProcessingChunk.from_conversation_messages(
-                chunk_messages,
-                chunk_index=i // chunk_size
-            )
-
-            # Build memory context for this chunk (only referenced memories)
-            memory_context = self._build_memory_context(chunk_messages, user_id)
-            chunk.memory_context_snapshot = memory_context
-
-            chunks.append(chunk)
-
-        logger.info(f"Built {len(chunks)} chunks for user {user_id}")
-        return chunks
 
     def _parse_metadata(self, raw_metadata) -> Dict[str, Any]:
         """Parse message metadata from various formats."""
@@ -747,7 +641,9 @@ class BatchingService:
                 # Call LLM directly (routes to OpenAI fallback)
                 response = self.llm_provider.generate_response(
                     messages=messages,
-                    system_override=self.extraction_prompt
+                    system_override=self.extraction_prompt,
+                    thinking_enabled=True,
+                    thinking_budget=1024
                 )
 
                 # Extract text from response
@@ -780,13 +676,13 @@ class BatchingService:
 
             # Update timestamp to prevent reprocessing
             if total_memories_stored > 0:
-                self.auth_db.update_user_manipulation_timestamp(user_id, 'daily')
+                self.db.update_extraction_timestamp(user_id)
                 logger.info(f"Immediate extraction complete for user {user_id}: {total_memories_stored} total memories")
 
             return f"bypass_{uuid4()}"
 
         finally:
-            set_current_user_id(None)
+            clear_user_context()
 
     def _build_batch_messages(self, chunk: ProcessingChunk) -> List[Dict[str, Any]]:
         """Build Anthropic messages from chunk."""
@@ -863,10 +759,21 @@ class BatchingService:
 
             if result.result.type == "succeeded":
                 # Extract text from response
-                response_text = "\n".join([
+                text_blocks = [
                     block.text for block in result.result.message.content
-                    if block.type == "text"
-                ])
+                    if block.type == "text" and block.text
+                ]
+
+                # Skip if no text content in the response
+                if not text_blocks:
+                    logger.debug(f"Batch {batch_id} result had no text content - skipping")
+                    batch.status = ExtractionBatchStatus.COMPLETED
+                    batch.completed_at = utc_now()
+                    batch.result = {"memories": [], "linking_pairs": []}
+                    self.db.update_extraction_batch(batch)
+                    continue
+
+                response_text = "\n".join(text_blocks)
 
                 # Delegate to extraction service for parsing with UUID remapping
                 set_current_user_id(batch.user_id)
@@ -898,8 +805,8 @@ class BatchingService:
                         logger.info(f"Batch {batch_id} chunk {batch.custom_id}: {len(memory_ids)} stored")
 
                         # Update last extraction timestamp to prevent reprocessing
-                        self.auth_db.update_user_manipulation_timestamp(batch.user_id, 'daily')
-                        logger.debug(f"Updated daily_manipulation_last_run timestamp for user {batch.user_id}")
+                        self.db.update_extraction_timestamp(batch.user_id)
+                        logger.debug(f"Updated extraction timestamp for user {batch.user_id}")
                     else:
                         logger.info(f"Batch {batch_id} chunk {batch.custom_id}: no memories extracted")
 
@@ -909,7 +816,7 @@ class BatchingService:
 
                     return True
                 finally:
-                    set_current_user_id(None)
+                    clear_user_context()
 
             elif result.result.type == "errored":
                 self.db.update_extraction_batch_status(
@@ -1159,14 +1066,13 @@ class BatchingService:
                     rel_type = classification.get("relationship_type")
 
                     if rel_type and rel_type != "null":
-                        # Create bidirectional link
+                        # Create bidirectional link (user context set at line 1137)
                         if self.linking.create_bidirectional_link(
                             source_id=UUID(pair["new_memory_id"]),
                             target_id=UUID(pair["similar_memory_id"]),
                             link_type=rel_type,
                             confidence=classification.get("confidence", 0.9),
-                            reasoning=classification.get("reasoning", ""),
-                            user_id=user_id
+                            reasoning=classification.get("reasoning", "")
                         ):
                             links_created += 1
                 except json.JSONDecodeError:
@@ -1174,11 +1080,11 @@ class BatchingService:
                     continue
 
             logger.info(f"Immediate relationship classification complete for user {user_id}: {links_created} links created")
-            set_current_user_id(None)
+            clear_user_context()
 
         except Exception as e:
             logger.error(f"Error in immediate relationship classification for {user_id}: {e}", exc_info=True)
-            set_current_user_id(None)
+            clear_user_context()
 
     def submit_consolidation_batch(self, user_id: str) -> Optional[str]:
         """
@@ -1282,7 +1188,9 @@ class BatchingService:
                 # Call LLM directly (routes to OpenAI fallback)
                 response = self.llm_provider.generate_response(
                     messages=[{"role": "user", "content": payload["user_prompt"]}],
-                    system_override=payload["system_prompt"]
+                    system_override=payload["system_prompt"],
+                    thinking_enabled=True,
+                    thinking_budget=1024
                 )
 
                 # Extract text from response
@@ -1398,11 +1306,11 @@ class BatchingService:
                     continue
 
             logger.info(f"Immediate consolidation complete for user {user_id}: {memories_consolidated} memories consolidated")
-            set_current_user_id(None)
+            clear_user_context()
 
         except Exception as e:
             logger.error(f"Error in immediate consolidation for {user_id}: {e}", exc_info=True)
-            set_current_user_id(None)
+            clear_user_context()
 
     def _process_relationship_result(self, batch_id: str, batch: PostProcessingBatch) -> bool:
         """
@@ -1471,18 +1379,17 @@ class BatchingService:
                 if not pair_data:
                     continue
 
-                # Delegate to linking service to create bidirectional link
+                # Delegate to linking service to create bidirectional link (user context set at line 1457)
                 if self.linking.create_bidirectional_link(
                     source_id=UUID(pair_data["new_memory_id"]),
                     target_id=UUID(pair_data["similar_memory_id"]),
                     link_type=rel_type,
                     confidence=classification.get("confidence", 0.9),
-                    reasoning=classification.get("reasoning", ""),
-                    user_id=batch.user_id
+                    reasoning=classification.get("reasoning", "")
                 ):
                     links_created += 1
 
-            set_current_user_id(None)
+            clear_user_context()
 
             # Delete batch record - processing complete, links created
             self.db.delete_relationship_batch(batch.id, user_id=batch.user_id)
@@ -1567,7 +1474,7 @@ class BatchingService:
                         f"(batch: {review_batch_id})"
                     )
 
-            set_current_user_id(None)
+            clear_user_context()
 
             # Delete batch record - processing complete, review batch submitted
             self.db.delete_relationship_batch(batch.id, user_id=batch.user_id)
@@ -1645,7 +1552,7 @@ Respond with JSON:
             requests.append({
                 "custom_id": review_custom_id,
                 "params": {
-                    "model": "claude-3-5-haiku-20241022",
+                    "model": "claude-haiku-4-5",
                     "max_tokens": 200,
                     "temperature": 0.0,
                     "system": system_prompt,
@@ -1832,7 +1739,7 @@ Respond with JSON:
                         f"(median importance: {median_importance:.3f}): {consolidated_text[:80]}..."
                     )
 
-            set_current_user_id(None)
+            clear_user_context()
 
             # Delete batch record - processing complete, memories consolidated
             self.db.delete_relationship_batch(batch.id, user_id=batch.user_id)

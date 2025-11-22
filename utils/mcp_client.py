@@ -33,7 +33,7 @@ from mcp.client.stdio import stdio_client
 from mcp.types import Tool, Resource, CallToolResult
 
 from utils.user_context import get_current_user_id
-from auth.user_credentials import UserCredentialService
+from utils.user_credentials import UserCredentialService
 
 logger = logging.getLogger("mcp_client")
 

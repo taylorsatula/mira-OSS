@@ -112,22 +112,36 @@ Example: If extracting 3 memories where memory #1 might be motivated by memory #
 This suggests the classifier should evaluate if "runtime errors frustrating" is motivated_by "prefers TypeScript".
 
 OUTPUT FORMAT:
-🚨 CRITICAL: Return ONLY raw JSON array. NO markdown code blocks, NO ```json wrapper, NO explanatory text before or after.
 
-Your ENTIRE response must be parseable JSON starting with [ and ending with ]. Nothing else.
+Claude, respond with only a valid JSON array. No additional text, formatting, or markup.
 
+Start your response with [ and end with ]
+
+Format each memory object like this:
 [
   {
     "text": "Complete factual memory with stated reasoning and rich semantic anchors",
-    "confidence": 0.0-1.0,
-    "expires_at": "ISO-date or null",
-    "happens_at": "ISO-date or null",
-    "relationship_type": "consolidates|conflicts|supports|supersedes|related|null",
-    "related_memory_ids": ["exact-8-char-ids"],
-    "consolidates_memory_ids": ["exact-8-char-ids"],
-    "linking_hints": [0, 2]
+    "confidence": 0.9,
+    "expires_at": null,
+    "happens_at": null,
+    "relationship_type": null,
+    "related_memory_ids": [],
+    "consolidates_memory_ids": [],
+    "linking_hints": []
   }
 ]
+
+Include all fields in each memory:
+- "text": string (cannot be null or empty)
+- "confidence": number 0.0-1.0
+- "expires_at": ISO-8601 date string or null
+- "happens_at": ISO-8601 date string or null
+- "relationship_type": "consolidates"|"conflicts"|"supports"|"supersedes"|"related"|null
+- "related_memory_ids": array of 8-char IDs or empty []
+- "consolidates_memory_ids": array of 8-char IDs or empty []
+- "linking_hints": array of integers (0-based indices) or empty []
+
+If extracting no memories, return empty array: []
 
 CONFIDENCE SCORING:
 Rate your confidence (0.0-1.0) that this memory accurately represents user-stated information:

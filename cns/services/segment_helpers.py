@@ -79,7 +79,8 @@ def collapse_segment_sentinel(
     inactive_duration_minutes: int,
     processing_failed: bool = False,
     tools_used: Optional[List[str]] = None,
-    segment_end_time: Optional[datetime] = None
+    segment_end_time: Optional[datetime] = None,
+    complexity_score: int = 2
 ) -> Message:
     """
     Collapse segment sentinel with summary and embedding.
@@ -95,6 +96,7 @@ def collapse_segment_sentinel(
         processing_failed: True if summary generation failed and fallback was used
         tools_used: Tools used in segment (extracted from messages)
         segment_end_time: Timestamp of last message in segment
+        complexity_score: Cognitive complexity score (1=simple, 2=moderate, 3=complex)
 
     Returns:
         New Message with status='collapsed' and summary in content
@@ -107,7 +109,8 @@ def collapse_segment_sentinel(
         'inactive_duration_minutes': inactive_duration_minutes,
         'summary_generated_at': utc_now().isoformat(),
         'processing_failed': processing_failed,
-        'display_title': display_title
+        'display_title': display_title,
+        'complexity_score': complexity_score
     }
 
     # Set tools_used from actual messages
@@ -216,28 +219,19 @@ def format_segment_for_display(sentinel: Message) -> str:
         KeyError: If required metadata is missing
         ValueError: If timestamp format is invalid
     """
-    from utils.timezone_utils import convert_from_utc, format_datetime
-    from utils.user_context import get_user_timezone
+    from utils.timezone_utils import format_relative_time
 
     display_title = sentinel.metadata['display_title']
     summary = sentinel.content
     start_time_iso = sentinel.metadata['segment_start_time']
-    end_time_iso = sentinel.metadata['segment_end_time']
 
-    # Convert ISO timestamps to datetime objects
+    # Convert ISO timestamp to datetime object
     start_time = datetime.fromisoformat(start_time_iso)
-    end_time = datetime.fromisoformat(end_time_iso)
 
-    # Get user timezone and convert times
-    user_tz = get_user_timezone()
-    start_time_user_tz = convert_from_utc(start_time, user_tz)
-    end_time_user_tz = convert_from_utc(end_time, user_tz)
+    # Format as relative time (grouped timeframe using segment start)
+    relative_time = format_relative_time(start_time)
 
-    # Format as readable timespan
-    start_str = format_datetime(start_time_user_tz, "datetime", include_timezone=True)
-    end_str = format_datetime(end_time_user_tz, "datetime", include_timezone=True)
-
-    return f"This is an extended summary of: {display_title}\nTimespan: {start_str} to {end_str}\n\n{summary}"
+    return f"THIS IS AN EXTENDED SUMMARY OF: {display_title}\nTIMESPAN: {relative_time}\n\n{summary}"
 
 
 def create_collapse_marker() -> Message:
@@ -316,10 +310,26 @@ def create_session_boundary_marker(segment_summaries: List[Message]) -> Message:
     last_time_str = format_datetime(last_time_user_tz, "time_only", include_timezone=True)
     current_time_str = format_datetime(current_time_user_tz, "time_only", include_timezone=True)
 
+    # Calculate gap duration
+    gap = current_time - last_session_end
+    gap_hours = int(gap.total_seconds() / 3600)
+    gap_days = gap_hours // 24
+    remaining_hours = gap_hours % 24
+
+    # Format gap string
+    if gap_days > 0:
+        if remaining_hours > 0:
+            gap_str = f"{gap_days} day{'s' if gap_days != 1 else ''} {remaining_hours} hour{'s' if remaining_hours != 1 else ''}"
+        else:
+            gap_str = f"{gap_days} day{'s' if gap_days != 1 else ''}"
+    else:
+        gap_str = f"{gap_hours} hour{'s' if gap_hours != 1 else ''}"
+
     # Create boundary message
     boundary_content = (
         f"NOTIFICATION: LAST CHAT SESSION ENDED AT {last_time_str} | "
-        f"THIS CHAT SESSION BEGAN AT {current_time_str}"
+        f"THIS CHAT SESSION BEGAN AT {current_time_str} | "
+        f"GAP OF {gap_str.upper()}"
     )
 
     return Message(

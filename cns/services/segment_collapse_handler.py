@@ -117,8 +117,8 @@ class SegmentCollapseHandler:
                     f"Possible data corruption or segment boundary logic error."
                 )
 
-            # Generate summary and embedding (raises on failure)
-            summary, display_title, embedding = self._generate_summary_with_fallback(
+            # Generate summary, display title, complexity, and embedding (raises on failure)
+            summary, display_title, complexity, embedding = self._generate_summary_with_fallback(
                 messages,
                 sentinel
             )
@@ -138,7 +138,8 @@ class SegmentCollapseHandler:
                 inactive_duration_minutes=event.inactive_duration_minutes,
                 processing_failed=False,  # Always False - failures raise instead of degrading
                 tools_used=tools_used,
-                segment_end_time=segment_end_time
+                segment_end_time=segment_end_time,
+                complexity_score=complexity
             )
 
             # Save collapsed sentinel to database
@@ -176,6 +177,11 @@ class SegmentCollapseHandler:
             ))
 
             logger.info(f"Successfully collapsed segment {event.segment_id}")
+
+            # Reset thinking budget preference to system default after segment collapse
+            continuum = self.continuum_pool.get_or_create()
+            continuum.set_thinking_budget_preference(None)
+            logger.debug(f"Reset thinking budget preference to system default after segment collapse")
 
         except Exception as e:
             # Collapse failure - segment remains active and will retry on next timeout check
@@ -273,16 +279,16 @@ class SegmentCollapseHandler:
         self,
         messages: List[Message],
         sentinel: Message
-    ) -> tuple[str, str, List[float]]:
+    ) -> tuple[str, str, int, List[float]]:
         """
-        Generate segment summary and embedding.
+        Generate segment summary, complexity score, and embedding.
 
         Args:
             messages: Messages in segment
             sentinel: Segment boundary sentinel (for tools_used)
 
         Returns:
-            Tuple of (summary_text, display_title, embedding)
+            Tuple of (summary_text, display_title, complexity_score, embedding)
 
         Raises:
             RuntimeError: If summary generation or embedding generation fails
@@ -290,8 +296,8 @@ class SegmentCollapseHandler:
         tools_used = sentinel.metadata.get('tools_used', [])
 
         try:
-            # Generate summary using SummaryGenerator
-            summary_text, display_title = self.summary_generator.generate_summary(
+            # Generate summary using SummaryGenerator (returns 3-tuple)
+            summary_text, display_title, complexity = self.summary_generator.generate_summary(
                 messages=messages,
                 summary_type=SummaryType.SEGMENT,
                 tools_used=tools_used
@@ -303,7 +309,7 @@ class SegmentCollapseHandler:
             # Convert ndarray to list for JSON serialization (storage boundary)
             embedding_list = embedding.tolist()
 
-            return summary_text, display_title, embedding_list
+            return summary_text, display_title, complexity, embedding_list
 
         except Exception as e:
             # Re-raise to fail the entire collapse operation
@@ -341,7 +347,7 @@ class SegmentCollapseHandler:
         # Memory extraction via Batch API
         if self.lt_memory_factory and messages:
             # Submit to Batch API (returns immediately, polling happens separately)
-            batch_submitted = self.lt_memory_factory.batching.submit_segment_extraction(
+            batch_submitted = self.lt_memory_factory.extraction_orchestrator.submit_segment_extraction(
                 user_id=user_id,
                 messages=messages,
                 segment_id=segment_id
@@ -359,7 +365,12 @@ class SegmentCollapseHandler:
             logger.info(f"Submitted segment {segment_id} for memory extraction")
 
         # Domain knowledge updates (if user has blocks enabled)
-        # TODO: Implement domain knowledge segment processing
+        # NOTE (2025-11-07): Considered implementing segment collapse flush to domain knowledge service.
+        # Trade-off: Letta requires consistent batches of 10 messages for iterative learning,
+        # but segment collapse would flush partial batches (< 10 messages). Need to resolve
+        # whether to prioritize: (a) Letta batch consistency vs (b) data completeness on collapse.
+        # Current behavior: Messages buffer until batch size (10) or explicit disable/delete.
+        # Deferred for future architectural decision.
 
     def _extract_tools_from_messages(self, messages: List[Message]) -> List[str]:
         """

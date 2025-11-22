@@ -102,7 +102,7 @@ class SummaryGenerator:
                              messages: Optional[List[Message]],
                              summary_type: SummaryType,
                              tools_used: Optional[List[str]] = None,
-                             content_override: Optional[str] = None) -> Tuple[str, str]:
+                             content_override: Optional[str] = None) -> Tuple[str, str, int]:
         """
         Generate a summary (text only, does not persist).
 
@@ -113,7 +113,8 @@ class SummaryGenerator:
             content_override: Pre-formatted content to summarize
 
         Returns:
-            Tuple of (synopsis_text, display_title)
+            Tuple of (synopsis_text, display_title, complexity_score)
+            where complexity_score is 1 (simple), 2 (moderate), or 3 (complex)
 
         Raises:
             ValueError: If summary generation fails
@@ -153,15 +154,15 @@ class SummaryGenerator:
 
             raw_summary_output = self.llm_provider.extract_text_content(response)
 
-            # Extract synopsis and display title from output
-            synopsis, display_title = self._extract_display_title(raw_summary_output)
+            # Extract synopsis, display title, and complexity from output
+            synopsis, display_title, complexity = self._extract_summary_components(raw_summary_output)
 
             logger.info(
-                f"Generated {summary_type.value}, "
+                f"Generated {summary_type.value} (complexity={complexity}), "
                 f"summarizing {len(messages) if messages else 'pre-formatted'} messages"
             )
 
-            return synopsis.strip(), display_title
+            return synopsis.strip(), display_title, complexity
         except Exception as e:
             logger.error(f"Failed to generate {summary_type.value}: {str(e)}")
             raise ValueError(f"Summary generation failed: {str(e)}") from e
@@ -201,20 +202,21 @@ class SummaryGenerator:
 
         return "\n\n".join(formatted_lines)
 
-    def _extract_display_title(self, summary_output: str) -> Tuple[str, str]:
+    def _extract_summary_components(self, summary_output: str) -> Tuple[str, str, int]:
         """
-        Extract synopsis and display title from LLM output using tag_parser.
+        Extract synopsis, display title, and complexity from LLM output using tag_parser.
 
         Expected format:
         [Synopsis text here]
 
         <mira:display_title>[Title here]</mira:display_title>
+        <mira:complexity>[1-3]</mira:complexity>
 
         Args:
-            summary_output: Raw LLM output containing synopsis and display title
+            summary_output: Raw LLM output containing synopsis, display title, and complexity
 
         Returns:
-            Tuple of (synopsis, display_title)
+            Tuple of (synopsis, display_title, complexity_score)
 
         Raises:
             ValueError: If display_title tag is missing (instruction-following failure)
@@ -224,6 +226,7 @@ class SummaryGenerator:
 
         display_title = parsed.get('display_title')
         synopsis = parsed.get('clean_text', summary_output).strip()
+        complexity = parsed.get('complexity')
 
         # Missing display_title indicates LLM instruction-following failure
         if not display_title:
@@ -236,7 +239,15 @@ class SummaryGenerator:
                 "This indicates instruction-following failure."
             )
 
-        return synopsis, display_title
+        # Default complexity to 2 (moderate) if missing or invalid
+        if complexity is None or complexity not in [1, 2, 3]:
+            logger.warning(
+                f"LLM did not provide valid complexity score (got {complexity}), "
+                f"defaulting to 2 (moderate)"
+            )
+            complexity = 2
+
+        return synopsis, display_title, complexity
     
     def _get_segment_time(self, messages: Optional[List[Message]]) -> str:
         """

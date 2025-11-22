@@ -18,15 +18,15 @@ logger = logging.getLogger(__name__)
 class DistributedLock:
     """
     Distributed lock using Valkey's atomic SET NX operation.
-
+    
     Ensures only one process can hold a lock for a given resource at a time,
     with automatic expiration to prevent deadlocks from crashed processes.
     """
-
+    
     def __init__(self, lock_prefix: str = "lock:", default_ttl: int = 60):
         """
         Initialize distributed lock manager.
-
+        
         Args:
             lock_prefix: Prefix for lock keys in Valkey
             default_ttl: Default TTL in seconds for locks (prevents deadlocks)
@@ -34,7 +34,7 @@ class DistributedLock:
         self.lock_prefix = lock_prefix
         self.default_ttl = default_ttl
         self.valkey = get_valkey()
-
+    
     def acquire(self, resource_id: str, ttl: Optional[int] = None, lock_value: Optional[str] = None) -> bool:
         """
         Attempt to acquire a distributed lock.
@@ -72,7 +72,7 @@ class DistributedLock:
             logger.debug(f"Failed to acquire lock for {resource_id} - already locked")
 
         return bool(success)
-
+    
     def get_lock_owner(self, resource_id: str) -> Optional[str]:
         """
         Get the current owner (value) of a lock.
@@ -89,22 +89,22 @@ class DistributedLock:
         key = f"{self.lock_prefix}{resource_id}"
         value = self.valkey.get(key)
         return value
-
+    
     def force_release(self, resource_id: str) -> bool:
         """
         Force release a lock regardless of owner.
-
+        
         Use with caution - only for cleaning up stale locks.
-
+        
         Args:
             resource_id: Unique identifier for the resource
-
+            
         Returns:
             True if lock was released, False if lock didn't exist
         """
         logger.warning(f"Force releasing lock for {resource_id}")
         return self.release(resource_id)
-
+    
     def release(self, resource_id: str) -> bool:
         """
         Release a distributed lock.
@@ -128,7 +128,7 @@ class DistributedLock:
             logger.debug(f"No lock to release for {resource_id}")
 
         return bool(deleted)
-
+    
     def is_locked(self, resource_id: str) -> bool:
         """
         Check if a resource is currently locked.
@@ -144,7 +144,7 @@ class DistributedLock:
         """
         key = f"{self.lock_prefix}{resource_id}"
         return self.valkey.exists(key)
-
+    
     def get_ttl(self, resource_id: str) -> int:
         """
         Get remaining TTL for a lock.
@@ -160,7 +160,7 @@ class DistributedLock:
         """
         key = f"{self.lock_prefix}{resource_id}"
         return self.valkey.ttl(key)
-
+    
     @contextmanager
     def lock(self, resource_id: str, ttl: Optional[int] = None):
         """
@@ -200,30 +200,30 @@ class LockAcquisitionError(Exception):
 class UserRequestLock:
     """
     Specialized distributed lock for per-user request concurrency control.
-
+    
     Ensures a user can only have one active chat request at a time across
     all worker processes.
     """
-
+    
     def __init__(self, ttl: int = 60):
         """
         Initialize user request lock.
-
+        
         Args:
             ttl: Lock timeout in seconds (protects against crashes)
         """
         self.lock = DistributedLock(lock_prefix="user_lock:", default_ttl=ttl)
         self.default_ttl = ttl
-
-
-
+    
+    
+    
     def acquire(self, user_id: str) -> bool:
         """
         Attempt to acquire lock for user.
-
+        
         Args:
             user_id: User identifier
-
+        
         Returns:
             True if lock acquired, False if user has concurrent request
         """
@@ -233,32 +233,32 @@ class UserRequestLock:
         else:
             logger.debug(f"Failed to acquire lock for user {user_id} - concurrent request in progress")
         return success
-
-
+    
+    
     def release(self, user_id: str) -> bool:
         """
         Release lock for user.
-
+        
         Args:
             user_id: User identifier
-
+        
         Returns:
             True if lock was released
         """
         return self.lock.release(user_id)
-
+    
     def is_locked(self, user_id: str) -> bool:
         """
         Check if user currently has an active request.
-
+        
         Args:
             user_id: User identifier
-
+        
         Returns:
             True if user has active request
         """
         return self.lock.is_locked(user_id)
-
+    
     @contextmanager
     def lock_user(self, user_id: str):
         """

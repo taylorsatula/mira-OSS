@@ -282,3 +282,77 @@ class TestRealWorkflow:
         # All segment IDs are unique
         segment_ids = [get_segment_id(s) for s in segments]
         assert len(segment_ids) == len(set(segment_ids))
+
+
+class TestComplexityScoring:
+    """Tests enforce complexity score storage and handling guarantees."""
+
+    def test_collapse_stores_complexity_score(self):
+        """CONTRACT: collapse_segment_sentinel() stores complexity_score in metadata."""
+        sentinel = create_segment_boundary_sentinel(utc_now(), "cid")
+
+        collapsed = collapse_segment_sentinel(
+            sentinel,
+            summary="Test summary",
+            display_title="Test",
+            embedding=None,
+            inactive_duration_minutes=60,
+            complexity_score=3
+        )
+
+        assert collapsed.metadata['complexity_score'] == 3
+
+    def test_collapse_defaults_complexity_to_two(self):
+        """CONTRACT: complexity_score defaults to 2 (moderate) when not provided."""
+        sentinel = create_segment_boundary_sentinel(utc_now(), "cid")
+
+        # Omit complexity_score parameter
+        collapsed = collapse_segment_sentinel(
+            sentinel,
+            summary="Test summary",
+            display_title="Test",
+            embedding=None,
+            inactive_duration_minutes=60
+        )
+
+        assert collapsed.metadata['complexity_score'] == 2
+
+    def test_all_complexity_values_are_valid(self):
+        """CONTRACT: Complexity scores 1, 2, 3 are all valid and stored correctly."""
+        sentinel = create_segment_boundary_sentinel(utc_now(), "cid")
+
+        for complexity in [1, 2, 3]:
+            collapsed = collapse_segment_sentinel(
+                sentinel,
+                summary=f"Complexity {complexity} summary",
+                display_title=f"Complexity {complexity}",
+                embedding=None,
+                inactive_duration_minutes=60,
+                complexity_score=complexity
+            )
+
+            assert collapsed.metadata['complexity_score'] == complexity
+
+    def test_complexity_persists_through_lifecycle(self):
+        """CONTRACT: Complexity score persists through complete segment lifecycle."""
+        # Create and collapse with complexity
+        sentinel = create_segment_boundary_sentinel(utc_now(), "cid")
+        embedding = [0.3] * 384
+
+        collapsed = collapse_segment_sentinel(
+            sentinel,
+            summary="Complex analysis summary",
+            display_title="Complex analysis",
+            embedding=embedding,
+            inactive_duration_minutes=90,
+            complexity_score=3,
+            tools_used=["tool_a", "tool_b", "tool_c", "tool_d"]
+        )
+
+        # Mark as processed
+        mark_segment_processed(collapsed, memories_extracted=True, memory_count=5)
+
+        # Complexity still present
+        assert collapsed.metadata['complexity_score'] == 3
+        assert collapsed.metadata['status'] == "collapsed"
+        assert collapsed.metadata['memories_extracted'] is True

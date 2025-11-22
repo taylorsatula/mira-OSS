@@ -19,6 +19,12 @@ from kagiapi import KagiClient
 from tools.repo import Tool
 from tools.registry import registry
 
+try:
+    from bs4 import BeautifulSoup
+    BS4_AVAILABLE = True
+except ImportError:
+    BS4_AVAILABLE = False
+
 
 class MaterializedResponse:
     """
@@ -121,81 +127,8 @@ class WebAccessTool(Tool):
     """
     
     name = "webaccess_tool"
-    simple_description = """
-    Provides comprehensive web access capabilities including HTTP requests, web searches, and webpage content extraction.
-    This integrated tool allows you to interact with web resources through direct HTTP requests to APIs,
-    perform web searches for up-to-date information, and extract clean content from webpages.
-    Use this tool whenever you need to access, search, or extract information from the web.
-    """
-    
-    implementation_details = """
-    This tool combines three web access capabilities:
-    
-    1. HTTP REQUEST FUNCTIONALITY:
-       Makes HTTP requests to external APIs and web services with various methods, parameters, and headers.
-       
-       Operations:
-       - GET: Retrieve data from a specified URL
-         Parameters:
-           url (required): The URL to send the request to
-           params (optional): Query parameters as a dictionary
-           headers (optional): HTTP headers as a dictionary
-           timeout (optional, default=30): Request timeout in seconds
-           response_format (optional, default="json"): Format to return the response in ("json", "text", or "full")
-    
-       - POST: Send data to a specified URL
-         Parameters:
-           url (required): The URL to send the request to
-           data (optional): Form data to send (as a string or dictionary)
-           json (optional): JSON data to send (as a dictionary)
-           params (optional): Query parameters as a dictionary
-           headers (optional): HTTP headers as a dictionary
-           timeout (optional, default=30): Request timeout in seconds
-           response_format (optional, default="json"): Format to return the response in ("json", "text", or "full")
-    
-       - PUT: Update data at a specified URL (parameters same as POST)
-    
-       - DELETE: Delete data at a specified URL (parameters similar to GET)
-    
-    2. WEB SEARCH FUNCTIONALITY:
-       Performs web searches using Kagi search API to find up-to-date information from the internet.
-       
-       Operations:
-       - Search the web for information
-         Parameters:
-           query (required): The search query to send to Kagi search
-           max_results (optional, default=3): Maximum number of results to return
-           allowed_domains (optional): List of domains to include in results
-           blocked_domains (optional): List of domains to exclude from results
-    
-    3. WEBPAGE EXTRACTION FUNCTIONALITY:
-       Extracts content from webpages using Claude's understanding of web content.
-       
-       Operations:
-       - Extract content from a webpage at a given URL
-         Parameters:
-           url (required): The URL of the webpage to extract content from
-           extraction_prompt (optional): Custom prompt to guide the extraction (default focuses on main content)
-           format (optional, default="text"): Output format - "text", "markdown", or "html"
-           include_metadata (optional, default=False): Whether to include page metadata in the output
-           timeout (optional, default=30): Request timeout in seconds
-    
-    USAGE NOTES:
-    - Use http_request for direct API calls when you know the specific endpoint and parameters
-    - Use web_search when you need to find information but don't have a specific URL
-    - Use webpage_extract when you have a URL but need to get clean, readable content from it
-    - These capabilities can be used together: search for content, then extract from the best result URLs
-    
-    LIMITATIONS:
-    - Cannot make requests to internal network addresses (security restriction)
-    - Search quality depends on query formulation
-    - Very large pages may exceed processing limits
-    - Some websites may block automated access
-    - JavaScript-rendered content may not be fully captured
-    """
-    
-    description = simple_description + implementation_details
-    
+    simple_description = "Access the web with three capabilities: (1) HTTP requests to APIs (GET/POST/PUT/DELETE), (2) web search using Kagi for current information, (3) extract clean content from webpages. Use for APIs, research, or fetching web content."
+
     anthropic_schema = {
         "name": "webaccess_tool",
         "description": "Provides comprehensive web access with HTTP requests, web searches, and webpage extraction",
@@ -284,50 +217,6 @@ class WebAccessTool(Tool):
                 "required": ["operation"]
             }
         }
-
-    usage_examples = [
-        {
-            "input": {
-                "operation": "http_request", 
-                "method": "GET", 
-                "url": "https://api.example.com/data", 
-                "params": {"key": "value"}
-            },
-            "output": {
-                "success": True,
-                "status_code": 200,
-                "data": {"example": "response"}
-            }
-        },
-        {
-            "input": {
-                "operation": "web_search", 
-                "query": "latest Mars rover discoveries"
-            },
-            "output": {
-                "success": True,
-                "results": [
-                    {
-                        "title": "NASA's Perseverance Mars Rover Makes New Discovery",
-                        "url": "https://example.com/mars-rover-news",
-                        "content": "Example content about Mars rover discoveries..."
-                    }
-                ]
-            }
-        },
-        {
-            "input": {
-                "operation": "webpage_extract", 
-                "url": "https://example.com/article", 
-                "format": "markdown"
-            },
-            "output": {
-                "success": True,
-                "url": "https://example.com/article",
-                "content": "# Article Title\n\nExample extracted content in markdown format..."
-            }
-        }
-    ]
 
     def __init__(self):
         """
@@ -1373,10 +1262,10 @@ class WebAccessTool(Tool):
     
     def _extract_content_with_llm(self, html_content, url, extraction_prompt, format_type):
         """
-        Use Haiku LLM to extract content from the HTML.
+        Use Groq LLM to extract content from the HTML.
 
-        Uses Claude 3.5 Haiku for fast, cost-effective content extraction.
-        Haiku is 20x cheaper and 2-3x faster than Sonnet for this simple task.
+        Uses Groq gpt-oss-20b for ultra-fast, cost-effective content extraction.
+        Groq provides 10x faster inference than Claude for this simple task.
 
         Args:
             html_content: The HTML content to extract from
@@ -1390,19 +1279,26 @@ class WebAccessTool(Tool):
         Raises:
             Exception: If extraction fails
         """
-        self.logger.debug("Extracting content with Haiku LLM")
+        self.logger.debug("Extracting content with Groq LLM")
 
-        # Get LLM provider configured for Haiku (fast, cheap extraction)
+        # Get config and API key for Groq
+        from config.config import config
+        from clients.vault_client import get_api_key
         from clients.llm_provider import LLMProvider
-        llm_provider = LLMProvider(model="claude-3-5-haiku-20241022")
-        
+
+        groq_api_key = get_api_key(config.api.execution_api_key_name)
+        if not groq_api_key:
+            raise RuntimeError(f"Groq API key '{config.api.execution_api_key_name}' not found in Vault")
+
+        llm_provider = LLMProvider()
+
         # Construct the prompt
         format_instruction = ""
         if format_type == "markdown":
             format_instruction = "Format your output as Markdown to preserve the structure."
         elif format_type == "html":
             format_instruction = "Return a filtered, clean HTML that preserves the structure but removes unnecessary elements."
-            
+
         # Construct specialized system prompt for extraction task
         system_prompt = f"""You are a content extraction assistant. Your sole task is to extract specific information from HTML.
 
@@ -1421,21 +1317,22 @@ SOURCE: {url}"""
         user_message = f"Extract the requested information from this HTML:\n\n```html\n{html_content}\n```"
 
         try:
-            # Call the LLM with extraction-focused system prompt
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message}
-            ]
+            # Call Groq via LLMProvider with endpoint overrides
             response = llm_provider.generate_response(
-                messages=messages,
-                temperature=0.1,  # Low temperature for deterministic extraction
+                messages=[{"role": "user", "content": user_message}],
+                stream=False,
+                endpoint_url=config.api.execution_endpoint,
+                model_override=config.api.execution_model,
+                api_key_override=groq_api_key,
+                system_override=system_prompt,
+                temperature=0.1  # Low temperature for deterministic extraction
             )
-            
+
             # Extract the text content
             extracted_content = llm_provider.extract_text_content(response)
-            
+
             return extracted_content
-            
+
         except Exception as e:
             self.logger.error(f"Error in LLM content extraction: {str(e)}")
             raise RuntimeError(f"LLM content extraction failed: {str(e)}") from e
@@ -1721,12 +1618,60 @@ SOURCE: {url}"""
                     {"conflicting_domains": list(overlap)}
                 )
                 
+    def _clean_html_content(self, html_content: str) -> str:
+        """
+        Clean HTML content to reduce token count before LLM processing.
+
+        Removes head, scripts, styles, and other non-content elements while preserving
+        the main body content structure.
+
+        Args:
+            html_content: Raw HTML content
+
+        Returns:
+            Cleaned HTML string with reduced token count
+        """
+        if not BS4_AVAILABLE:
+            self.logger.warning("BeautifulSoup not available, returning uncleaned HTML")
+            return html_content
+
+        try:
+            soup = BeautifulSoup(html_content, 'html.parser')
+
+            # Remove entire <head> section (scripts, styles, meta tags, etc.)
+            if soup.head:
+                soup.head.decompose()
+
+            # Remove elements that don't contribute to content
+            for element in soup.find_all(['script', 'style', 'noscript', 'iframe', 'object', 'embed']):
+                element.decompose()
+
+            # Remove HTML comments
+            from bs4 import Comment
+            for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
+                comment.extract()
+
+            # Get the cleaned HTML
+            cleaned_html = str(soup)
+
+            # Log token reduction
+            original_length = len(html_content)
+            cleaned_length = len(cleaned_html)
+            reduction_pct = ((original_length - cleaned_length) / original_length * 100) if original_length > 0 else 0
+            self.logger.info(f"HTML cleaned: {original_length} -> {cleaned_length} chars ({reduction_pct:.1f}% reduction)")
+
+            return cleaned_html
+
+        except Exception as e:
+            self.logger.warning(f"Failed to clean HTML: {e}, returning original content")
+            return html_content
+
     def _fetch_webpage(self, url: str, timeout: int) -> tuple:
         """
-        Fetch webpage content with JavaScript rendering.
+        Fetch webpage content with JavaScript rendering, falling back to HTTP if unavailable.
 
-        Uses PlaywrightService to execute JavaScript and return fully-rendered HTML.
-        This handles modern JavaScript-heavy webpages that require client-side rendering.
+        Attempts to use PlaywrightService for JavaScript-heavy pages. If Playwright/Chromium
+        is not available, falls back to simple HTTP request (suitable for static content).
 
         Args:
             url: The URL to fetch
@@ -1738,65 +1683,81 @@ SOURCE: {url}"""
         Raises:
             Exception: Only for validation errors
         """
-        self.logger.debug(f"Fetching webpage with Playwright: {url}")
+        self.logger.debug(f"Fetching webpage: {url}")
 
+        # Try Playwright first for full JavaScript rendering
+        playwright_available = False
         try:
             from utils.playwright_service import PlaywrightService
+            playwright_available = True
         except ImportError as e:
-            self.logger.warning(f"Playwright not available for webpage extraction: {e}")
-            raise ValueError(
-                "Webpage extraction requires Playwright for rendering JavaScript-heavy pages. "
-                "Please ask the user to install Playwright with the following commands:\n"
-                "1. pip install playwright\n"
-                "2. playwright install chromium\n\n"
-                "Note: Playwright requires both the Python package AND the Chromium browser binary."
-            )
+            self.logger.warning(f"Playwright not available, will use HTTP fallback: {e}")
 
-        try:
-            playwright = PlaywrightService.get_instance()
-            html = playwright.fetch_rendered_html(url, timeout=timeout)
+        if playwright_available:
+            try:
+                playwright = PlaywrightService.get_instance()
+                html = playwright.fetch_rendered_html(url, timeout=timeout)
 
-            # Create a materialized response object for compatibility
-            mock_response = MaterializedResponse(
-                status_code=200,
-                url=url,
-                headers={'Content-Type': 'text/html; charset=utf-8'},
-                content=html.encode('utf-8')
-            )
+                # Clean HTML to reduce token count
+                cleaned_html = self._clean_html_content(html)
 
-            return html, mock_response
-
-        except TimeoutError as e:
-            self.logger.error(f"Playwright timeout for {url}: {e}")
-            return None, {
-                "error": "timeout",
-                "message": str(e),
-                "url": url,
-                "method": "GET"
-            }
-        except RuntimeError as e:
-            # Check if this is a Playwright initialization error (missing browser binaries)
-            error_str = str(e).lower()
-            if 'playwright' in error_str and ('executable' in error_str or 'browser' in error_str or 'chromium' in error_str):
-                self.logger.warning(f"Playwright browser binaries not installed: {e}")
-                raise ValueError(
-                    "Playwright browser binaries are not installed. "
-                    "Please ask the user to run: playwright install chromium\n\n"
-                    "This downloads the Chromium browser that Playwright uses for rendering webpages."
+                # Create a materialized response object for compatibility
+                mock_response = MaterializedResponse(
+                    status_code=200,
+                    url=url,
+                    headers={'Content-Type': 'text/html; charset=utf-8'},
+                    content=cleaned_html.encode('utf-8')
                 )
 
-            self.logger.error(f"Playwright error for {url}: {e}")
-            return None, {
-                "error": "playwright_error",
-                "message": str(e),
-                "url": url,
-                "method": "GET"
-            }
-        except Exception as e:
-            self.logger.error(f"Unexpected error fetching {url}: {e}")
-            return None, {
-                "error": "request_error",
-                "message": f"Unexpected error: {str(e)}",
-                "url": url,
-                "method": "GET"
-            }
+                return cleaned_html, mock_response
+
+            except TimeoutError as e:
+                self.logger.error(f"Playwright timeout for {url}: {e}")
+                return None, {
+                    "error": "timeout",
+                    "message": str(e),
+                    "url": url,
+                    "method": "GET"
+                }
+            except RuntimeError as e:
+                # Check if this is a Playwright initialization error (missing browser binaries)
+                error_str = str(e).lower()
+                if 'playwright' in error_str and ('executable' in error_str or 'browser' in error_str or 'chromium' in error_str):
+                    self.logger.warning(f"Chromium not installed, falling back to HTTP: {e}")
+                    playwright_available = False  # Fall through to HTTP fallback
+                else:
+                    self.logger.error(f"Playwright error for {url}: {e}")
+                    return None, {
+                        "error": "playwright_error",
+                        "message": str(e),
+                        "url": url,
+                        "method": "GET"
+                    }
+            except Exception as e:
+                self.logger.error(f"Unexpected Playwright error for {url}: {e}")
+                return None, {
+                    "error": "request_error",
+                    "message": f"Unexpected error: {str(e)}",
+                    "url": url,
+                    "method": "GET"
+                }
+
+        # Fallback to simple HTTP request (for static content)
+        if not playwright_available:
+            self.logger.info(f"Using HTTP fallback for {url} (JavaScript will not be executed)")
+            response = self._make_http_request(
+                method="GET",
+                url=url,
+                timeout=timeout,
+                is_browser=True  # Use browser-like headers
+            )
+
+            # Check if we got an error response
+            if isinstance(response, dict) and "error" in response:
+                return None, response
+
+            # Clean HTML to reduce token count
+            cleaned_html = self._clean_html_content(response.text)
+
+            # Return cleaned HTML content and response
+            return cleaned_html, response

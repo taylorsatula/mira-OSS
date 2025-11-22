@@ -320,8 +320,86 @@ def format_utc_iso(dt: datetime, include_ms: bool = True) -> str:
     return utc_dt.strftime(TIME_FORMATS[format_type])
 
 
+def format_relative_time(dt: datetime, reference_time: Optional[datetime] = None) -> str:
+    """
+    Format a datetime as relative time (e.g., "5 hours ago", "2 days ago").
+
+    Uses fine-grained granularity:
+    - < 60 seconds: "just now"
+    - < 60 minutes: "X minute(s) ago"
+    - < 24 hours: "X hour(s) ago"
+    - < 7 days: "X day(s) ago"
+    - < 30 days: "X week(s) ago"
+    - < 365 days: "X month(s) ago"
+    - >= 365 days: "X year(s) ago"
+
+    Args:
+        dt: The datetime to format (will be converted to UTC if needed)
+        reference_time: Optional reference time (defaults to current UTC time)
+
+    Returns:
+        Human-readable relative time string
+
+    Raises:
+        ValueError: If dt cannot be converted to UTC datetime
+    """
+    # Ensure both datetimes are UTC-aware
+    dt_utc = ensure_utc(dt)
+    ref_time = reference_time if reference_time else utc_now()
+    ref_time_utc = ensure_utc(ref_time)
+
+    # Calculate time delta
+    delta = ref_time_utc - dt_utc
+    total_seconds = delta.total_seconds()
+
+    # Handle future times
+    if total_seconds < 0:
+        delta = dt_utc - ref_time_utc
+        total_seconds = delta.total_seconds()
+        future = True
+    else:
+        future = False
+
+    # Calculate time units
+    seconds = int(total_seconds)
+    minutes = seconds // 60
+    hours = minutes // 60
+    days = delta.days
+    weeks = days // 7
+    months = days // 30  # Approximate
+    years = days // 365  # Approximate
+
+    # Format based on granularity
+    if seconds < 60:
+        return "just now"
+    elif minutes < 60:
+        unit = "minute" if minutes == 1 else "minutes"
+        time_str = f"{minutes} {unit}"
+    elif hours < 24:
+        unit = "hour" if hours == 1 else "hours"
+        time_str = f"{hours} {unit}"
+    elif days < 7:
+        unit = "day" if days == 1 else "days"
+        time_str = f"{days} {unit}"
+    elif days < 30:
+        unit = "week" if weeks == 1 else "weeks"
+        time_str = f"{weeks} {unit}"
+    elif days < 365:
+        unit = "month" if months == 1 else "months"
+        time_str = f"{months} {unit}"
+    else:
+        unit = "year" if years == 1 else "years"
+        time_str = f"{years} {unit}"
+
+    # Add direction
+    if future:
+        return f"in {time_str}"
+    else:
+        return f"{time_str} ago"
+
+
 def parse_time_string(
-    time_str: str, 
+    time_str: str,
     tz_name: Optional[str] = None,
     reference_date: Optional[datetime] = None
 ) -> datetime:

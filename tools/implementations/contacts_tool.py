@@ -33,7 +33,7 @@ class ContactsToolConfig(BaseModel):
     """
     # Standard configuration parameter - all tools should include this
     enabled: bool = Field(
-        default=True,
+        default=False,
         description="Whether this tool is enabled by default"
     )
 
@@ -53,90 +53,7 @@ class ContactsTool(Tool):
 
     name = "contacts_tool"
     
-    simple_description = """
-    Manages personal contacts with basic CRUD operations. Each contact has a unique UUID for linking to other tools."""
-    
-    anthropic_implementation = """
-    OPERATIONS:
-    
-    - add_contact: Add a new contact
-      Parameters:
-        name (required): Contact's full name
-        email (optional): Contact's email address
-        phone (optional): Contact's phone number
-        pager_address (optional): Contact's pager address (username or user@domain)
-
-    - get_contact: Get contact details by UUID or name
-      Parameters:
-        identifier (required): Contact UUID or name to search for
-        
-    - list_contacts: List all contacts
-      Parameters: None
-        
-    - delete_contact: Delete a contact by UUID or name
-      Parameters:
-        identifier (required): Contact UUID or name to delete
-        
-    - update_contact: Update an existing contact
-      Parameters:
-        identifier (required): Contact UUID or name to update
-        name (optional): New name
-        email (optional): New email
-        phone (optional): New phone
-        pager_address (optional): New pager address
-
-    RESPONSE FORMAT:
-    - All operations return a success flag and operation-specific data
-    - Each contact includes a UUID for linking to other tools
-    
-    LIMITATIONS:
-    - Storage is per-user in SQLite database with automatic isolation
-    - Basic contact fields only (name, email, phone)
-    - Contact names must be unique within a user's contacts
-    """
-    
-    usage_examples = [
-        {
-            "input": {
-                "operation": "add_contact",
-                "name": "Alice Johnson",
-                "email": "alice@example.com",
-                "phone": "+1-555-111-2222",
-                "pager_address": "alice"
-            },
-            "output": {
-                "success": True,
-                "contact": {
-                    "uuid": "550e8400-e29b-41d4-a716-446655440003",
-                    "name": "Alice Johnson",
-                    "email": "alice@example.com",
-                    "phone": "+1-555-111-2222",
-                    "pager_address": "alice",
-                    "created_at": "2025-06-20T10:30:00Z"
-                },
-                "message": "Added contact Alice Johnson"
-            }
-        },
-        {
-            "input": {
-                "operation": "list_contacts"
-            },
-            "output": {
-                "success": True,
-                "contacts": [
-                    {
-                        "uuid": "550e8400-e29b-41d4-a716-446655440001",
-                        "name": "John Doe",
-                        "email": "john.doe@example.com", 
-                        "phone": "+1-555-123-4567",
-                        "created_at": "2025-06-20T10:00:00Z"
-                    }
-                ],
-                "message": "Found 1 contact(s)"
-            }
-        }
-    ]
-    
+    simple_description = "Store and retrieve contact information (name, email, phone). Search by name or view all contacts. Link reminders to a specific person's UUID."
     anthropic_schema = {
         "name": "contacts_tool",
         "description": "Manages personal contacts with basic CRUD operations. Each contact has a unique UUID for linking to other tools.",

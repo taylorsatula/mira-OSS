@@ -67,14 +67,25 @@ class ProactiveMemoryTrinket(EventAwareTrinket):
         """Format a primary memory with its linked memories in tree structure."""
         lines = []
 
-        # Primary memory header
-        lines.append("[Primary Memory]")
+        # Memory header with optional confidence
+        confidence = memory.get('confidence') or memory.get('similarity_score')
+        if confidence is not None and confidence > 0.75:
+            conf_percentage = int(confidence * 100)
+            lines.append(f"[AUTOMATICALLY SURFACED SUBCONSCIOUS MEMORY | CONFIDENCE: {conf_percentage}%]")
+        else:
+            lines.append("[AUTOMATICALLY SURFACED SUBCONSCIOUS MEMORY]")
+
         lines.append(f"ID: {memory.get('id', 'unknown')}")
-        lines.append(f"Text: \"{memory.get('text', '')}\"")
-        lines.append(f"Importance: {memory.get('importance_score', 0):.2f}")
+        lines.append(f"Text: \"{memory.get('text', '')}\")")
 
         if memory.get('created_at'):
-            lines.append(f"Created: {memory['created_at'][:10]}")  # Just date
+            from datetime import datetime
+            from utils.timezone_utils import format_relative_time
+
+            # Parse ISO timestamp and format as relative time
+            created_dt = datetime.fromisoformat(memory['created_at'])
+            relative_time = format_relative_time(created_dt)
+            lines.append(f"Created: {relative_time}")
 
         # Format temporal info if present
         temporal_info = self._format_temporal_info(memory)
@@ -136,21 +147,19 @@ class ProactiveMemoryTrinket(EventAwareTrinket):
             link_type = link_meta.get('link_type', 'unknown')
             confidence = link_meta.get('confidence')
 
-            # Format confidence display
-            if confidence is not None:
-                conf_display = f"{confidence:.2f}"
+            # Format header with confidence only if over 75%
+            if confidence is not None and confidence > 0.75:
+                conf_percentage = int(confidence * 100)
+                header = f"{indent}{branch} [^ LINKED MEMORY - LINK TYPE: {link_type} | CONFIDENCE: {conf_percentage}%]"
             else:
-                conf_display = "auto"
+                header = f"{indent}{branch} [^ LINKED MEMORY - LINK TYPE: {link_type}]"
 
-            # Header line
-            header = f"{indent}{branch} [^ Linked Memory - link type: {link_type} | confidence: {conf_display}]"
             lines.append(header)
 
             # Memory details with continuation indentation
             detail_indent = indent + continuation
             lines.append(f"{detail_indent}ID: {linked.get('id', 'unknown')}")
-            lines.append(f"{detail_indent}Text: \"{linked.get('text', '')}\"")
-            lines.append(f"{detail_indent}Importance: {linked.get('importance_score', 0):.2f}")
+            lines.append(f"{detail_indent}Text: \"{linked.get('text', '')}\")")
 
             # Nested linked memories (recursive)
             nested_linked = linked.get('linked_memories', [])

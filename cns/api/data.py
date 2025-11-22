@@ -8,11 +8,12 @@ from datetime import datetime
 from typing import Dict, Any, Optional
 from enum import Enum
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
 from fastapi.responses import JSONResponse
 from fastapi.encoders import jsonable_encoder
 
 from utils.user_context import get_current_user_id
+from main import get_current_user
 from .base import BaseHandler, ValidationError, NotFoundError
 from utils.timezone_utils import utc_now, format_utc_iso
 
@@ -153,8 +154,10 @@ class DataEndpoint(BaseHandler):
         })
     
     def _get_dashboard(self, **params) -> Dict[str, Any]:
-        """Get dashboard data - system health, context usage placeholder."""
+        """Get dashboard data - system health and context usage metrics."""
         from clients.postgres_client import PostgresClient
+        from cns.infrastructure.continuum_repository import get_continuum_repository
+        from config.config import get_config
 
         user_id = get_current_user_id()
 
@@ -166,35 +169,71 @@ class DataEndpoint(BaseHandler):
         except Exception:
             db_healthy = False
 
+        # Get context usage from continuum runtime metrics
+        repo = get_continuum_repository()
+        continuum = repo.get_continuum(user_id)
+        config = get_config()
+
+        current_tokens = 0
+        cached_tokens = 0
+        max_tokens = config.context_window_tokens
+
+        if continuum:
+            current_tokens = continuum._cumulative_tokens
+            cached_tokens = continuum._cached_up_to_tokens
+
+        # Calculate percentage used
+        percentage_used = (current_tokens / max_tokens * 100) if max_tokens > 0 else 0
+
         return {
             "system_health": "healthy" if db_healthy else "degraded",
-            "context_usage": "placeholder",  # TODO: implement actual context length calculation
+            "context_usage": {
+                "current_tokens": current_tokens,
+                "cached_tokens": cached_tokens,
+                "max_tokens": max_tokens,
+                "percentage_used": round(percentage_used, 2)
+            },
             "meta": {
                 "timestamp": format_utc_iso(utc_now())
             }
         }
     
     def _get_user(self, **params) -> Dict[str, Any]:
-        """Get user preferences using AuthDB."""
+        """Get user profile and preferences."""
+        from utils.database_session_manager import get_shared_session_manager
+
         user_id = get_current_user_id()
 
-        # TODO: Fix broken auth database integration
-        # These functions don't exist in the auth module
-        user_profile = {"id": user_id, "email": "placeholder@example.com"}
-        preferences = {}
+        # Fetch real user data from database
+        session_manager = get_shared_session_manager()
+        with session_manager.get_session() as session:
+            user = session.execute_single(
+                """SELECT id, email, first_name, last_name, created_at, last_login_at, timezone
+                   FROM users WHERE id = %(user_id)s""",
+                {"user_id": user_id}
+            )
+
+        if not user:
+            raise NotFoundError("user", str(user_id))
+
+        # Build full name if available
+        name = None
+        if user.get('first_name') or user.get('last_name'):
+            name = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip()
 
         return {
             "profile": {
-                "id": user_profile["id"],
-                "email": user_profile["email"],
-                "name": None,
-                "created_at": None,
-                "last_login": None
+                "id": str(user["id"]),
+                "email": user["email"],
+                "name": name,
+                "created_at": format_utc_iso(user["created_at"]) if user.get("created_at") else None,
+                "last_login": format_utc_iso(user["last_login_at"]) if user.get("last_login_at") else None
             },
             "preferences": {
-                "theme": preferences.get('theme', 'light'),
-                "timezone": preferences.get('timezone', 'UTC'),
-                "display_preferences": preferences.get('display_preferences', {})
+                # Note: Preferences system not implemented yet - only timezone stored in users table
+                "theme": None,
+                "timezone": user.get("timezone", "UTC"),
+                "display_preferences": None
             },
             "meta": {
                 "loaded_at": format_utc_iso(utc_now())
@@ -271,7 +310,8 @@ async def data_endpoint(
     fields: Optional[str] = Query(None, description="Comma-separated field selection"),
     search: Optional[str] = Query(None, description="Search query for full-text search"),
     message_type: Optional[str] = Query(None, description="Message type filter: 'regular', 'summaries', or 'all' (default='regular')"),
-    domain_label: Optional[str] = Query(None, description="Specific domain label to retrieve (for type=domains)")
+    domain_label: Optional[str] = Query(None, description="Specific domain label to retrieve (for type=domains)"),
+    current_user: dict = Depends(get_current_user)
 ):
     """Unified data access endpoint."""
     try:

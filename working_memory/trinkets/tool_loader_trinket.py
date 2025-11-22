@@ -225,7 +225,7 @@ class ToolLoaderTrinket(EventAwareTrinket):
 
         # Available tools section
         if self.available_tools:
-            parts.append("# Available Tools (not loaded)")
+            parts.append("=== AVAILABLE TOOLS ===")
             parts.append("Use invokeother_tool to load these when needed:")
             parts.append("")
             for tool_name, description in sorted(self.available_tools.items()):
@@ -240,7 +240,7 @@ class ToolLoaderTrinket(EventAwareTrinket):
         if self.loaded_tools:
             if parts:  # Add spacing if we had available tools
                 parts.append("")
-            parts.append("# Currently Loaded Tools")
+            parts.append("=== CURRENTLY LOADED TOOLS ===")
             parts.append("")
 
             for tool_name, tool_info in sorted(self.loaded_tools.items()):

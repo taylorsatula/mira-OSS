@@ -10,13 +10,16 @@ import logging
 import sys
 import os
 import signal
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from typing import Optional, Dict, Any
+from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import ValidationError
 
 from config.config_manager import config
@@ -36,85 +39,118 @@ logging.getLogger('apscheduler.scheduler').setLevel(logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 
-def ensure_single_user(app: FastAPI) -> str:
-    """
-    Ensure exactly one user exists in the database and set global user context.
+# Single-user authentication (OSS mode)
+security = HTTPBearer(auto_error=False)
 
-    Creates a default user if none exist, returns the user ID if exactly one exists,
-    and exits with error if multiple users exist (single-user mode violation).
+async def get_current_user(
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
+) -> Dict[str, Any]:
+    """Verify Bearer token and inject single user context."""
+    from utils.user_context import set_current_user_id, set_current_user_data
 
-    Args:
-        app: FastAPI application instance
+    if not credentials or not credentials.credentials:
+        raise HTTPException(status_code=401, detail="Missing authentication token")
 
-    Returns:
-        User ID of the single user
+    if credentials.credentials != request.app.state.api_key:
+        raise HTTPException(status_code=401, detail="Invalid authentication token")
 
-    Raises:
-        SystemExit: If multiple users exist
-    """
-    from clients.postgres_client import PostgresClient
-    from utils.user_context import set_current_user_id
+    user_id = request.app.state.single_user_id
+    user_email = request.app.state.user_email
 
-    db = PostgresClient('mira_service')
-
-    # Count users
-    result = db.execute_single("SELECT COUNT(*) as count FROM users")
-    user_count = result['count']
-
-    if user_count == 0:
-        print("\n" + "="*60)
-        print("🚀 MIRA Single-User Setup")
-        print("="*60)
-        print("No user found. Creating default user...")
-
-        # Create default user
-        user_result = db.execute_single("""
-            INSERT INTO users (email, is_active, created_at, memory_enabled)
-            VALUES ('user@localhost', true, NOW(), true)
-            RETURNING id, email
-        """)
-        user_id = str(user_result['id'])
-        email = user_result['email']
-
-        print(f"✅ Created user: {email}")
-        print(f"User ID: {user_id}")
-        print("="*60 + "\n")
-
-    elif user_count > 1:
-        print(f"\n❌ ERROR: Found {user_count} users")
-        print("MIRA operates in single-user mode only.")
-        print("Please keep only one user in the database.")
-        print("\nTo fix: Connect to database and delete extra users:")
-        print("  psql -U taylut -h localhost -d mira_service")
-        print("  DELETE FROM users WHERE id != '<desired-user-id>';")
-        sys.exit(1)
-
-    else:
-        # Exactly one user exists
-        user = db.execute_single("SELECT id, email FROM users LIMIT 1")
-        user_id = str(user['id'])
-        email = user['email']
-
-        print(f"\n✅ MIRA Ready - Single-User Mode")
-        print(f"User: {email}")
-        print(f"User ID: {user_id}\n")
-
-    # Set global user context (persists for entire application lifecycle)
     set_current_user_id(user_id)
-    app.state.user_id = user_id
+    set_current_user_data({
+        "user_id": user_id,
+        "email": user_email
+    })
 
-    return user_id
+    return {
+        "user_id": user_id,
+        "email": user_email
+    }
+
+
+def ensure_single_user(app: FastAPI) -> None:
+    """Ensure exactly one user exists for single-user mode."""
+    import sys
+    from utils.database_session_manager import get_shared_session_manager
+
+    session_manager = get_shared_session_manager()
+
+    with session_manager.get_admin_session() as session:
+        result = session.execute_single("SELECT COUNT(*) as count FROM users")
+        user_count = result['count']
+
+        if user_count == 0:
+            import uuid
+            import secrets
+
+            user_id = str(uuid.uuid4())
+            default_email = "user@localhost"
+
+            session.execute_update("""
+                INSERT INTO users (id, email, is_active, memory_manipulation_enabled)
+                VALUES (%(id)s, %(email)s, true, true)
+            """, {'id': user_id, 'email': default_email})
+
+            api_key = f"mira_{secrets.token_urlsafe(32)}"
+
+            try:
+                from clients.vault_client import _ensure_vault_client
+                vault_client = _ensure_vault_client()
+                vault_client.hvac_client.secrets.kv.v2.create_or_update_secret(
+                    path='mira/api_keys',
+                    secret=dict(mira_api=api_key)
+                )
+            except Exception as e:
+                logger.warning(f"Could not store key in Vault: {e}")
+
+            app.state.single_user_id = user_id
+            app.state.user_email = default_email
+            app.state.api_key = api_key
+
+            print(f"\n{'='*60}")
+            print("✅ MIRA Ready - Single-User OSS Mode")
+            print(f"{'='*60}")
+            print(f"User: {default_email}")
+            print(f"API Key: {api_key}")
+            print(f"{'='*60}\n")
+            return
+
+        elif user_count > 1:
+            print(f"\n❌ ERROR: Found {user_count} users")
+            print("MIRA OSS operates in single-user mode only.")
+            sys.exit(1)
+
+        user = session.execute_single("SELECT id, email FROM users LIMIT 1")
+        app.state.single_user_id = str(user['id'])
+        app.state.user_email = user['email']
+
+        try:
+            from clients.vault_client import _ensure_vault_client
+            vault_client = _ensure_vault_client()
+            secret_data = vault_client.hvac_client.secrets.kv.v2.read_secret_version(
+                path='mira/api_keys'
+            )
+            api_key = secret_data['data']['data'].get('mira_api')
+            app.state.api_key = api_key
+
+            print(f"\n✅ MIRA Ready - User: {user['email']}\n")
+        except Exception as e:
+            logger.error(f"Failed to retrieve API key from Vault: {e}")
+            print("\n❌ ERROR: Could not retrieve API key from Vault")
+            sys.exit(1)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifecycle management."""
-    
+
     # Startup
     logger.info("  Starting MIRA...\n\n\n")
     logger.info("====================")
 
-    # Ensure single-user mode and set global context
+    # Ensure single user exists and load credentials
     ensure_single_user(app)
 
     # Configure FastAPI thread pool for synchronous endpoints
@@ -200,19 +236,25 @@ async def lifespan(app: FastAPI):
 
     scheduler_service.start()
 
-    # Run on-boot memory extraction sweep using new lt_memory system
-    logger.info("Running on-boot memory extraction sweep...")
-    try:
-        boot_results = lt_memory_factory.batching.run_boot_extraction()
-        logger.info(
-            f"Boot extraction complete: {boot_results['batches_submitted']} batches submitted "
-            f"for {boot_results['users_checked']} users checked, "
-            f"{boot_results['users_skipped']} users skipped"
-        )
-    except Exception as e:
-        logger.error(f"Boot extraction failed: {e}")
-        # Boot extraction failure is non-critical - system can continue
-        logger.warning("MIRA will continue but memory extraction may be delayed")
+    # Run on-boot memory extraction sweep in background thread to avoid blocking startup
+    def run_boot_extraction():
+        """Run boot extraction in background thread - one-time task on startup."""
+        logger.info("Running on-boot memory extraction sweep...")
+        try:
+            boot_results = lt_memory_factory.extraction_orchestrator.run_boot_extraction()
+            logger.info(
+                f"Boot extraction complete: {boot_results['batches_submitted']} batches submitted "
+                f"for {boot_results['users_checked']} users checked, "
+                f"{boot_results['users_skipped']} users skipped"
+            )
+        except Exception as e:
+            logger.error(f"Boot extraction failed: {e}")
+            logger.warning("Memory extraction may be delayed")
+
+    # Start boot extraction in daemon thread (terminates automatically when function completes)
+    boot_thread = threading.Thread(target=run_boot_extraction, daemon=True, name="boot-extraction")
+    boot_thread.start()
+    logger.info("Boot extraction started in background thread (non-blocking, will auto-terminate)")
 
     # Verify Vault connection (non-blocking)
     from clients.vault_client import test_vault_connection
@@ -399,7 +441,7 @@ def create_app() -> FastAPI:
     app.include_router(chat_api.router, prefix="/v0/api", tags=["chat"])
     app.include_router(data.router, prefix="/v0/api", tags=["data"])
     app.include_router(actions.router, prefix="/v0/api", tags=["actions"])
-    
+
     return app
 
 
@@ -457,6 +499,10 @@ def main():
         hypercorn_config.bind = [f"{config.api_server.host}:{config.api_server.port}"]
         hypercorn_config.alpn_protocols = ["h2", "http/1.1"]  # Prefer HTTP/2, fallback to HTTP/1.1
         hypercorn_config.log_level = config.api_server.log_level
+
+        # Trust proxy headers from nginx (localhost only)
+        # This allows proper client IP logging from X-Forwarded-For header
+        hypercorn_config.forwarded_allow_ips = ["127.0.0.1", "::1"]
         
         if dev_mode:
             logger.info("Development mode enabled")

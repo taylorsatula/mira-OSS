@@ -251,9 +251,13 @@ class ContinuumRepository:
 
             # Track user activity day (upstream activity tracking for vacation-proof scoring)
             if message.role == "user":
-                from auth.database import AuthDatabase
-                auth_db = AuthDatabase()
-                auth_db.increment_user_activity_day(user_id)
+                try:
+                    from utils.user_activity import increment_user_activity_day
+                    logger.info(f"[SINGLE] Attempting to increment activity day for user {user_id}")
+                    result = increment_user_activity_day(user_id)
+                    logger.info(f"[SINGLE] Activity day incremented successfully for user {user_id}, result: {result}")
+                except Exception as e:
+                    logger.error(f"[SINGLE] Failed to increment activity day for user {user_id}: {e}", exc_info=True)
 
         except Exception as e:
             logger.error(f"Failed to save message to continuum {continuum_id}: {str(e)}")
@@ -421,9 +425,13 @@ class ContinuumRepository:
 
             # Track user activity day if batch contained user message
             if has_user_message:
-                from auth.database import AuthDatabase
-                auth_db = AuthDatabase()
-                auth_db.increment_user_activity_day(user_id)
+                try:
+                    from utils.user_activity import increment_user_activity_day
+                    logger.info(f"Attempting to increment activity day for user {user_id}")
+                    result = increment_user_activity_day(user_id)
+                    logger.info(f"Activity day incremented successfully for user {user_id}, result: {result}")
+                except Exception as e:
+                    logger.error(f"Failed to increment activity day for user {user_id}: {e}", exc_info=True)
 
             logger.debug(f"Saved {len(messages)} messages to continuum {continuum_id}")
 
@@ -1060,10 +1068,10 @@ class ContinuumRepository:
         turn_count: int
     ) -> List[Message]:
         """
-        Load last N user/assistant message pairs before the active segment.
+        Load last N user/assistant message pairs from end of most recent collapsed segment.
 
-        Provides conversational continuity by showing the tail end of the
-        previous collapsed segment.
+        Called only during session cache loading after timeout, when all segments are collapsed.
+        Provides conversational continuity by showing the tail end of the previous session.
 
         Args:
             continuum_id: Continuum ID
@@ -1075,21 +1083,21 @@ class ContinuumRepository:
         """
         db = self._get_client(user_id)
 
-        # Get recent messages before the active sentinel (limit to reasonable window)
+        # Get messages before the most recent collapsed segment's end time
         # Request 4x turn_count to ensure we have enough messages to find complete pairs
         query = """
-            WITH active_sentinel AS (
-                SELECT created_at
+            WITH boundary_time AS (
+                SELECT (metadata->>'segment_end_time')::timestamp as cutoff_time
                 FROM messages
                 WHERE continuum_id = %s
                     AND metadata->>'is_segment_boundary' = 'true'
-                    AND metadata->>'status' = 'active'
+                    AND metadata->>'status' = 'collapsed'
                 ORDER BY created_at DESC
                 LIMIT 1
             )
-            SELECT m.* FROM messages m, active_sentinel
+            SELECT m.* FROM messages m, boundary_time
             WHERE m.continuum_id = %s
-                AND m.created_at < active_sentinel.created_at
+                AND m.created_at < boundary_time.cutoff_time
                 AND m.role IN ('user', 'assistant')
                 AND (m.metadata->>'is_segment_boundary' IS NULL OR m.metadata->>'is_segment_boundary' = 'false')
                 AND (m.metadata->>'system_notification' IS NULL OR m.metadata->>'system_notification' = 'false')

@@ -227,11 +227,18 @@ class SegmentTimeoutEvent(ContinuumCheckpointEvent):
     local_hour: int  # User's local time for context
 
     @classmethod
-    def create(cls, continuum_id: str, segment_id: str,
+    def create(cls, continuum_id: str, user_id: str, segment_id: str,
                inactive_duration_minutes: int, local_hour: int) -> 'SegmentTimeoutEvent':
-        """Create segment timeout event with auto-generated metadata."""
-        from utils.user_context import get_current_user_id
-        user_id = get_current_user_id()
+        """
+        Create segment timeout event with auto-generated metadata.
+
+        Args:
+            continuum_id: Continuum identifier
+            user_id: User identifier
+            segment_id: Segment identifier
+            inactive_duration_minutes: Duration segment has been inactive
+            local_hour: User's local hour for context
+        """
         return cls(
             continuum_id=continuum_id,
             user_id=user_id,
@@ -245,7 +252,13 @@ class SegmentTimeoutEvent(ContinuumCheckpointEvent):
 
 @dataclass(frozen=True)
 class SegmentCollapsedEvent(ContinuumCheckpointEvent):
-    """Segment collapsed into manifest with summary generated."""
+    """
+    Segment collapsed into manifest with summary generated.
+
+    Subscribers:
+    - GetContextTrinket: Clears all search results when segment collapses
+      (prevents old search results from leaking into new conversation contexts)
+    """
     segment_id: str
     summary: str
     tools_used: List[str]

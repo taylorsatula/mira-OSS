@@ -4,6 +4,30 @@
 --
 -- Run this to create a fresh mira_service database:
 -- psql -U mira_admin -h localhost -f deploy/mira_service_schema.sql
+--
+-- =====================================================================
+-- INDEX STRATEGY WITH ROW LEVEL SECURITY (RLS)
+-- =====================================================================
+--
+-- RLS policies function as additional WHERE clauses during query planning.
+-- PostgreSQL can effectively use indexes with RLS when policies use
+-- LEAKPROOF functions (like current_setting() and type casts).
+--
+-- INDEXING REQUIREMENTS FOR RLS TABLES:
+--   1. ALWAYS index columns used in RLS policies (e.g., user_id)
+--   2. Create specialized indexes for query patterns (vector, full-text)
+--   3. PostgreSQL combines multiple indexes for optimal query plans
+--
+-- PERFORMANCE STRATEGY:
+--   - Primary: Proper indexes on filtered columns (user_id, timestamps)
+--   - Secondary: Specialized indexes (IVFFlat for vectors, GIN for full-text)
+--   - Tertiary: Application caching to reduce database load
+--
+-- Vector indexes (IVFFlat, HNSW) CANNOT be composite with scalar columns,
+-- so we use separate indexes that PostgreSQL combines during execution:
+--   - B-tree index on user_id (for RLS filtering)
+--   - IVFFlat index on embedding (for similarity search)
+--   - Query planner uses both: vector index finds candidates, RLS filters them
 
 -- =====================================================================
 -- CREATE ROLES
@@ -69,6 +93,8 @@ GRANT ALL ON SCHEMA public TO mira_admin;
 CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     email VARCHAR(255) UNIQUE NOT NULL,
+    first_name VARCHAR(100),
+    last_name VARCHAR(100),
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     last_login_at TIMESTAMP WITH TIME ZONE,
@@ -76,6 +102,7 @@ CREATE TABLE IF NOT EXISTS users (
     memory_manipulation_enabled BOOLEAN NOT NULL DEFAULT TRUE,
     daily_manipulation_last_run TIMESTAMP WITH TIME ZONE,
     timezone VARCHAR(100) NOT NULL DEFAULT 'America/Chicago',
+    overarching_knowledge TEXT,
 
     -- Activity-based time tracking (vacation-proof scoring)
     cumulative_activity_days INT DEFAULT 0,
@@ -89,6 +116,8 @@ COMMENT ON COLUMN users.last_activity_date IS 'Last date user sent a message (pr
 CREATE TABLE IF NOT EXISTS users_trash (
     id UUID PRIMARY KEY,
     email VARCHAR(255),
+    first_name VARCHAR(100),
+    last_name VARCHAR(100),
     is_active BOOLEAN,
     created_at TIMESTAMP WITH TIME ZONE,
     last_login_at TIMESTAMP WITH TIME ZONE,
@@ -96,6 +125,7 @@ CREATE TABLE IF NOT EXISTS users_trash (
     memory_manipulation_enabled BOOLEAN,
     daily_manipulation_last_run TIMESTAMP WITH TIME ZONE,
     timezone VARCHAR(100),
+    overarching_knowledge TEXT,
     cumulative_activity_days INT,
     last_activity_date DATE,
     deleted_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
@@ -205,19 +235,14 @@ COMMENT ON COLUMN messages.segment_embedding IS 'AllMiniLM embedding (384-dim) f
 -- MESSAGE INDEXES
 -- =====================================================================
 
--- Vector index for segment embedding searches (segment sentinels only)
-CREATE INDEX IF NOT EXISTS idx_messages_segment_embedding ON messages
-    USING ivfflat(segment_embedding vector_cosine_ops)
-    WHERE metadata->>'is_segment_boundary' = 'true' AND segment_embedding IS NOT NULL;
+-- User ID index for RLS policy filtering
+CREATE INDEX IF NOT EXISTS idx_messages_user_id ON messages(user_id);
 
--- Partial index for finding active segments efficiently
-CREATE INDEX IF NOT EXISTS idx_messages_active_segments ON messages(continuum_id, created_at)
-    WHERE metadata->>'is_segment_boundary' = 'true'
-        AND metadata->>'status' = 'active';
+-- Continuum ID index for conversation retrieval
+CREATE INDEX IF NOT EXISTS idx_messages_continuum_id ON messages(continuum_id);
 
--- GIN index for segment metadata queries (boundary detection, status filtering)
-CREATE INDEX IF NOT EXISTS idx_messages_segment_metadata ON messages USING GIN (metadata)
-    WHERE metadata->>'is_segment_boundary' = 'true';
+-- Created timestamp index for temporal queries
+CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at);
 
 COMMENT ON TABLE messages IS 'All conversation messages; segments implemented as sentinel messages with is_segment_boundary=true in metadata';
 COMMENT ON COLUMN messages.segment_embedding IS 'Vector embedding for segment sentinels, enables semantic segment search. See docs/SystemsOverview/segment_system_overview.md for architecture details.';
@@ -232,7 +257,6 @@ CREATE TABLE IF NOT EXISTS memories (
     text TEXT NOT NULL,
     embedding vector(384),  -- AllMiniLM embeddings for fast memory search
     search_vector tsvector,  -- Full-text search vector for BM25-style retrieval
-    search_text TEXT,  -- Preprocessed text for search operations
     importance_score NUMERIC(5,3) NOT NULL DEFAULT 0.5 CHECK (importance_score >= 0 AND importance_score <= 1),
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE,
@@ -265,7 +289,6 @@ COMMENT ON TABLE memories IS 'Long-term memory storage with embeddings, links, a
 COMMENT ON COLUMN memories.text IS 'Memory content text';
 COMMENT ON COLUMN memories.embedding IS 'AllMiniLM 384-dimensional embedding for semantic similarity search';
 COMMENT ON COLUMN memories.search_vector IS 'Full-text search vector for BM25-style retrieval';
-COMMENT ON COLUMN memories.search_text IS 'Preprocessed text for search operations';
 COMMENT ON COLUMN memories.importance_score IS 'Memory importance (0.0-1.0) used for retrieval ranking';
 COMMENT ON COLUMN memories.happens_at IS 'When the memory event occurred (for temporal context)';
 COMMENT ON COLUMN memories.inbound_links IS 'JSONB array of memories that link TO this memory';
@@ -278,8 +301,26 @@ COMMENT ON COLUMN memories.activity_days_at_last_access IS 'User cumulative_acti
 -- Set LZ4 compression for large text columns
 ALTER TABLE memories ALTER COLUMN text SET COMPRESSION lz4;
 
--- Text search index for hybrid BM25 + vector retrieval
-CREATE INDEX idx_memories_search_vector ON memories USING GIN(search_vector);
+-- =====================================================================
+-- MEMORY INDEXES
+-- =====================================================================
+
+-- User ID index for RLS policy filtering (CRITICAL for performance)
+CREATE INDEX IF NOT EXISTS idx_memories_user_id ON memories(user_id);
+
+-- Full-text search index for keyword-based retrieval
+CREATE INDEX IF NOT EXISTS idx_memories_search_vector ON memories USING gin (search_vector);
+
+-- Vector similarity index for semantic search (IVFFlat algorithm)
+-- lists=100 is optimal for ~1000-10000 rows (adjust if dataset grows significantly)
+-- This index enables O(log n) similarity search instead of O(n) full table scans
+CREATE INDEX IF NOT EXISTS idx_memories_embedding_ivfflat
+    ON memories USING ivfflat (embedding vector_cosine_ops)
+    WITH (lists = 100);
+
+COMMENT ON INDEX idx_memories_user_id IS 'B-tree index for RLS policy filtering - essential for multi-user performance';
+COMMENT ON INDEX idx_memories_search_vector IS 'GIN index for full-text search operations';
+COMMENT ON INDEX idx_memories_embedding_ivfflat IS 'IVFFlat index for fast cosine similarity search - prevents O(n) sequential scans during deduplication and retrieval';
 
 -- Trigger function to maintain search vectors
 CREATE OR REPLACE FUNCTION update_memories_search_vector() RETURNS trigger AS $$

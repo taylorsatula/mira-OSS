@@ -47,7 +47,7 @@ class DomainKnowledgeTrinket(EventAwareTrinket):
             return ""
 
         # Domain knowledge is optional - if not configured, return empty
-        service = get_domain_knowledge_service()
+        service = get_domain_knowledge_service(self.event_bus)
         if not service:
             logger.debug("Domain knowledge service not configured (optional feature)")
             return ""
@@ -74,7 +74,7 @@ class DomainKnowledgeTrinket(EventAwareTrinket):
             return ""  # Domains enabled but no content available
 
         # Build formatted section
-        header = "<domain_knowledge>\nContext-specific knowledge blocks currently active:\n\n"
+        header = "=== DOMAIN KNOWLEDGE ===\n<domain_knowledge>\n"
         footer = "\n</domain_knowledge>"
 
         return header + "\n\n".join(domain_contents) + footer

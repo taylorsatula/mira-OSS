@@ -36,6 +36,11 @@ class TagParser:
         r'<mira:display_title>(.*?)</mira:display_title>',
         re.DOTALL | re.IGNORECASE
     )
+    # Pattern for segment complexity score: <mira:complexity>1-3</mira:complexity>
+    COMPLEXITY_PATTERN = re.compile(
+        r'<mira:complexity>\s*([123])\s*</mira:complexity>',
+        re.IGNORECASE
+    )
     
     def parse_response(self, response_text: str, preserve_tags: list = None) -> Dict[str, Any]:
         """
@@ -85,12 +90,19 @@ class TagParser:
             if display_title_text:
                 display_title = display_title_text
 
+        # Extract complexity score
+        complexity = None
+        complexity_match = self.COMPLEXITY_PATTERN.search(response_text)
+        if complexity_match:
+            complexity = int(complexity_match.group(1))
+
         parsed = {
             'error_analysis': error_analyses,
             'referenced_memories': memory_refs,
             'touchstone': touchstone,
             'emotion': emotion,
             'display_title': display_title,
+            'complexity': complexity,
             'clean_text': self.remove_all_tags(response_text, preserve_tags=preserve_tags)
         }
 
