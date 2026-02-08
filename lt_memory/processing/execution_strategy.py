@@ -176,7 +176,6 @@ class BatchExecutionStrategy(ExecutionStrategy):
                     "model": self.extraction_config.extraction_model,
                     "max_tokens": self.extraction_config.max_extraction_tokens,
                     "temperature": self.extraction_config.extraction_temperature,
-                    "thinking": {"type": "enabled", "budget_tokens": 1024},
                     "system": [{
                         "type": "text",
                         "text": payload.system_prompt,

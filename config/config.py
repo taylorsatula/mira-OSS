@@ -206,7 +206,7 @@ class ExtractionConfig(BaseModel):
         description="Model for memory extraction (used by both sync and batch)"
     )
     extraction_thinking_enabled: bool = Field(
-        default=True,
+        default=False,
         description="Enable extended thinking for memory extraction"
     )
     extraction_thinking_budget: int = Field(
@@ -262,7 +262,7 @@ class BatchingConfig(BaseModel):
         description="Maximum messages per chunk for segment-based extraction (smaller chunks for better quality)"
     )
     boot_check_enabled: bool = Field(
-        default=True,
+        default=False,
         description="Whether to run extraction sweep on application boot"
     )
     min_messages_for_boot_extraction: int = Field(
@@ -503,7 +503,7 @@ class LTMemoryConfig(BaseModel):
 
     # Global settings
     temporal_rag_enabled: bool = Field(
-        default=True,
+        default=False,
         description="Whether temporal RAG features are enabled"
     )
     ivfflat_lists: int = Field(
@@ -516,7 +516,7 @@ class LatticeConfig(BaseModel):
     """Lattice federation service configuration."""
 
     enabled: bool = Field(
-        default=True,
+        default=False,
         description="Whether Lattice federation is enabled"
     )
     service_url: str = Field(
