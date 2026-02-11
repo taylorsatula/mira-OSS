@@ -562,7 +562,6 @@ class BatchingService:
                     "model": self.extraction.config.extraction_model,
                     "max_tokens": self.extraction.config.max_extraction_tokens,
                     "temperature": self.extraction.config.extraction_temperature,
-                    "thinking": {"type": "enabled", "budget_tokens": 1024},
                     "system": [{
                         "type": "text",
                         "text": self.extraction_prompt,

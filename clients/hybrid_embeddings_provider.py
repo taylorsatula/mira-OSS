@@ -189,6 +189,21 @@ class HybridEmbeddingsProvider:
 
         return embeddings
 
+    def embed_query(self, text: str) -> List[float]:
+        """
+        Embed a single query text for compatibility with orchestrator.
+
+        This is a wrapper around encode_realtime() for single queries.
+
+        Args:
+            text: Single text string to embed
+
+        Returns:
+            768-dimensional embedding as a list of floats
+        """
+        embedding = self.encode_realtime(text)
+        return embedding.tolist()
+
     def close(self):
         """Clean up resources."""
         if hasattr(self.model, 'close'):
