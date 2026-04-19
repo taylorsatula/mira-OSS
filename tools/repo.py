@@ -28,7 +28,7 @@ def get_config():
 ESSENTIAL_TOOLS = [
     "web_tool", "invokeother_tool", "continuum_tool", "reminder_tool",
     "memory_tool", "domaindoc_tool", "forage_tool", "sidebaragents_tool",
-    "email_tool"
+    "email_tool", "inbox_tool"
 ]
 
 # Anthropic beta feature constants
