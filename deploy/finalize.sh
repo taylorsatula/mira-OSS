@@ -106,6 +106,30 @@ elif [ "${CONFIG_INSTALL_SYSTEMD}" = "no" ]; then
     print_info "Skipping systemd service installation (user opted out)"
 fi
 
+# macOS: write a launcher that exports Vault env vars before starting MIRA.
+# On Linux these vars are baked into the systemd unit; macOS has no equivalent
+# so without this wrapper `main.py` crashes at import with
+# `ValueError: VAULT_ADDR environment variable is required`.
+if [ "$OS" = "macos" ]; then
+    print_header "Step 15b: MIRA Launcher Script"
+
+    RUN_SH="/opt/mira/app/run.sh"
+    echo -ne "${DIM}${ARROW}${RESET} Writing $RUN_SH... "
+    cat > "$RUN_SH" <<'LAUNCHER'
+#!/bin/bash
+# MIRA launcher — exports Vault env vars and starts the server.
+set -e
+cd "$(dirname "$0")"
+export VAULT_ADDR=http://127.0.0.1:8200
+export VAULT_ROLE_ID=$(cat /opt/vault/role-id.txt)
+export VAULT_SECRET_ID=$(cat /opt/vault/secret-id.txt)
+exec venv/bin/python3 main.py "$@"
+LAUNCHER
+    chmod +x "$RUN_SH"
+    echo -e "${CHECKMARK}"
+    print_info "Start MIRA with: $RUN_SH"
+fi
+
 print_header "Step 16: Cleanup"
 
 if [ "$LOUD_MODE" = true ]; then
@@ -230,7 +254,7 @@ if [ "${CONFIG_INSTALL_SYSTEMD}" = "yes" ] && [ "$OS" = "linux" ]; then
     echo ""
     print_info "MIRA will auto-start on system boot (systemd enabled)"
 else
-    echo -e "  ${CYAN}→${RESET} Start the server: ${BOLD}cd /opt/mira/app && venv/bin/python3 main.py${RESET}"
+    echo -e "  ${CYAN}→${RESET} Start MIRA: ${BOLD}/opt/mira/app/run.sh${RESET}"
     echo -e "  ${CYAN}→${RESET} Open the web UI: ${BOLD}http://localhost:1993/chat${RESET}"
 fi
 
@@ -240,6 +264,7 @@ print_warning "IMPORTANT: Secure /opt/vault/ - it contains sensitive credentials
 if [ "$OS" = "macos" ]; then
     echo ""
     echo -e "${BOLD}${YELLOW}macOS Notes${RESET}"
+    print_info "Start MIRA with /opt/mira/app/run.sh (exports Vault env vars)"
     print_info "Vault is running as a background process"
     print_info "To stop: kill \$(cat /opt/vault/vault.pid)"
     print_info "After system restart, manually start Vault and unseal:"
