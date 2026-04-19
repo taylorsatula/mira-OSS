@@ -177,21 +177,37 @@ elif [ "$OS" = "macos" ]; then
             break
         fi
     done
-    
+
     # If no suitable version found, default to 3.12 for installation
     if [ -z "$PYTHON_VER" ]; then
         PYTHON_VER="3.12"
     fi
 
+    # valkey and redis both install `redis-*` binaries — if redis formula is
+    # present, `brew install valkey` aborts with a conflict error. Unlink redis
+    # preemptively (the formula stays installed; just its symlinks are removed)
+    # so the install can proceed. Users can `brew link redis` later if they
+    # want both around.
+    if brew list --formula 2>/dev/null | grep -q "^redis$"; then
+        echo -ne "${DIM}${ARROW}${RESET} Unlinking redis formula (conflicts with valkey install)... "
+        brew unlink redis > /dev/null 2>&1 || true
+        echo -e "${CHECKMARK}"
+    fi
+
     if [ "$LOUD_MODE" = true ]; then
         print_step "Updating Homebrew..."
-        brew update
+        # Tolerate non-zero exit from `brew update` — a single broken third-party
+        # tap (e.g. one whose remote has been deleted) makes brew update exit
+        # non-zero, which `set -e` would otherwise turn into a silent deploy
+        # abort. The subsequent `brew install` does its own index refresh, so
+        # stale indices aren't actually a concern here.
+        brew update || print_warning "brew update reported errors (continuing; usually a broken tap)"
         print_step "Adding HashiCorp tap..."
         brew tap hashicorp/tap
         print_step "Installing dependencies via Homebrew (Python ${PYTHON_VER})..."
         brew install python@${PYTHON_VER} wget curl postgresql@17 pgvector valkey hashicorp/tap/vault
     else
-        (brew update > /dev/null 2>&1) &
+        (brew update > /dev/null 2>&1 || true) &
         show_progress $! "Updating Homebrew"
 
         (brew tap hashicorp/tap > /dev/null 2>&1) &

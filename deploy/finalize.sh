@@ -247,4 +247,26 @@ if [ "$OS" = "macos" ]; then
     print_info "PostgreSQL and Valkey are managed by brew services"
 fi
 
+# Degraded-mode banner: subcortical runs on every user turn for entity
+# extraction / passage filtering / query expansion. Without a key, those calls
+# silently no-op, which looks like working MIRA until a user wonders why
+# recall is poor. Announce the state loudly at the end so it can't be missed.
+if [ "${CONFIG_SUBCORTICAL_API_KEY}" = "PLACEHOLDER_SET_THIS_LATER" ]; then
+    echo ""
+    echo -e "${BOLD}${YELLOW}╔════════════════════════════════════════════════════════╗${RESET}"
+    echo -e "${BOLD}${YELLOW}║  MIRA installed, but running in DEGRADED MODE          ║${RESET}"
+    echo -e "${BOLD}${YELLOW}╚════════════════════════════════════════════════════════╝${RESET}"
+    print_warning "No subcortical API key was configured."
+    print_info "Entity extraction, passage filtering, and query expansion"
+    print_info "will silently no-op on every conversation turn — memory"
+    print_info "retrieval will be noticeably less accurate."
+    echo ""
+    print_info "To enable, store your Groq key in Vault:"
+    echo -e "${DIM}    export VAULT_ADDR='http://127.0.0.1:8200'${RESET}"
+    echo -e "${DIM}    vault login \$(grep 'Initial Root Token' /opt/vault/init-keys.txt | awk '{print \$NF}')${RESET}"
+    echo -e "${DIM}    vault kv patch secret/mira/api_keys subcortical_key=\"gsk_...\"${RESET}"
+    echo ""
+    print_info "Then restart MIRA to pick up the new key."
+fi
+
 echo ""
