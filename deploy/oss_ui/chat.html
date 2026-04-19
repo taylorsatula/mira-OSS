@@ -107,19 +107,6 @@ header h1 {
   border-color: rgba(255,255,0,0.4);
   color: var(--yellow);
 }
-#rules-toggle {
-  background: none;
-  border: 1px solid rgba(0,255,255,0.1);
-  color: var(--text-dim);
-  padding: 3px 10px;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 11px;
-  font-family: 'IBM Plex Mono', monospace;
-  letter-spacing: 0.5px;
-  transition: all 0.2s;
-}
-#rules-toggle:hover { border-color: rgba(0,255,255,0.3); color: var(--cyan); }
 #key-status {
   flex: 1;
   text-align: right;
@@ -435,7 +422,7 @@ header h1 {
   resize: none;
   max-height: 150px;
   line-height: 1.5;
-  padding: 7px 65px 7px 0;
+  padding: 7px 100px 7px 0;
 }
 #input:focus { outline: none; }
 #input::placeholder { color: var(--text-dim); }
@@ -459,6 +446,98 @@ header h1 {
 }
 #send:disabled { opacity: 0.25; cursor: not-allowed; filter: none; }
 
+#attach {
+  position: absolute;
+  right: 62px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: color 0.2s, border-color 0.2s;
+}
+#attach:hover { color: var(--cyan); border-color: rgba(0,255,255,0.25); }
+#attach:disabled { opacity: 0.35; cursor: not-allowed; }
+#attach svg { width: 16px; height: 16px; }
+
+#attach-preview {
+  max-width: min(80ch, calc(100vw - 32px));
+  margin: 0 auto 8px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  font-size: 12px;
+  font-family: 'IBM Plex Mono', monospace;
+  color: var(--text-dim);
+}
+#attach-preview.hidden { display: none; }
+.attach-kind {
+  font-size: 10px;
+  letter-spacing: 1px;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--cyan);
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+.attach-name { flex: 1; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attach-size { flex-shrink: 0; }
+.attach-remove {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 4px;
+  flex-shrink: 0;
+}
+.attach-remove:hover { color: var(--red); }
+
+#drop-overlay {
+  position: fixed;
+  inset: 12px;
+  border: 3px dashed var(--cyan);
+  border-radius: 14px;
+  background: rgba(0,0,0,0.72);
+  z-index: 300;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+#drop-overlay.active { display: flex; }
+@media (prefers-color-scheme: light) {
+  #drop-overlay { background: rgba(245,245,240,0.85); }
+}
+.drop-message {
+  color: var(--cyan);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 18px;
+  letter-spacing: 3px;
+  text-align: center;
+  padding: 0 24px;
+}
+.drop-sub {
+  display: block;
+  margin-top: 8px;
+  color: var(--text-dim);
+  font-size: 11px;
+  letter-spacing: 1px;
+}
+
 /* ═══════════════════════════════════════════════
    CREATE MODAL
    ═══════════════════════════════════════════════ */
@@ -471,16 +550,7 @@ header h1 {
   justify-content: center;
   z-index: 200;
 }
-#create-modal.hidden, #rules-modal.hidden { display: none; }
-#rules-modal {
-  position: fixed;
-  inset: 0;
-  background: rgba(0,0,0,0.85);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 200;
-}
+#create-modal.hidden { display: none; }
 .modal-content {
   background: var(--bg);
   border: 1px solid rgba(192,0,255,0.3);
@@ -565,35 +635,6 @@ header h1 {
 }
 #oss-banner.hidden { display: none; }
 #oss-banner p { margin: 0; }
-#update-banner {
-  flex-shrink: 0;
-  max-width: min(80ch, calc(100vw - 32px));
-  margin: 12px auto 0;
-  padding: 12px 16px;
-  border: 1px solid rgba(255,255,0,0.3);
-  border-radius: 8px;
-  background: rgba(255,255,0,0.04);
-  font-size: 13px;
-  color: var(--text);
-  line-height: 1.5;
-  font-family: 'IBM Plex Mono', monospace;
-}
-#update-banner.hidden { display: none; }
-#update-banner a { color: var(--yellow); }
-#update-banner .update-version { color: var(--yellow); font-weight: 600; }
-#update-banner .update-current { color: var(--text-dim); }
-#update-banner .banner-btn {
-  background: none;
-  border: 1px solid rgba(255,255,0,0.2);
-  color: var(--text-dim);
-  padding: 2px 8px;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 11px;
-  font-family: 'IBM Plex Mono', monospace;
-  margin-left: 8px;
-}
-#update-banner .banner-btn:hover { color: var(--yellow); border-color: rgba(255,255,0,0.4); }
 .banner-actions {
   display: flex;
   gap: 8px;
@@ -620,7 +661,6 @@ header h1 {
 <header>
   <h1><a href="https://miraos.org/" target="_blank" style="color:var(--lime);text-decoration:none">MIRA</a> <span style="opacity:0.4;font-weight:400">OPEN SOURCE UI</span></h1>
   <button id="domain-toggle" onclick="toggleDomainPanel()"><span id="domain-status">Domains</span></button>
-  <button id="rules-toggle" onclick="toggleRulesModal()" style="margin-left:0">Rules</button>
   <span id="key-status" onclick="promptForKey()">No API key</span>
 </header>
 
@@ -641,8 +681,6 @@ header h1 {
   </div>
 </div>
 
-<div id="update-banner" class="hidden"></div>
-
 <div id="oss-banner" class="hidden">
   <p>This is a basic web UI for the open-source version of MIRA. If you have improvements, please submit them as a PR — I'm open to a community UI.</p>
   <div class="banner-actions">
@@ -658,10 +696,19 @@ header h1 {
 <div id="loading"><span class="dots"><span>.</span><span>.</span><span>.</span></span></div>
 
 <div id="compose-area">
+  <div id="attach-preview" class="hidden"></div>
   <div id="compose">
     <textarea id="input" rows="1" placeholder="Send a message..." disabled></textarea>
+    <button id="attach" type="button" title="Attach file" onclick="document.getElementById('file-input').click()" disabled>
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 17.99 8.8l-8.58 8.58a2 2 0 0 1-2.83-2.83l7.87-7.87"/></svg>
+    </button>
     <button id="send" onclick="send()" disabled>Send</button>
   </div>
+  <input type="file" id="file-input" style="display:none" accept="image/jpeg,image/png,image/gif,image/webp,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/plain,text/csv,application/json">
+</div>
+
+<div id="drop-overlay">
+  <div class="drop-message">DROP TO ATTACH<span class="drop-sub">image (5MB) or document (32MB)</span></div>
 </div>
 
 <div id="create-modal" class="hidden">
@@ -675,34 +722,6 @@ header h1 {
     <div class="modal-buttons">
       <button onclick="hideCreateModal()">Cancel</button>
       <button id="create-btn" onclick="createDomain()">Create</button>
-    </div>
-  </div>
-</div>
-
-<div id="rules-modal" class="hidden">
-  <div class="modal-content" style="max-width:520px;">
-    <h3>Trigger Rules</h3>
-    <p style="color:var(--text-dim);font-size:13px;margin-bottom:16px;">Rules determine which emails trigger an automated response.</p>
-    <div id="rules-list" style="margin-bottom:16px;max-height:240px;overflow-y:auto;"></div>
-    <div style="border-top:1px solid rgba(255,255,255,0.1);padding-top:12px;">
-      <label>Folder</label>
-      <input type="text" id="oss-rule-scope" value="INBOX" placeholder="INBOX" style="width:100%;margin-bottom:8px;">
-      <label>Match Field</label>
-      <select id="oss-rule-field" style="width:100%;margin-bottom:8px;padding:8px;background:var(--bg);border:1px solid rgba(255,255,255,0.15);color:var(--text);border-radius:6px;">
-        <option value="from">From</option>
-        <option value="subject">Subject</option>
-        <option value="body">Body</option>
-      </select>
-      <label>Regex Pattern</label>
-      <input type="text" id="oss-rule-pattern" placeholder="e.g. hello@example\.com" style="width:100%;">
-      <label style="margin-top:8px;display:block;">Agent Prompt <span style="color:var(--text-dim);font-size:11px;">(optional)</span></label>
-      <textarea id="oss-rule-prompt" rows="3" placeholder="Instructions for the agent when this rule matches..." style="width:100%;resize:vertical;"></textarea>
-      <div id="oss-rule-error" style="color:var(--red);font-size:12px;margin-top:4px;min-height:16px;"></div>
-    </div>
-    <div id="oss-conflicts-list" style="margin-top:12px;max-height:120px;overflow-y:auto;"></div>
-    <div class="modal-buttons">
-      <button onclick="toggleRulesModal()">Close</button>
-      <button onclick="addRule()">Add Rule</button>
     </div>
   </div>
 </div>
@@ -743,6 +762,7 @@ function showAuth() {
   document.getElementById('auth-overlay').classList.remove('hidden');
   document.getElementById('input').disabled = true;
   document.getElementById('send').disabled = true;
+  document.getElementById('attach').disabled = true;
   document.getElementById('key-status').textContent = 'No API key';
 }
 
@@ -750,6 +770,7 @@ function hideAuth() {
   document.getElementById('auth-overlay').classList.add('hidden');
   document.getElementById('input').disabled = false;
   document.getElementById('send').disabled = false;
+  document.getElementById('attach').disabled = false;
   const ks = document.getElementById('key-status');
   ks.textContent = 'Connected';
   ks.style.color = 'var(--lime)';
@@ -932,10 +953,21 @@ async function send() {
 
   document.getElementById('loading').classList.add('active');
 
+  const body = { message: text };
+  if (attachedFile) {
+    if (attachedFile.kind === 'image') {
+      body.image = attachedFile.base64;
+      body.image_type = attachedFile.type;
+    } else {
+      body.document = attachedFile.base64;
+      body.document_type = attachedFile.type;
+    }
+  }
+
   try {
     const r = await apiFetch(`${API}/chat`, {
       method: 'POST',
-      body: JSON.stringify({ message: text })
+      body: JSON.stringify(body)
     });
     if (r.status === 401) { promptForKey(); return; }
     const json = await r.json();
@@ -943,6 +975,7 @@ async function send() {
     const toolsUsed = json.data?.metadata?.tools_used || [];
     container.appendChild(createMsgEl('assistant', response, new Date().toISOString(), toolsUsed));
     scrollToBottom();
+    clearAttachment();
   } catch (e) {
     container.appendChild(createMsgEl('assistant', 'Error: Could not reach MIRA. Check your connection.', null));
     scrollToBottom();
@@ -953,6 +986,141 @@ async function send() {
     input.focus();
   }
 }
+
+// ─── File Attachments ───────────────────────────
+const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+const DOCUMENT_TYPES = [
+  'application/pdf',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'text/plain',
+  'text/csv',
+  'application/json'
+];
+const MAX_IMAGE_MB = 5;
+const MAX_DOC_MB = 32;
+let attachedFile = null;
+
+function formatSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+function acceptFile(file) {
+  if (!file) return;
+  const isImage = IMAGE_TYPES.includes(file.type);
+  const isDoc = DOCUMENT_TYPES.includes(file.type);
+  if (!isImage && !isDoc) {
+    alert('Unsupported file type: ' + (file.type || 'unknown') + '\n\nSupported: JPEG, PNG, GIF, WebP images; PDF, DOCX, XLSX, TXT, CSV, JSON documents.');
+    return;
+  }
+  const maxMb = isImage ? MAX_IMAGE_MB : MAX_DOC_MB;
+  if (file.size > maxMb * 1024 * 1024) {
+    alert((isImage ? 'Image' : 'Document') + ' is too large (' + formatSize(file.size) + '). Max ' + maxMb + ' MB.');
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    const dataUrl = reader.result;
+    const comma = dataUrl.indexOf(',');
+    const base64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
+    attachedFile = {
+      kind: isImage ? 'image' : 'document',
+      name: file.name,
+      type: file.type,
+      size: file.size,
+      base64
+    };
+    renderAttachPreview();
+  };
+  reader.onerror = () => alert('Failed to read file');
+  reader.readAsDataURL(file);
+}
+
+function clearAttachment() {
+  attachedFile = null;
+  document.getElementById('file-input').value = '';
+  renderAttachPreview();
+}
+
+function renderAttachPreview() {
+  const preview = document.getElementById('attach-preview');
+  preview.innerHTML = '';
+  if (!attachedFile) {
+    preview.classList.add('hidden');
+    return;
+  }
+  preview.classList.remove('hidden');
+
+  const kind = document.createElement('span');
+  kind.className = 'attach-kind';
+  kind.textContent = attachedFile.kind === 'image' ? 'IMG' : 'DOC';
+
+  const name = document.createElement('span');
+  name.className = 'attach-name';
+  name.textContent = attachedFile.name;
+
+  const size = document.createElement('span');
+  size.className = 'attach-size';
+  size.textContent = formatSize(attachedFile.size);
+
+  const remove = document.createElement('button');
+  remove.className = 'attach-remove';
+  remove.type = 'button';
+  remove.title = 'Remove';
+  remove.textContent = '\u00d7';
+  remove.addEventListener('click', clearAttachment);
+
+  preview.appendChild(kind);
+  preview.appendChild(name);
+  preview.appendChild(size);
+  preview.appendChild(remove);
+}
+
+document.getElementById('file-input').addEventListener('change', e => {
+  const f = e.target.files && e.target.files[0];
+  if (f) acceptFile(f);
+});
+
+// ─── Drag & Drop ────────────────────────────────
+// Always preventDefault on dragover/drop at the window level so Chrome
+// doesn't hijack the drop and open the file in a new tab.
+let dragDepth = 0;
+const dropOverlay = document.getElementById('drop-overlay');
+
+function hasFiles(e) {
+  const types = e.dataTransfer && e.dataTransfer.types;
+  if (!types) return false;
+  for (let i = 0; i < types.length; i++) {
+    if (types[i] === 'Files') return true;
+  }
+  return false;
+}
+
+window.addEventListener('dragenter', e => {
+  e.preventDefault();
+  if (!hasFiles(e)) return;
+  dragDepth++;
+  dropOverlay.classList.add('active');
+});
+window.addEventListener('dragover', e => {
+  e.preventDefault();
+  if (hasFiles(e)) e.dataTransfer.dropEffect = 'copy';
+});
+window.addEventListener('dragleave', e => {
+  e.preventDefault();
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) dropOverlay.classList.remove('active');
+});
+window.addEventListener('drop', e => {
+  e.preventDefault();
+  dragDepth = 0;
+  dropOverlay.classList.remove('active');
+  if (document.getElementById('attach').disabled) return;
+  const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+  if (f) acceptFile(f);
+});
 
 // ─── Domain Management ──────────────────────────
 async function fetchDomains() {
@@ -1119,169 +1287,6 @@ document.addEventListener('keydown', e => {
   }
 });
 
-// ─── Trigger Rules ──────────────────────────────
-function toggleRulesModal() {
-  const modal = document.getElementById('rules-modal');
-  modal.classList.toggle('hidden');
-  if (!modal.classList.contains('hidden')) { loadRules(); loadConflicts(); }
-}
-
-async function loadRules() {
-  const list = document.getElementById('rules-list');
-  if (!list) return;
-  list.innerHTML = '<p style="color:var(--text-dim)">Loading...</p>';
-  try {
-    const r = await apiFetch(`${API}/triggers/rules`);
-    const data = await r.json();
-    const rules = data?.data?.rules || [];
-    if (rules.length === 0) {
-      list.innerHTML = '<p style="color:var(--text-dim)">No rules yet.</p>';
-      return;
-    }
-    const esc = s => { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; };
-    list.innerHTML = rules.map(rule => {
-      const color = rule.enabled ? 'var(--lime)' : 'var(--text-dim)';
-      const promptPreview = rule.prompt
-        ? `<div class="oss-prompt-preview" data-rule-id="${rule.id}" style="margin-top:2px;color:var(--text-dim);font-size:11px;max-height:32px;overflow:hidden;cursor:pointer;" title="Click to edit">${esc(rule.prompt.substring(0, 120))}${rule.prompt.length > 120 ? '...' : ''}</div>`
-        : `<div class="oss-prompt-preview" data-rule-id="${rule.id}" style="margin-top:2px;color:var(--text-dim);font-size:11px;font-style:italic;cursor:pointer;" title="Click to add prompt">No prompt (uses default)</div>`;
-      return `<div style="display:flex;align-items:flex-start;gap:8px;padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.05);">
-        <div style="flex:1;color:${color};font-size:13px;">
-          <b>${esc(rule.field)}</b> ~ <code style="color:var(--cyan)">${esc(rule.pattern)}</code>
-          <span style="color:var(--text-dim);font-size:11px;margin-left:6px;">${esc(rule.scope)}</span>
-          ${promptPreview}
-          <div class="oss-prompt-editor" data-rule-id="${rule.id}" style="display:none;margin-top:6px;">
-            <textarea rows="5" style="width:100%;resize:vertical;font-size:11px;">${rule.prompt ? esc(rule.prompt) : ''}</textarea>
-            <div style="margin-top:4px;display:flex;gap:6px;">
-              <button onclick="saveRulePrompt(${rule.id})" style="font-size:11px;padding:2px 8px;">Save</button>
-              <button onclick="cancelPromptEdit(${rule.id})" style="font-size:11px;padding:2px 8px;">Cancel</button>
-              ${rule.prompt ? `<button onclick="clearRulePrompt(${rule.id})" style="font-size:11px;padding:2px 8px;color:var(--red);">Clear</button>` : ''}
-            </div>
-          </div>
-        </div>
-        <div style="display:flex;flex-direction:column;gap:4px;">
-          <button onclick="toggleRule(${rule.id},${rule.enabled})" style="font-size:11px;padding:2px 8px;">${rule.enabled ? 'Disable' : 'Enable'}</button>
-          <button onclick="deleteRule(${rule.id})" style="font-size:11px;padding:2px 8px;">Delete</button>
-        </div>
-      </div>`;
-    }).join('');
-    // Wire click-to-edit on prompt previews
-    list.querySelectorAll('.oss-prompt-preview').forEach(el => {
-      el.addEventListener('click', () => {
-        const id = el.dataset.ruleId;
-        el.style.display = 'none';
-        list.querySelector(`.oss-prompt-editor[data-rule-id="${id}"]`).style.display = 'block';
-      });
-    });
-  } catch (e) {
-    list.innerHTML = '<p style="color:var(--red)">Failed to load rules</p>';
-  }
-}
-
-async function addRule() {
-  const scope = document.getElementById('oss-rule-scope')?.value?.trim() || 'INBOX';
-  const field = document.getElementById('oss-rule-field')?.value;
-  const pattern = document.getElementById('oss-rule-pattern')?.value?.trim();
-  const prompt = document.getElementById('oss-rule-prompt')?.value?.trim() || null;
-  const err = document.getElementById('oss-rule-error');
-  if (!pattern) { if (err) err.textContent = 'Pattern required'; return; }
-  try { new RegExp(pattern); } catch (e) { if (err) err.textContent = `Invalid regex: ${e.message}`; return; }
-  try {
-    await apiFetch(`${API}/triggers/rules`, {
-      method: 'POST',
-      body: JSON.stringify({ trigger_id: 'imap_email', scope, field, pattern, ...(prompt ? { prompt } : {}) }),
-    });
-    document.getElementById('oss-rule-pattern').value = '';
-    document.getElementById('oss-rule-prompt').value = '';
-    if (err) err.textContent = '';
-    loadRules();
-  } catch (e) { if (err) err.textContent = `Error: ${e.message}`; }
-}
-
-async function saveRulePrompt(id) {
-  const editor = document.querySelector(`.oss-prompt-editor[data-rule-id="${id}"]`);
-  const text = editor.querySelector('textarea').value.trim();
-  try {
-    await apiFetch(`${API}/triggers/rules/${id}`, {
-      method: 'PUT',
-      body: JSON.stringify({ prompt: text || null }),
-    });
-    loadRules();
-  } catch (e) { alert(`Failed: ${e.message}`); }
-}
-
-function cancelPromptEdit(id) {
-  document.querySelector(`.oss-prompt-editor[data-rule-id="${id}"]`).style.display = 'none';
-  document.querySelector(`.oss-prompt-preview[data-rule-id="${id}"]`).style.display = '';
-}
-
-async function clearRulePrompt(id) {
-  try {
-    await apiFetch(`${API}/triggers/rules/${id}`, {
-      method: 'PUT',
-      body: JSON.stringify({ prompt: null }),
-    });
-    loadRules();
-  } catch (e) { alert(`Failed: ${e.message}`); }
-}
-
-async function toggleRule(id, enabled) {
-  try {
-    await apiFetch(`${API}/triggers/rules/${id}`, {
-      method: 'PUT',
-      body: JSON.stringify({ enabled: !enabled }),
-    });
-    loadRules();
-  } catch (e) { alert(`Failed: ${e.message}`); }
-}
-
-async function deleteRule(id) {
-  if (!confirm('Delete this rule?')) return;
-  try {
-    await apiFetch(`${API}/triggers/rules/${id}`, { method: 'DELETE' });
-    loadRules();
-  } catch (e) { alert(`Failed: ${e.message}`); }
-}
-
-async function loadConflicts() {
-  const list = document.getElementById('oss-conflicts-list');
-  if (!list) return;
-  try {
-    const r = await apiFetch(`${API}/triggers/conflicts`);
-    const data = await r.json();
-    const conflicts = data?.data?.conflicts || [];
-    if (conflicts.length === 0) { list.innerHTML = ''; return; }
-    const esc = s => { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; };
-    list.innerHTML = '<div style="border-top:1px solid rgba(255,255,255,0.1);padding-top:8px;margin-top:8px;">'
-      + '<label style="color:var(--red);font-size:12px;">Recent Conflicts</label>'
-      + conflicts.map(c =>
-        `<div style="padding:4px 0;font-size:12px;color:var(--red);">${esc(c.summary)}</div>`
-      ).join('') + '</div>';
-  } catch (e) { /* non-critical */ }
-}
-
-document.addEventListener('keydown', e => {
-  if (e.key === 'Escape' && !document.getElementById('rules-modal').classList.contains('hidden')) toggleRulesModal();
-});
-
-// ─── Update Check ───────────────────────────────
-async function checkForUpdate() {
-  try {
-    const r = await fetch(`${API}/check_remote_update`);
-    if (!r.ok) return;
-    const data = await r.json();
-    if (!data.update_available || !data.latest_version) return;
-    if (localStorage.getItem('mira_dismiss_update') === data.latest_version) return;
-    const banner = document.getElementById('update-banner');
-    const current = data.current_version || '?';
-    banner.innerHTML = `Update available: <span class="update-current">${current}</span> → <span class="update-version">${data.latest_version}</span> — <a href="https://miraos.org" target="_blank">miraos.org</a> <button class="banner-btn" onclick="dismissUpdate('${data.latest_version}')">Dismiss</button>`;
-    banner.classList.remove('hidden');
-  } catch {}
-}
-function dismissUpdate(version) {
-  document.getElementById('update-banner').classList.add('hidden');
-  localStorage.setItem('mira_dismiss_update', version);
-}
-
 // ─── OSS Banner ─────────────────────────────────
 function showBannerIfNeeded() {
   if (localStorage.getItem('mira_hide_banner')) return;
@@ -1298,7 +1303,6 @@ function dismissBanner(permanent) {
     loadHistory();
     fetchDomains();
     showBannerIfNeeded();
-    checkForUpdate();
   }
 })();
 </script>
