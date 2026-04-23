@@ -321,6 +321,18 @@ header h1 {
   font-family: 'IBM Plex Mono', monospace;
 }
 
+/* Cost footer on assistant replies (shown only when `Cost: on`) */
+.cost-footer {
+  margin-top: 8px;
+  font-size: 11px;
+  opacity: 0.55;
+  font-family: 'IBM Plex Mono', Menlo, monospace;
+  letter-spacing: 0.02em;
+}
+
+/* Cost toggle button active state */
+#cost-toggle.active { color: var(--lime); border-color: rgba(0,255,0,0.35); }
+
 /* Tool badges */
 .msg-tools { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px; }
 .tool-badge {
@@ -621,6 +633,7 @@ header h1 {
   <h1><a href="https://miraos.org/" target="_blank" style="color:var(--lime);text-decoration:none">MIRA</a> <span style="opacity:0.4;font-weight:400">OPEN SOURCE UI</span></h1>
   <button id="domain-toggle" onclick="toggleDomainPanel()"><span id="domain-status">Domains</span></button>
   <button id="rules-toggle" onclick="toggleRulesModal()" style="margin-left:0">Rules</button>
+  <button id="cost-toggle" onclick="toggleShowCost()" style="margin-left:0" title="Show per-request token usage and cost">Cost: off</button>
   <span id="key-status" onclick="promptForKey()">No API key</span>
 </header>
 
@@ -715,6 +728,39 @@ let hasMore = false;
 let sending = false;
 let domains = [];
 let domainPanelOpen = false;
+let showCost = localStorage.getItem('mira_show_cost') === '1';
+
+function toggleShowCost() {
+  showCost = !showCost;
+  localStorage.setItem('mira_show_cost', showCost ? '1' : '0');
+  refreshCostToggleLabel();
+}
+
+function refreshCostToggleLabel() {
+  const btn = document.getElementById('cost-toggle');
+  if (!btn) return;
+  btn.textContent = 'Cost: ' + (showCost ? 'on' : 'off');
+  btn.classList.toggle('active', showCost);
+}
+
+function formatCostFooter(cost) {
+  if (!cost) return '';
+  const n = (v) => (v || 0).toLocaleString();
+  const dollarStr = cost.cost_usd >= 0.01
+    ? '$' + cost.cost_usd.toFixed(4)
+    : '$' + cost.cost_usd.toFixed(6);
+  const parts = [
+    `${n(cost.input_tokens)} in`,
+    `${n(cost.output_tokens)} out`,
+  ];
+  if (cost.cache_read_tokens) parts.push(`${n(cost.cache_read_tokens)} cache-hit`);
+  if (cost.cache_write_tokens) parts.push(`${n(cost.cache_write_tokens)} cache-write`);
+  parts.push(dollarStr);
+  if (cost.calls > 1) parts.push(`${cost.calls} calls`);
+  if (cost.unpriced_calls) parts.push(`${cost.unpriced_calls} unpriced`);
+  const marker = cost.fallback_prices_used ? ' · est.' : '';
+  return parts.join(' · ') + marker;
+}
 
 // ─── Auth ───────────────────────────────────────
 async function tryAutoLogin() {
@@ -933,15 +979,25 @@ async function send() {
   document.getElementById('loading').classList.add('active');
 
   try {
+    const body = { message: text };
+    if (showCost) body.show_cost = true;
     const r = await apiFetch(`${API}/chat`, {
       method: 'POST',
-      body: JSON.stringify({ message: text })
+      body: JSON.stringify(body)
     });
     if (r.status === 401) { promptForKey(); return; }
     const json = await r.json();
     const response = json.data?.response || json.response || 'No response';
     const toolsUsed = json.data?.metadata?.tools_used || [];
-    container.appendChild(createMsgEl('assistant', response, new Date().toISOString(), toolsUsed));
+    const msgEl = createMsgEl('assistant', response, new Date().toISOString(), toolsUsed);
+    const costData = json.data?.cost;
+    if (costData) {
+      const costEl = document.createElement('div');
+      costEl.className = 'cost-footer';
+      costEl.textContent = formatCostFooter(costData);
+      msgEl.appendChild(costEl);
+    }
+    container.appendChild(msgEl);
     scrollToBottom();
   } catch (e) {
     container.appendChild(createMsgEl('assistant', 'Error: Could not reach MIRA. Check your connection.', null));
@@ -1294,6 +1350,7 @@ function dismissBanner(permanent) {
 
 // ─── Startup ────────────────────────────────────
 (async () => {
+  refreshCostToggleLabel();
   if (await checkAuth()) {
     loadHistory();
     fetchDomains();

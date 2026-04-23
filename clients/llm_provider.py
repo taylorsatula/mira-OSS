@@ -680,6 +680,23 @@ class LLMProvider:
         except Exception as e:
             self.logger.error(f"Billing on cancel failed: {e}", exc_info=True)
 
+        # Cost accumulator hook (independent of billing module — active when a
+        # request handler has opted into per-request cost feedback).
+        try:
+            from utils import cost_accumulator
+            snapshot = getattr(stream, 'current_message_snapshot', None)
+            if cost_accumulator.is_active() and snapshot and getattr(snapshot, 'usage', None):
+                cost_accumulator.record(
+                    internal_llm_name=None,  # stream cancellation only occurs on user-tier chat
+                    model=model,
+                    input_tokens=snapshot.usage.input_tokens,
+                    output_tokens=max(streamed_output_chars // 4, 1),
+                    cache_read_tokens=getattr(snapshot.usage, 'cache_read_input_tokens', 0) or 0,
+                    cache_write_tokens=getattr(snapshot.usage, 'cache_creation_input_tokens', 0) or 0,
+                )
+        except Exception as e:
+            self.logger.debug(f"cost_accumulator record failed (non-fatal): {e}")
+
     def _prepare_tools_for_caching(self, tools: List[Dict]) -> List[Dict]:
         """
         Prepare tools for prompt caching by marking the last tool.
@@ -852,6 +869,7 @@ class LLMProvider:
                 max_tokens=max_tokens,
                 container_id=container_id,
                 allow_negative=allow_negative,
+                internal_llm_name=_llm_cfg.name if _llm_cfg else None,
             )
 
         # Streaming path
@@ -1184,6 +1202,22 @@ class LLMProvider:
                             pass  # OSS mode
                         self.logger.error(f"Billing record_usage failed (generic streaming): {e}", exc_info=True)
 
+                    # Cost accumulator hook (stream_events never carries internal_llm context —
+                    # it's only called from the user-facing chat path).
+                    try:
+                        from utils import cost_accumulator
+                        if cost_accumulator.is_active() and response.usage:
+                            cost_accumulator.record(
+                                internal_llm_name=None,
+                                model=model_override,
+                                input_tokens=response.usage.input_tokens,
+                                output_tokens=response.usage.output_tokens,
+                                cache_read_tokens=getattr(response.usage, 'cache_read_input_tokens', 0) or 0,
+                                cache_write_tokens=getattr(response.usage, 'cache_creation_input_tokens', 0) or 0,
+                            )
+                    except Exception as e:
+                        self.logger.debug(f"cost_accumulator record failed (non-fatal): {e}")
+
                     # Check for tool_use blocks
                     tool_blocks = [b for b in response.content if b.type == "tool_use"]
 
@@ -1359,6 +1393,7 @@ class LLMProvider:
         max_tokens: Optional[int] = None,
         container_id: Optional[str] = None,
         allow_negative: bool = False,
+        internal_llm_name: Optional[str] = None,
     ) -> anthropic.types.Message:
         """Non-streaming generation with Anthropic SDK or generic provider - returns Message object."""
         try:
@@ -1678,6 +1713,21 @@ class LLMProvider:
                     pass  # OSS mode - no billing exceptions module
                 self.logger.error(f"Billing record_usage failed: {e}", exc_info=True)
 
+            # Cost accumulator hook (independent of billing module).
+            try:
+                from utils import cost_accumulator
+                if cost_accumulator.is_active() and hasattr(message, 'usage') and message.usage:
+                    cost_accumulator.record(
+                        internal_llm_name=internal_llm_name,
+                        model=selected_model,
+                        input_tokens=message.usage.input_tokens,
+                        output_tokens=message.usage.output_tokens,
+                        cache_read_tokens=getattr(message.usage, 'cache_read_input_tokens', 0) or 0,
+                        cache_write_tokens=getattr(message.usage, 'cache_creation_input_tokens', 0) or 0,
+                    )
+            except Exception as e:
+                self.logger.debug(f"cost_accumulator record failed (non-fatal): {e}")
+
             return message
 
         except anthropic.APITimeoutError:
@@ -1961,6 +2011,21 @@ class LLMProvider:
                             except ImportError:
                                 pass  # OSS mode - no billing exceptions module
                             self.logger.error(f"Billing record_usage failed: {e}", exc_info=True)
+
+                        # Cost accumulator hook (stream_events is always user-tier chat).
+                        try:
+                            from utils import cost_accumulator
+                            if cost_accumulator.is_active() and hasattr(final_message, 'usage') and final_message.usage:
+                                cost_accumulator.record(
+                                    internal_llm_name=None,
+                                    model=selected_model,
+                                    input_tokens=final_message.usage.input_tokens,
+                                    output_tokens=final_message.usage.output_tokens,
+                                    cache_read_tokens=getattr(final_message.usage, 'cache_read_input_tokens', 0) or 0,
+                                    cache_write_tokens=getattr(final_message.usage, 'cache_creation_input_tokens', 0) or 0,
+                                )
+                        except Exception as e:
+                            self.logger.debug(f"cost_accumulator record failed (non-fatal): {e}")
 
                         # Emit ToolCompletedEvent for server-side tools so the
                         # orchestrator can persist tool history across turns.
