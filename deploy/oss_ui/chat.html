@@ -447,10 +447,30 @@ header h1 {
   resize: none;
   max-height: 150px;
   line-height: 1.5;
-  padding: 7px 65px 7px 0;
+  padding: 7px 100px 7px 0;
 }
 #input:focus { outline: none; }
 #input::placeholder { color: var(--text-dim); }
+#attach {
+  position: absolute;
+  right: 62px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: color 0.2s, border-color 0.2s;
+}
+#attach:hover { color: var(--cyan); border-color: rgba(0,255,255,0.25); }
+#attach:disabled { opacity: 0.35; cursor: not-allowed; }
+#attach svg { width: 16px; height: 16px; }
 #send {
   position: absolute;
   right: 6px;
@@ -470,6 +490,76 @@ header h1 {
   transition: all 0.2s;
 }
 #send:disabled { opacity: 0.25; cursor: not-allowed; filter: none; }
+
+#attach-preview {
+  max-width: min(80ch, calc(100vw - 32px));
+  margin: 0 auto 8px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  font-size: 12px;
+  font-family: 'IBM Plex Mono', monospace;
+  color: var(--text-dim);
+}
+#attach-preview.hidden { display: none; }
+.attach-kind {
+  font-size: 10px;
+  letter-spacing: 1px;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--cyan);
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+.attach-name { flex: 1; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attach-size { flex-shrink: 0; }
+.attach-remove {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 4px;
+  flex-shrink: 0;
+}
+.attach-remove:hover { color: var(--red); }
+
+#drop-overlay {
+  position: fixed;
+  inset: 12px;
+  border: 3px dashed var(--cyan);
+  border-radius: 14px;
+  background: rgba(0,0,0,0.72);
+  z-index: 300;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+#drop-overlay.active { display: flex; }
+@media (prefers-color-scheme: light) {
+  #drop-overlay { background: rgba(255,255,255,0.78); }
+}
+.drop-message {
+  text-align: center;
+  font-family: 'IBM Plex Mono', monospace;
+  color: var(--cyan);
+  font-size: 18px;
+  letter-spacing: 2px;
+}
+.drop-sub {
+  display: block;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+  letter-spacing: 0.5px;
+}
 
 /* ═══════════════════════════════════════════════
    CREATE MODAL
@@ -671,10 +761,19 @@ header h1 {
 <div id="loading"><span class="dots"><span>.</span><span>.</span><span>.</span></span></div>
 
 <div id="compose-area">
+  <div id="attach-preview" class="hidden"></div>
   <div id="compose">
     <textarea id="input" rows="1" placeholder="Send a message..." disabled></textarea>
+    <button id="attach" type="button" title="Attach file" onclick="document.getElementById('file-input').click()" disabled>
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 17.99 8.8l-8.58 8.58a2 2 0 0 1-2.83-2.83l7.87-7.87"/></svg>
+    </button>
     <button id="send" onclick="send()" disabled>Send</button>
   </div>
+  <input type="file" id="file-input" style="display:none" accept="image/jpeg,image/png,image/gif,image/webp,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/plain,text/csv,application/json">
+</div>
+
+<div id="drop-overlay">
+  <div class="drop-message">DROP TO ATTACH<span class="drop-sub">image (5MB) or document (32MB)</span></div>
 </div>
 
 <div id="create-modal" class="hidden">
@@ -789,6 +888,7 @@ function showAuth() {
   document.getElementById('auth-overlay').classList.remove('hidden');
   document.getElementById('input').disabled = true;
   document.getElementById('send').disabled = true;
+  document.getElementById('attach').disabled = true;
   document.getElementById('key-status').textContent = 'No API key';
 }
 
@@ -796,6 +896,7 @@ function hideAuth() {
   document.getElementById('auth-overlay').classList.add('hidden');
   document.getElementById('input').disabled = false;
   document.getElementById('send').disabled = false;
+  document.getElementById('attach').disabled = false;
   const ks = document.getElementById('key-status');
   ks.textContent = 'Connected';
   ks.style.color = 'var(--lime)';
@@ -980,6 +1081,15 @@ async function send() {
 
   try {
     const body = { message: text };
+    if (attachedFile) {
+      if (attachedFile.kind === 'image') {
+        body.image = attachedFile.base64;
+        body.image_type = attachedFile.type;
+      } else {
+        body.document = attachedFile.base64;
+        body.document_type = attachedFile.type;
+      }
+    }
     if (showCost) body.show_cost = true;
     const r = await apiFetch(`${API}/chat`, {
       method: 'POST',
@@ -999,6 +1109,7 @@ async function send() {
     }
     container.appendChild(msgEl);
     scrollToBottom();
+    clearAttachment();
   } catch (e) {
     container.appendChild(createMsgEl('assistant', 'Error: Could not reach MIRA. Check your connection.', null));
     scrollToBottom();
@@ -1009,6 +1120,141 @@ async function send() {
     input.focus();
   }
 }
+
+// ─── File Attachments ───────────────────────────
+const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+const DOCUMENT_TYPES = [
+  'application/pdf',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'text/plain',
+  'text/csv',
+  'application/json'
+];
+const MAX_IMAGE_MB = 5;
+const MAX_DOC_MB = 32;
+let attachedFile = null;
+
+function formatSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+function acceptFile(file) {
+  if (!file) return;
+  const isImage = IMAGE_TYPES.includes(file.type);
+  const isDoc = DOCUMENT_TYPES.includes(file.type);
+  if (!isImage && !isDoc) {
+    alert('Unsupported file type: ' + (file.type || 'unknown') + '\n\nSupported: JPEG, PNG, GIF, WebP images; PDF, DOCX, XLSX, TXT, CSV, JSON documents.');
+    return;
+  }
+  const maxMb = isImage ? MAX_IMAGE_MB : MAX_DOC_MB;
+  if (file.size > maxMb * 1024 * 1024) {
+    alert((isImage ? 'Image' : 'Document') + ' is too large (' + formatSize(file.size) + '). Max ' + maxMb + ' MB.');
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    const dataUrl = reader.result;
+    const comma = dataUrl.indexOf(',');
+    const base64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
+    attachedFile = {
+      kind: isImage ? 'image' : 'document',
+      name: file.name,
+      type: file.type,
+      size: file.size,
+      base64
+    };
+    renderAttachPreview();
+  };
+  reader.onerror = () => alert('Failed to read file');
+  reader.readAsDataURL(file);
+}
+
+function clearAttachment() {
+  attachedFile = null;
+  document.getElementById('file-input').value = '';
+  renderAttachPreview();
+}
+
+function renderAttachPreview() {
+  const preview = document.getElementById('attach-preview');
+  preview.innerHTML = '';
+  if (!attachedFile) {
+    preview.classList.add('hidden');
+    return;
+  }
+  preview.classList.remove('hidden');
+
+  const kind = document.createElement('span');
+  kind.className = 'attach-kind';
+  kind.textContent = attachedFile.kind === 'image' ? 'IMG' : 'DOC';
+
+  const name = document.createElement('span');
+  name.className = 'attach-name';
+  name.textContent = attachedFile.name;
+
+  const size = document.createElement('span');
+  size.className = 'attach-size';
+  size.textContent = formatSize(attachedFile.size);
+
+  const remove = document.createElement('button');
+  remove.className = 'attach-remove';
+  remove.type = 'button';
+  remove.title = 'Remove';
+  remove.textContent = '\u00d7';
+  remove.addEventListener('click', clearAttachment);
+
+  preview.appendChild(kind);
+  preview.appendChild(name);
+  preview.appendChild(size);
+  preview.appendChild(remove);
+}
+
+document.getElementById('file-input').addEventListener('change', e => {
+  const f = e.target.files && e.target.files[0];
+  if (f) acceptFile(f);
+});
+
+// ─── Drag & Drop ────────────────────────────────
+// Always preventDefault on dragover/drop at the window level so Chrome
+// doesn't hijack the drop and open the file in a new tab.
+let dragDepth = 0;
+const dropOverlay = document.getElementById('drop-overlay');
+
+function hasFiles(e) {
+  const types = e.dataTransfer && e.dataTransfer.types;
+  if (!types) return false;
+  for (let i = 0; i < types.length; i++) {
+    if (types[i] === 'Files') return true;
+  }
+  return false;
+}
+
+window.addEventListener('dragenter', e => {
+  e.preventDefault();
+  if (!hasFiles(e)) return;
+  dragDepth++;
+  dropOverlay.classList.add('active');
+});
+window.addEventListener('dragover', e => {
+  e.preventDefault();
+  if (hasFiles(e)) e.dataTransfer.dropEffect = 'copy';
+});
+window.addEventListener('dragleave', e => {
+  e.preventDefault();
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) dropOverlay.classList.remove('active');
+});
+window.addEventListener('drop', e => {
+  e.preventDefault();
+  dragDepth = 0;
+  dropOverlay.classList.remove('active');
+  if (document.getElementById('attach').disabled) return;
+  const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+  if (f) acceptFile(f);
+});
 
 // ─── Domain Management ──────────────────────────
 async function fetchDomains() {
