@@ -1,9 +1,8 @@
 """
 Dropbox tool — process files the user has dropped into a local folder.
 
-The user drops files into a configured local directory (default is
-<project_root>/docs/dropbox, resolved from this file's location), then asks
-MIRA to process them. The tool exposes three operations:
+The user drops files into a configured local directory, then asks MIRA to
+process them. The tool exposes three operations:
 
   - list:    enumerate files currently in the dropbox
   - read:    return extracted text from a document (paginated / truncatable)
@@ -22,6 +21,10 @@ Supported document formats for `read`:
 
 PDFs and images can be listed and archived but not read through this tool.
 For PDF content, use chat attachment (Claude reads PDFs natively).
+
+Future direction: this remains an inbox-style triage tool for now. A broader
+filesystem tool with explicit permissions may come later, but that expansion is
+intentionally out of scope for this PR.
 """
 import json
 import logging
@@ -31,37 +34,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any, Optional
 
-from pydantic import BaseModel, Field
+from config.config import InboxToolConfig
 
 from tools.repo import Tool
 from tools.registry import registry
 from utils.timezone_utils import utc_now, format_utc_iso
 
 logger = logging.getLogger(__name__)
-
-
-# Default inbox lives under the MIRA project root — wherever the repo was cloned
-# — at `<project_root>/docs/dropbox`. Resolved from this file's location so the
-# default travels with the repo regardless of clone path.
-#   tools/implementations/inbox_tool.py
-#    └─ parents[0] = implementations/
-#       └─ parents[1] = tools/
-#          └─ parents[2] = <project_root>
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
-_DEFAULT_INBOX_PATH = str(_PROJECT_ROOT / "docs" / "dropbox")
-
-
-class InboxToolConfig(BaseModel):
-    """Configuration for the inbox_tool."""
-    enabled: bool = Field(default=True, description="Whether this tool is enabled by default")
-    inbox_path: str = Field(
-        default=_DEFAULT_INBOX_PATH,
-        description="Filesystem path for the file drop-off dropbox. Defaults to <project_root>/docs/dropbox, resolved from the tool module's location so it travels with a clone of the repo. Tilde expansion is still applied at runtime if overridden. Directory is auto-created on first use."
-    )
-    archive_subdir: str = Field(
-        default="archive",
-        description="Subdirectory inside the dropbox where archived files land. Keeping archive inside the dropbox makes the whole history self-contained."
-    )
 
 
 registry.register("inbox_tool", InboxToolConfig)
@@ -157,7 +136,7 @@ class InboxTool(Tool):
 
     def _inbox_root(self) -> Path:
         cfg = self._cfg()
-        p = Path(cfg.inbox_path).expanduser().resolve()
+        p = Path(cfg.inbox_path).resolve()
         p.mkdir(parents=True, exist_ok=True)
         (p / cfg.archive_subdir).mkdir(parents=True, exist_ok=True)
         return p
@@ -261,6 +240,7 @@ class InboxTool(Tool):
         path = self._safe_file(filename)
         mime = self._guess_mime(path)
         kind = self._kind(mime)
+        cfg = self._cfg()
 
         if kind == "image":
             raise ValueError(
@@ -279,17 +259,27 @@ class InboxTool(Tool):
                 f"json, docx, xlsx. You can still `archive` it."
             )
 
-        if chars <= 0:
-            chars = 10000
+        max_size_bytes = cfg.max_read_file_size_mb * 1024 * 1024
+        file_size = path.stat().st_size
+        if file_size > max_size_bytes:
+            raise ValueError(
+                f"{filename!r} is {_human_size(file_size)}, which exceeds the configured "
+                f"read limit of {cfg.max_read_file_size_mb} MB for inbox_tool."
+            )
+
+        requested_chars = int(chars or 10000)
+        if requested_chars <= 0:
+            requested_chars = 10000
+        effective_chars = min(requested_chars, cfg.max_read_chars)
         if offset < 0:
             offset = 0
 
         text = _extract_text(path, mime)
         total = len(text)
-        excerpt = text[offset:offset + chars]
+        excerpt = text[offset:offset + effective_chars]
         end = offset + len(excerpt)
         truncated = end < total
-        return {
+        result = {
             "filename": filename,
             "mime": mime,
             "total_chars": total,
@@ -299,6 +289,11 @@ class InboxTool(Tool):
             "next_offset": end if truncated else None,
             "content": excerpt,
         }
+        if effective_chars != requested_chars:
+            result["chars_capped"] = True
+            result["requested_chars"] = requested_chars
+            result["effective_chars"] = effective_chars
+        return result
 
     def _op_archive(self, filename: str, note: Optional[str]) -> Dict[str, Any]:
         path = self._safe_file(filename)
