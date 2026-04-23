@@ -59,6 +59,7 @@ class ChatRequest(BaseModel):
     document: str | None = Field(None, description="Optional document as base64 string")
     document_type: str | None = Field(None, description="MIME type for document (e.g., application/pdf)")
     include_thinking: bool = Field(False, description="Include thinking trace in response")
+    show_cost: bool = Field(False, description="Include per-request token usage and USD cost in the response under `data.cost`")
 
 
 class ChatEndpoint(BaseHandler):
@@ -74,6 +75,7 @@ class ChatEndpoint(BaseHandler):
         document: str | None,
         document_type: str | None,
         include_thinking: bool = False,
+        show_cost: bool = False,
     ) -> SuccessResponse:
         start_time = utc_now()
 
@@ -269,6 +271,14 @@ class ChatEndpoint(BaseHandler):
             # Create a Unit of Work and process via orchestrator
             uow = continuum_pool.begin_work(continuum)
 
+            # Per-request cost tracking (opt-in). Started before any LLM calls
+            # fire (including subcortical and internal_llm purposes), drained
+            # after the orchestrator returns so the summary covers every call
+            # the turn triggered.
+            if show_cost:
+                from utils import cost_accumulator
+                cost_accumulator.start()
+
             from config.config_manager import config as app_config
             continuum, response_text, metadata = orchestrator.process_message(
                 continuum,
@@ -283,6 +293,13 @@ class ChatEndpoint(BaseHandler):
 
             # Commit batched changes
             uow.commit()
+
+            cost_summary = None
+            if show_cost:
+                from utils import cost_accumulator
+                summary = cost_accumulator.drain()
+                if summary is not None:
+                    cost_summary = summary.to_dict()
 
             processing_time_ms = int((utc_now() - start_time).total_seconds() * 1000)
 
@@ -299,6 +316,8 @@ class ChatEndpoint(BaseHandler):
             }
             if include_thinking and metadata.get("thinking"):
                 data["thinking"] = metadata["thinking"]
+            if cost_summary is not None:
+                data["cost"] = cost_summary
 
             return create_success_response(
                 data=data,
@@ -332,6 +351,7 @@ def chat_endpoint(
             document=request.document,
             document_type=request.document_type,
             include_thinking=request.include_thinking,
+            show_cost=request.show_cost,
         )
         return response.to_dict()
 
