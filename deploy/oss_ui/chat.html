@@ -107,6 +107,19 @@ header h1 {
   border-color: rgba(255,255,0,0.4);
   color: var(--yellow);
 }
+#rules-toggle {
+  background: none;
+  border: 1px solid rgba(0,255,255,0.1);
+  color: var(--text-dim);
+  padding: 3px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  font-family: 'IBM Plex Mono', monospace;
+  letter-spacing: 0.5px;
+  transition: all 0.2s;
+}
+#rules-toggle:hover { border-color: rgba(0,255,255,0.3); color: var(--cyan); }
 #key-status {
   flex: 1;
   text-align: right;
@@ -308,6 +321,18 @@ header h1 {
   font-family: 'IBM Plex Mono', monospace;
 }
 
+/* Cost footer on assistant replies (shown only when `Cost: on`) */
+.cost-footer {
+  margin-top: 8px;
+  font-size: 11px;
+  opacity: 0.55;
+  font-family: 'IBM Plex Mono', Menlo, monospace;
+  letter-spacing: 0.02em;
+}
+
+/* Cost toggle button active state */
+#cost-toggle.active { color: var(--lime); border-color: rgba(0,255,0,0.35); }
+
 /* Tool badges */
 .msg-tools { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px; }
 .tool-badge {
@@ -426,26 +451,6 @@ header h1 {
 }
 #input:focus { outline: none; }
 #input::placeholder { color: var(--text-dim); }
-#send {
-  position: absolute;
-  right: 6px;
-  top: 50%;
-  transform: translateY(-50%);
-  padding: 6px 12px;
-  background: var(--lime);
-  color: #000;
-  border: 1px solid var(--lime);
-  border-radius: 5px;
-  font-size: 12px;
-  font-weight: 600;
-  font-family: 'IBM Plex Mono', monospace;
-  cursor: pointer;
-  letter-spacing: 0.5px;
-  filter: drop-shadow(0px -1px 20px rgba(0,255,0,0.2));
-  transition: all 0.2s;
-}
-#send:disabled { opacity: 0.25; cursor: not-allowed; filter: none; }
-
 #attach {
   position: absolute;
   right: 62px;
@@ -466,6 +471,25 @@ header h1 {
 #attach:hover { color: var(--cyan); border-color: rgba(0,255,255,0.25); }
 #attach:disabled { opacity: 0.35; cursor: not-allowed; }
 #attach svg { width: 16px; height: 16px; }
+#send {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 6px 12px;
+  background: var(--lime);
+  color: #000;
+  border: 1px solid var(--lime);
+  border-radius: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: 'IBM Plex Mono', monospace;
+  cursor: pointer;
+  letter-spacing: 0.5px;
+  filter: drop-shadow(0px -1px 20px rgba(0,255,0,0.2));
+  transition: all 0.2s;
+}
+#send:disabled { opacity: 0.25; cursor: not-allowed; filter: none; }
 
 #attach-preview {
   max-width: min(80ch, calc(100vw - 32px));
@@ -520,22 +544,21 @@ header h1 {
 }
 #drop-overlay.active { display: flex; }
 @media (prefers-color-scheme: light) {
-  #drop-overlay { background: rgba(245,245,240,0.85); }
+  #drop-overlay { background: rgba(255,255,255,0.78); }
 }
 .drop-message {
-  color: var(--cyan);
-  font-family: 'IBM Plex Mono', monospace;
-  font-size: 18px;
-  letter-spacing: 3px;
   text-align: center;
-  padding: 0 24px;
+  font-family: 'IBM Plex Mono', monospace;
+  color: var(--cyan);
+  font-size: 18px;
+  letter-spacing: 2px;
 }
 .drop-sub {
   display: block;
   margin-top: 8px;
+  font-size: 12px;
   color: var(--text-dim);
-  font-size: 11px;
-  letter-spacing: 1px;
+  letter-spacing: 0.5px;
 }
 
 /* ═══════════════════════════════════════════════
@@ -550,7 +573,16 @@ header h1 {
   justify-content: center;
   z-index: 200;
 }
-#create-modal.hidden { display: none; }
+#create-modal.hidden, #rules-modal.hidden { display: none; }
+#rules-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
 .modal-content {
   background: var(--bg);
   border: 1px solid rgba(192,0,255,0.3);
@@ -635,6 +667,35 @@ header h1 {
 }
 #oss-banner.hidden { display: none; }
 #oss-banner p { margin: 0; }
+#update-banner {
+  flex-shrink: 0;
+  max-width: min(80ch, calc(100vw - 32px));
+  margin: 12px auto 0;
+  padding: 12px 16px;
+  border: 1px solid rgba(255,255,0,0.3);
+  border-radius: 8px;
+  background: rgba(255,255,0,0.04);
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.5;
+  font-family: 'IBM Plex Mono', monospace;
+}
+#update-banner.hidden { display: none; }
+#update-banner a { color: var(--yellow); }
+#update-banner .update-version { color: var(--yellow); font-weight: 600; }
+#update-banner .update-current { color: var(--text-dim); }
+#update-banner .banner-btn {
+  background: none;
+  border: 1px solid rgba(255,255,0,0.2);
+  color: var(--text-dim);
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  font-family: 'IBM Plex Mono', monospace;
+  margin-left: 8px;
+}
+#update-banner .banner-btn:hover { color: var(--yellow); border-color: rgba(255,255,0,0.4); }
 .banner-actions {
   display: flex;
   gap: 8px;
@@ -661,6 +722,8 @@ header h1 {
 <header>
   <h1><a href="https://miraos.org/" target="_blank" style="color:var(--lime);text-decoration:none">MIRA</a> <span style="opacity:0.4;font-weight:400">OPEN SOURCE UI</span></h1>
   <button id="domain-toggle" onclick="toggleDomainPanel()"><span id="domain-status">Domains</span></button>
+  <button id="rules-toggle" onclick="toggleRulesModal()" style="margin-left:0">Rules</button>
+  <button id="cost-toggle" onclick="toggleShowCost()" style="margin-left:0" title="Show per-request token usage and cost">Cost: off</button>
   <span id="key-status" onclick="promptForKey()">No API key</span>
 </header>
 
@@ -680,6 +743,8 @@ header h1 {
     <div id="auth-error"></div>
   </div>
 </div>
+
+<div id="update-banner" class="hidden"></div>
 
 <div id="oss-banner" class="hidden">
   <p>This is a basic web UI for the open-source version of MIRA. If you have improvements, please submit them as a PR — I'm open to a community UI.</p>
@@ -726,6 +791,34 @@ header h1 {
   </div>
 </div>
 
+<div id="rules-modal" class="hidden">
+  <div class="modal-content" style="max-width:520px;">
+    <h3>Trigger Rules</h3>
+    <p style="color:var(--text-dim);font-size:13px;margin-bottom:16px;">Rules determine which emails trigger an automated response.</p>
+    <div id="rules-list" style="margin-bottom:16px;max-height:240px;overflow-y:auto;"></div>
+    <div style="border-top:1px solid rgba(255,255,255,0.1);padding-top:12px;">
+      <label>Folder</label>
+      <input type="text" id="oss-rule-scope" value="INBOX" placeholder="INBOX" style="width:100%;margin-bottom:8px;">
+      <label>Match Field</label>
+      <select id="oss-rule-field" style="width:100%;margin-bottom:8px;padding:8px;background:var(--bg);border:1px solid rgba(255,255,255,0.15);color:var(--text);border-radius:6px;">
+        <option value="from">From</option>
+        <option value="subject">Subject</option>
+        <option value="body">Body</option>
+      </select>
+      <label>Regex Pattern</label>
+      <input type="text" id="oss-rule-pattern" placeholder="e.g. hello@example\.com" style="width:100%;">
+      <label style="margin-top:8px;display:block;">Agent Prompt <span style="color:var(--text-dim);font-size:11px;">(optional)</span></label>
+      <textarea id="oss-rule-prompt" rows="3" placeholder="Instructions for the agent when this rule matches..." style="width:100%;resize:vertical;"></textarea>
+      <div id="oss-rule-error" style="color:var(--red);font-size:12px;margin-top:4px;min-height:16px;"></div>
+    </div>
+    <div id="oss-conflicts-list" style="margin-top:12px;max-height:120px;overflow-y:auto;"></div>
+    <div class="modal-buttons">
+      <button onclick="toggleRulesModal()">Close</button>
+      <button onclick="addRule()">Add Rule</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const API = '/v0/api';
 let apiKey = localStorage.getItem('mira_api_key');
@@ -734,6 +827,39 @@ let hasMore = false;
 let sending = false;
 let domains = [];
 let domainPanelOpen = false;
+let showCost = localStorage.getItem('mira_show_cost') === '1';
+
+function toggleShowCost() {
+  showCost = !showCost;
+  localStorage.setItem('mira_show_cost', showCost ? '1' : '0');
+  refreshCostToggleLabel();
+}
+
+function refreshCostToggleLabel() {
+  const btn = document.getElementById('cost-toggle');
+  if (!btn) return;
+  btn.textContent = 'Cost: ' + (showCost ? 'on' : 'off');
+  btn.classList.toggle('active', showCost);
+}
+
+function formatCostFooter(cost) {
+  if (!cost) return '';
+  const n = (v) => (v || 0).toLocaleString();
+  const dollarStr = cost.cost_usd >= 0.01
+    ? '$' + cost.cost_usd.toFixed(4)
+    : '$' + cost.cost_usd.toFixed(6);
+  const parts = [
+    `${n(cost.input_tokens)} in`,
+    `${n(cost.output_tokens)} out`,
+  ];
+  if (cost.cache_read_tokens) parts.push(`${n(cost.cache_read_tokens)} cache-hit`);
+  if (cost.cache_write_tokens) parts.push(`${n(cost.cache_write_tokens)} cache-write`);
+  parts.push(dollarStr);
+  if (cost.calls > 1) parts.push(`${cost.calls} calls`);
+  if (cost.unpriced_calls) parts.push(`${cost.unpriced_calls} unpriced`);
+  const marker = cost.fallback_prices_used ? ' · est.' : '';
+  return parts.join(' · ') + marker;
+}
 
 // ─── Auth ───────────────────────────────────────
 async function tryAutoLogin() {
@@ -953,18 +1079,18 @@ async function send() {
 
   document.getElementById('loading').classList.add('active');
 
-  const body = { message: text };
-  if (attachedFile) {
-    if (attachedFile.kind === 'image') {
-      body.image = attachedFile.base64;
-      body.image_type = attachedFile.type;
-    } else {
-      body.document = attachedFile.base64;
-      body.document_type = attachedFile.type;
-    }
-  }
-
   try {
+    const body = { message: text };
+    if (attachedFile) {
+      if (attachedFile.kind === 'image') {
+        body.image = attachedFile.base64;
+        body.image_type = attachedFile.type;
+      } else {
+        body.document = attachedFile.base64;
+        body.document_type = attachedFile.type;
+      }
+    }
+    if (showCost) body.show_cost = true;
     const r = await apiFetch(`${API}/chat`, {
       method: 'POST',
       body: JSON.stringify(body)
@@ -973,7 +1099,15 @@ async function send() {
     const json = await r.json();
     const response = json.data?.response || json.response || 'No response';
     const toolsUsed = json.data?.metadata?.tools_used || [];
-    container.appendChild(createMsgEl('assistant', response, new Date().toISOString(), toolsUsed));
+    const msgEl = createMsgEl('assistant', response, new Date().toISOString(), toolsUsed);
+    const costData = json.data?.cost;
+    if (costData) {
+      const costEl = document.createElement('div');
+      costEl.className = 'cost-footer';
+      costEl.textContent = formatCostFooter(costData);
+      msgEl.appendChild(costEl);
+    }
+    container.appendChild(msgEl);
     scrollToBottom();
     clearAttachment();
   } catch (e) {
@@ -1287,6 +1421,169 @@ document.addEventListener('keydown', e => {
   }
 });
 
+// ─── Trigger Rules ──────────────────────────────
+function toggleRulesModal() {
+  const modal = document.getElementById('rules-modal');
+  modal.classList.toggle('hidden');
+  if (!modal.classList.contains('hidden')) { loadRules(); loadConflicts(); }
+}
+
+async function loadRules() {
+  const list = document.getElementById('rules-list');
+  if (!list) return;
+  list.innerHTML = '<p style="color:var(--text-dim)">Loading...</p>';
+  try {
+    const r = await apiFetch(`${API}/triggers/rules`);
+    const data = await r.json();
+    const rules = data?.data?.rules || [];
+    if (rules.length === 0) {
+      list.innerHTML = '<p style="color:var(--text-dim)">No rules yet.</p>';
+      return;
+    }
+    const esc = s => { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; };
+    list.innerHTML = rules.map(rule => {
+      const color = rule.enabled ? 'var(--lime)' : 'var(--text-dim)';
+      const promptPreview = rule.prompt
+        ? `<div class="oss-prompt-preview" data-rule-id="${rule.id}" style="margin-top:2px;color:var(--text-dim);font-size:11px;max-height:32px;overflow:hidden;cursor:pointer;" title="Click to edit">${esc(rule.prompt.substring(0, 120))}${rule.prompt.length > 120 ? '...' : ''}</div>`
+        : `<div class="oss-prompt-preview" data-rule-id="${rule.id}" style="margin-top:2px;color:var(--text-dim);font-size:11px;font-style:italic;cursor:pointer;" title="Click to add prompt">No prompt (uses default)</div>`;
+      return `<div style="display:flex;align-items:flex-start;gap:8px;padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.05);">
+        <div style="flex:1;color:${color};font-size:13px;">
+          <b>${esc(rule.field)}</b> ~ <code style="color:var(--cyan)">${esc(rule.pattern)}</code>
+          <span style="color:var(--text-dim);font-size:11px;margin-left:6px;">${esc(rule.scope)}</span>
+          ${promptPreview}
+          <div class="oss-prompt-editor" data-rule-id="${rule.id}" style="display:none;margin-top:6px;">
+            <textarea rows="5" style="width:100%;resize:vertical;font-size:11px;">${rule.prompt ? esc(rule.prompt) : ''}</textarea>
+            <div style="margin-top:4px;display:flex;gap:6px;">
+              <button onclick="saveRulePrompt(${rule.id})" style="font-size:11px;padding:2px 8px;">Save</button>
+              <button onclick="cancelPromptEdit(${rule.id})" style="font-size:11px;padding:2px 8px;">Cancel</button>
+              ${rule.prompt ? `<button onclick="clearRulePrompt(${rule.id})" style="font-size:11px;padding:2px 8px;color:var(--red);">Clear</button>` : ''}
+            </div>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:4px;">
+          <button onclick="toggleRule(${rule.id},${rule.enabled})" style="font-size:11px;padding:2px 8px;">${rule.enabled ? 'Disable' : 'Enable'}</button>
+          <button onclick="deleteRule(${rule.id})" style="font-size:11px;padding:2px 8px;">Delete</button>
+        </div>
+      </div>`;
+    }).join('');
+    // Wire click-to-edit on prompt previews
+    list.querySelectorAll('.oss-prompt-preview').forEach(el => {
+      el.addEventListener('click', () => {
+        const id = el.dataset.ruleId;
+        el.style.display = 'none';
+        list.querySelector(`.oss-prompt-editor[data-rule-id="${id}"]`).style.display = 'block';
+      });
+    });
+  } catch (e) {
+    list.innerHTML = '<p style="color:var(--red)">Failed to load rules</p>';
+  }
+}
+
+async function addRule() {
+  const scope = document.getElementById('oss-rule-scope')?.value?.trim() || 'INBOX';
+  const field = document.getElementById('oss-rule-field')?.value;
+  const pattern = document.getElementById('oss-rule-pattern')?.value?.trim();
+  const prompt = document.getElementById('oss-rule-prompt')?.value?.trim() || null;
+  const err = document.getElementById('oss-rule-error');
+  if (!pattern) { if (err) err.textContent = 'Pattern required'; return; }
+  try { new RegExp(pattern); } catch (e) { if (err) err.textContent = `Invalid regex: ${e.message}`; return; }
+  try {
+    await apiFetch(`${API}/triggers/rules`, {
+      method: 'POST',
+      body: JSON.stringify({ trigger_id: 'imap_email', scope, field, pattern, ...(prompt ? { prompt } : {}) }),
+    });
+    document.getElementById('oss-rule-pattern').value = '';
+    document.getElementById('oss-rule-prompt').value = '';
+    if (err) err.textContent = '';
+    loadRules();
+  } catch (e) { if (err) err.textContent = `Error: ${e.message}`; }
+}
+
+async function saveRulePrompt(id) {
+  const editor = document.querySelector(`.oss-prompt-editor[data-rule-id="${id}"]`);
+  const text = editor.querySelector('textarea').value.trim();
+  try {
+    await apiFetch(`${API}/triggers/rules/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify({ prompt: text || null }),
+    });
+    loadRules();
+  } catch (e) { alert(`Failed: ${e.message}`); }
+}
+
+function cancelPromptEdit(id) {
+  document.querySelector(`.oss-prompt-editor[data-rule-id="${id}"]`).style.display = 'none';
+  document.querySelector(`.oss-prompt-preview[data-rule-id="${id}"]`).style.display = '';
+}
+
+async function clearRulePrompt(id) {
+  try {
+    await apiFetch(`${API}/triggers/rules/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify({ prompt: null }),
+    });
+    loadRules();
+  } catch (e) { alert(`Failed: ${e.message}`); }
+}
+
+async function toggleRule(id, enabled) {
+  try {
+    await apiFetch(`${API}/triggers/rules/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify({ enabled: !enabled }),
+    });
+    loadRules();
+  } catch (e) { alert(`Failed: ${e.message}`); }
+}
+
+async function deleteRule(id) {
+  if (!confirm('Delete this rule?')) return;
+  try {
+    await apiFetch(`${API}/triggers/rules/${id}`, { method: 'DELETE' });
+    loadRules();
+  } catch (e) { alert(`Failed: ${e.message}`); }
+}
+
+async function loadConflicts() {
+  const list = document.getElementById('oss-conflicts-list');
+  if (!list) return;
+  try {
+    const r = await apiFetch(`${API}/triggers/conflicts`);
+    const data = await r.json();
+    const conflicts = data?.data?.conflicts || [];
+    if (conflicts.length === 0) { list.innerHTML = ''; return; }
+    const esc = s => { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; };
+    list.innerHTML = '<div style="border-top:1px solid rgba(255,255,255,0.1);padding-top:8px;margin-top:8px;">'
+      + '<label style="color:var(--red);font-size:12px;">Recent Conflicts</label>'
+      + conflicts.map(c =>
+        `<div style="padding:4px 0;font-size:12px;color:var(--red);">${esc(c.summary)}</div>`
+      ).join('') + '</div>';
+  } catch (e) { /* non-critical */ }
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && !document.getElementById('rules-modal').classList.contains('hidden')) toggleRulesModal();
+});
+
+// ─── Update Check ───────────────────────────────
+async function checkForUpdate() {
+  try {
+    const r = await fetch(`${API}/check_remote_update`);
+    if (!r.ok) return;
+    const data = await r.json();
+    if (!data.update_available || !data.latest_version) return;
+    if (localStorage.getItem('mira_dismiss_update') === data.latest_version) return;
+    const banner = document.getElementById('update-banner');
+    const current = data.current_version || '?';
+    banner.innerHTML = `Update available: <span class="update-current">${current}</span> → <span class="update-version">${data.latest_version}</span> — <a href="https://miraos.org" target="_blank">miraos.org</a> <button class="banner-btn" onclick="dismissUpdate('${data.latest_version}')">Dismiss</button>`;
+    banner.classList.remove('hidden');
+  } catch {}
+}
+function dismissUpdate(version) {
+  document.getElementById('update-banner').classList.add('hidden');
+  localStorage.setItem('mira_dismiss_update', version);
+}
+
 // ─── OSS Banner ─────────────────────────────────
 function showBannerIfNeeded() {
   if (localStorage.getItem('mira_hide_banner')) return;
@@ -1299,10 +1596,12 @@ function dismissBanner(permanent) {
 
 // ─── Startup ────────────────────────────────────
 (async () => {
+  refreshCostToggleLabel();
   if (await checkAuth()) {
     loadHistory();
     fetchDomains();
     showBannerIfNeeded();
+    checkForUpdate();
   }
 })();
 </script>
