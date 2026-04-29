@@ -11,6 +11,7 @@
 
 ## Files
 
+- `instance.py` — MIRA instance identity. Reads `MIRA_INSTANCE` env var once at import. Exports `INSTANCE_NAME` and 4 derivation functions: `vault_prefix()`, `database_name()`, `user_data_base()`, `valkey_prefix()`. All instance-specific resource names flow from this module. Validates input: rejects empty, non-alphanumeric, or digit-leading names with `ValueError`.
 - `user_context.py` — Owns user identity contextvar (`set_current_user_id` / `get_current_user_id`), segment context, `UserPreferences` model + `get_user_preferences()`, `ConversationLLMConfig` / `get_conversation_llms()`, and `InternalLLMConfig` / `get_internal_llm()`.
 - `database_session_manager.py` — Singleton PostgreSQL connection pool (`get_shared_session_manager()`); `LTMemorySession` enforces RLS, `AdminSession` bypasses it.
 - `perf.py` — Performance instrumentation; monkey-patches `execute_*` methods at startup via `install_db_instrumentation()`. Gated by `mira.perf` logger level.
