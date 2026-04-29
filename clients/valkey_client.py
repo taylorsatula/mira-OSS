@@ -31,6 +31,13 @@ class ValkeyClient:
         self._load_config()
         self._init_connections()
 
+        from utils.instance import valkey_prefix
+        self._prefix = valkey_prefix()
+
+    def _key(self, key: str) -> str:
+        """Apply instance prefix to key. No-op for default instance."""
+        return f"{self._prefix}{key}" if self._prefix else key
+
     def _load_config(self):
         """Load Valkey URL and password from Vault. Raises if Vault is unavailable."""
         from urllib.parse import urlparse
@@ -132,7 +139,7 @@ class ValkeyClient:
         Returns None if key doesn't exist.
         Raises if Valkey connection fails.
         """
-        return self._client.get(key)
+        return self._client.get(self._key(key))
 
     def delete(self, key: str) -> bool:
         """
@@ -141,7 +148,7 @@ class ValkeyClient:
         Returns True if key was deleted, False if key didn't exist.
         Raises if Valkey connection fails.
         """
-        result = self._client.delete(key)
+        result = self._client.delete(self._key(key))
         return result > 0
 
     def exists(self, key: str) -> bool:
@@ -151,7 +158,7 @@ class ValkeyClient:
         Returns True if key exists, False if not.
         Raises if Valkey connection fails.
         """
-        result = self._client.exists(key)
+        result = self._client.exists(self._key(key))
         return result > 0
 
     def ttl(self, key: str) -> int:
@@ -161,7 +168,7 @@ class ValkeyClient:
         Returns -1 if key has no TTL, -2 if key doesn't exist.
         Raises if Valkey connection fails.
         """
-        return self._client.ttl(key)
+        return self._client.ttl(self._key(key))
 
     def scan(self, cursor: int, match: Optional[str] = None, count: int = 100) -> tuple[int, list[str]]:
         """
@@ -170,17 +177,24 @@ class ValkeyClient:
         Returns (next_cursor, keys) tuple.
         Raises if Valkey connection fails.
         """
-        return self._client.scan(cursor, match=match, count=count)
+        if match and self._prefix:
+            match = f"{self._prefix}{match}"
+        elif self._prefix:
+            match = f"{self._prefix}*"
+        next_cursor, keys = self._client.scan(cursor, match=match, count=count)
+        if self._prefix:
+            keys = [k[len(self._prefix):] for k in keys]
+        return next_cursor, keys
 
     def increment_with_expiry(self, key: str, expiry_seconds: int) -> int:
         """Atomic increment with expiration - ideal for rate limiting."""
-        # First increment the counter
-        count = self._client.incr(key)
+        prefixed = self._key(key)
+        count = self._client.incr(prefixed)
 
         # Only set expiry if this is the first increment (count == 1)
         # This prevents resetting the TTL window on every request
         if count == 1:
-            self._client.expire(key, expiry_seconds)
+            self._client.expire(prefixed, expiry_seconds)
 
         return count
 
@@ -200,18 +214,20 @@ class ValkeyClient:
         Returns:
             True if successful, False if key doesn't exist (for field updates)
         """
+        prefixed = self._key(key)
         if path == "$":
             # Full replacement
             json_data = json.dumps(value)
             if ex is not None:
-                return self._client.setex(key, ex, json_data)
+                return self._client.setex(prefixed, ex, json_data)
             else:
-                return self._client.set(key, json_data)
+                return self._client.set(prefixed, json_data)
 
         # Field update: read-modify-write
         if not path.startswith("$."):
             raise ValueError(f"Unsupported path: {path}. Use '$' or '$.field_name'")
 
+        # self.json_get and self.ttl apply prefix internally — pass bare key
         current = self.json_get(key, "$")
         if current is None:
             return False
@@ -227,9 +243,9 @@ class ValkeyClient:
 
         json_data = json.dumps(data)
         if ex is not None:
-            return self._client.setex(key, ex, json_data)
+            return self._client.setex(prefixed, ex, json_data)
         else:
-            return self._client.set(key, json_data)
+            return self._client.set(prefixed, json_data)
 
     def json_set_with_expiry(self, key: str, path: str, value: Dict[str, Any], ex: int) -> bool:
         """Set JSON data with expiration. Alias for json_set with required ex."""
@@ -237,7 +253,7 @@ class ValkeyClient:
 
     def json_get(self, key: str, path: str) -> Optional[list[Dict[str, Any]]]:
         """Get JSON data (returns list format for JSONPath compatibility)."""
-        json_str = self._client.get(key)
+        json_str = self._client.get(self._key(key))
         if json_str is None:
             return None
 
@@ -246,33 +262,36 @@ class ValkeyClient:
 
     def hset_with_retry(self, hash_key: str, field: str, value: str) -> int:
         """Hash set with retry pattern for transient failures."""
+        prefixed = self._key(hash_key)
         try:
-            return self._client.hset(hash_key, field, value)
+            return self._client.hset(prefixed, field, value)
         except Exception as e:
             logger.warning(f"Valkey write failed, retrying: {e}", exc_info=True)
 
         time.sleep(0.1)
-        return self._client.hset(hash_key, field, value)  # Raises on failure
+        return self._client.hset(prefixed, field, value)  # Raises on failure
 
     def hget_with_retry(self, hash_key: str, field: str) -> Optional[str]:
         """Hash get with retry pattern for transient failures."""
+        prefixed = self._key(hash_key)
         try:
-            return self._client.hget(hash_key, field)
+            return self._client.hget(prefixed, field)
         except Exception as e:
             logger.warning(f"Valkey read failed, retrying: {e}", exc_info=True)
 
         time.sleep(0.1)
-        return self._client.hget(hash_key, field)
+        return self._client.hget(prefixed, field)
 
     def hdel_with_retry(self, hash_key: str, *fields) -> int:
         """Hash delete with retry pattern for transient failures."""
+        prefixed = self._key(hash_key)
         try:
-            return self._client.hdel(hash_key, *fields)
+            return self._client.hdel(prefixed, *fields)
         except Exception as e:
             logger.warning(f"Valkey delete failed, retrying: {e}", exc_info=True)
 
         time.sleep(0.1)
-        return self._client.hdel(hash_key, *fields)
+        return self._client.hdel(prefixed, *fields)
 
     def set(self, key: str, value: str, nx: Optional[bool] = None, ex: Optional[int] = None) -> bool:
         """
@@ -294,19 +313,27 @@ class ValkeyClient:
             kwargs['nx'] = nx
         if ex is not None:
             kwargs['ex'] = ex
-        return self._client.set(key, value, **kwargs)
+        return self._client.set(self._key(key), value, **kwargs)
 
     def scan_iter(self, match: Optional[str] = None) -> Iterator[str]:
         """Scan iterator for keys matching pattern."""
-        return self._client.scan_iter(match=match)
+        if match and self._prefix:
+            match = f"{self._prefix}{match}"
+        elif self._prefix:
+            match = f"{self._prefix}*"
+        for key in self._client.scan_iter(match=match):
+            if self._prefix:
+                yield key[len(self._prefix):]
+            else:
+                yield key
 
     def expire(self, key: str, seconds: int) -> bool:
         """Set expiration on key."""
-        return self._client.expire(key, seconds)
+        return self._client.expire(self._key(key), seconds)
 
     def setex(self, key: str, seconds: int, value: str) -> bool:
         """Set key with expiration."""
-        return self._client.setex(key, seconds, value)
+        return self._client.setex(self._key(key), seconds, value)
 
     def rpush(self, key: str, *values: str) -> int:
         """
@@ -323,7 +350,7 @@ class ValkeyClient:
 
         Raises if Valkey connection fails.
         """
-        return self._client.rpush(key, *values)
+        return self._client.rpush(self._key(key), *values)
 
     def lrange(self, key: str, start: int, stop: int) -> list[str]:
         """
@@ -339,7 +366,7 @@ class ValkeyClient:
 
         Raises if Valkey connection fails.
         """
-        return self._client.lrange(key, start, stop)
+        return self._client.lrange(self._key(key), start, stop)
 
     def flush_except_whitelist(self, preserve_prefixes: list[str]) -> int:
         """
@@ -360,10 +387,13 @@ class ValkeyClient:
         deleted_count = 0
         preserved_count = 0
 
-        # Scan all keys
-        for key in self.scan_iter(match="*"):
-            # Check if key starts with any whitelisted prefix
-            should_preserve = any(key.startswith(prefix) for prefix in preserve_prefixes)
+        # When prefixed, only scan our instance's keys
+        scan_pattern = f"{self._prefix}*" if self._prefix else "*"
+
+        for key in self._client.scan_iter(match=scan_pattern):
+            # Strip prefix to check against preserve list
+            bare_key = key[len(self._prefix):] if self._prefix else key
+            should_preserve = any(bare_key.startswith(prefix) for prefix in preserve_prefixes)
 
             if should_preserve:
                 preserved_count += 1
