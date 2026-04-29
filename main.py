@@ -82,9 +82,10 @@ def ensure_single_user(app: FastAPI) -> None:
 
             try:
                 from clients.vault_client import _ensure_vault_client
+                from utils.instance import vault_prefix
                 vault_client = _ensure_vault_client()
                 secret_data = vault_client.client.secrets.kv.v2.read_secret_version(
-                    path='mira/api_keys'
+                    path=f'{vault_prefix()}/api_keys'
                 )
                 api_key = secret_data['data']['data'].get('mira_api')
                 app.state.api_key = api_key
@@ -168,10 +169,11 @@ def ensure_single_user(app: FastAPI) -> None:
 
     try:
         from clients.vault_client import _ensure_vault_client
+        from utils.instance import vault_prefix
         vault_client = _ensure_vault_client()
         # Use patch to add mira_api without overwriting anthropic_key/openaicompat_key
         vault_client.client.secrets.kv.v2.patch(
-            path='mira/api_keys',
+            path=f'{vault_prefix()}/api_keys',
             secret=dict(mira_api=api_key)
         )
     except Exception as e:

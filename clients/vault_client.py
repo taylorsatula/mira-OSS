@@ -110,62 +110,71 @@ class VaultClient:
 # Individual secret retrieval functions
 def get_database_url(service: str, admin: bool = False) -> str:
     """
-    Get database URL from Vault for mira_service.
+    Get database URL from Vault for the current instance's database.
 
     Args:
-        service: Database service name (only 'mira_service' supported)
+        service: Database service name (must match instance database name)
         admin: If True, returns admin connection string (mira_admin role with BYPASSRLS)
 
     Returns:
         PostgreSQL connection URL
     """
-    if service != 'mira_service':
-        raise ValueError(f"Unknown database service: '{service}'. Only 'mira_service' is supported.")
+    from utils.instance import database_name, vault_prefix
+    expected = database_name()
+    if service != expected:
+        raise ValueError(f"Unknown database service: '{service}'. Expected '{expected}'.")
 
     field = 'admin_url' if admin else 'service_url'
-    cache_key = f"mira/database/{field}"
+    prefix = vault_prefix()
+    cache_key = f"{prefix}/database/{field}"
 
     if cache_key in _secret_cache:
         return _secret_cache[cache_key]
 
     vault_client = _ensure_vault_client()
-    value = vault_client.get_secret('mira/database', field)
+    value = vault_client.get_secret(f'{prefix}/database', field)
     _secret_cache[cache_key] = value
     return value
 
 
 def get_api_key(key_name: str) -> str:
-    cache_key = f"mira/api_keys/{key_name}"
-    
+    from utils.instance import vault_prefix
+    prefix = vault_prefix()
+    cache_key = f"{prefix}/api_keys/{key_name}"
+
     if cache_key in _secret_cache:
         return _secret_cache[cache_key]
-    
+
     vault_client = _ensure_vault_client()
-    value = vault_client.get_secret('mira/api_keys', key_name)
+    value = vault_client.get_secret(f'{prefix}/api_keys', key_name)
     _secret_cache[cache_key] = value
     return value
 
 
 def get_auth_secret(secret_name: str) -> str:
-    cache_key = f"mira/auth/{secret_name}"
-    
+    from utils.instance import vault_prefix
+    prefix = vault_prefix()
+    cache_key = f"{prefix}/auth/{secret_name}"
+
     if cache_key in _secret_cache:
         return _secret_cache[cache_key]
-    
+
     vault_client = _ensure_vault_client()
-    value = vault_client.get_secret('mira/auth', secret_name)
+    value = vault_client.get_secret(f'{prefix}/auth', secret_name)
     _secret_cache[cache_key] = value
     return value
 
 
 def get_service_config(field: str) -> str:
-    cache_key = f"mira/services/{field}"
+    from utils.instance import vault_prefix
+    prefix = vault_prefix()
+    cache_key = f"{prefix}/services/{field}"
 
     if cache_key in _secret_cache:
         return _secret_cache[cache_key]
 
     vault_client = _ensure_vault_client()
-    value = vault_client.get_secret('mira/services', field)
+    value = vault_client.get_secret(f'{prefix}/services', field)
     _secret_cache[cache_key] = value
     return value
 
@@ -178,11 +187,13 @@ def preload_secrets() -> None:
     while the AppRole token is still valid. Raises on any failure —
     missing secrets at startup means scattered failures at runtime.
     """
+    from utils.instance import vault_prefix
+    prefix = vault_prefix()
     vault_client = _ensure_vault_client()
 
     secret_groups = [
-        ('mira/api_keys', 'API keys'),
-        ('mira/database', 'database secrets'),
+        (f'{prefix}/api_keys', 'API keys'),
+        (f'{prefix}/database', 'database secrets'),
     ]
 
     successes = []
@@ -222,8 +233,9 @@ class VaultHealthCheck(TypedDict, total=False):
 # Health check function
 def test_vault_connection() -> VaultHealthCheck:
     try:
+        from utils.instance import vault_prefix
         vault_client = _ensure_vault_client()
-        vault_client.get_secret('mira/database', 'username')
+        vault_client.get_secret(f'{vault_prefix()}/database', 'username')
 
         logger.info("Vault connection test successful")
         return {
