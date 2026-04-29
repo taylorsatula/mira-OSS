@@ -82,7 +82,8 @@ class UserDataManager:
     
     @property
     def base_dir(self) -> Path:
-        user_dir = Path("data/users") / str(self.user_id)
+        from utils.instance import user_data_base
+        user_dir = user_data_base() / str(self.user_id)
         user_dir.mkdir(parents=True, exist_ok=True)
         return user_dir
     

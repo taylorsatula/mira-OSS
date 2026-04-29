@@ -36,7 +36,8 @@ async def download_file(
         raise HTTPException(status_code=400, detail="Invalid file ID")
 
     user_id = current_user.user_id
-    base_dir = (Path("data/users") / user_id / "artifacts" / file_id).resolve()
+    from utils.instance import user_data_base
+    base_dir = (user_data_base() / user_id / "artifacts" / file_id).resolve()
 
     if not base_dir.is_dir():
         raise HTTPException(status_code=404, detail="File not found")
@@ -81,7 +82,8 @@ async def view_image(
         raise HTTPException(status_code=400, detail="Invalid file ID")
 
     user_id = current_user.user_id
-    base_dir = (Path("data/users") / user_id / "artifacts" / file_id).resolve()
+    from utils.instance import user_data_base
+    base_dir = (user_data_base() / user_id / "artifacts" / file_id).resolve()
 
     if not base_dir.is_dir():
         raise HTTPException(status_code=404, detail="Image not found")

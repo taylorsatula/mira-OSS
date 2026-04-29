@@ -414,7 +414,8 @@ class LLMProvider:
             raise ValueError(f"File too large: {size_bytes} bytes (max {MAX_FILE_ARTIFACT_SIZE})")
 
         user_id = str(get_current_user_id())
-        artifacts_dir = Path("data/users") / user_id / "artifacts"
+        from utils.instance import user_data_base
+        artifacts_dir = user_data_base() / user_id / "artifacts"
         artifacts_dir.mkdir(parents=True, exist_ok=True)
 
         safe_filename = sanitize_filename(filename)

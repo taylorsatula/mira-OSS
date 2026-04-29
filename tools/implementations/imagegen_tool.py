@@ -225,7 +225,8 @@ class ImageGenerationTool(Tool):
 
         user_id = str(get_current_user_id())
         file_id = f"imggen_{uuid4().hex[:12]}"
-        file_dir = Path("data/users") / user_id / "artifacts" / file_id
+        from utils.instance import user_data_base
+        file_dir = user_data_base() / user_id / "artifacts" / file_id
         file_dir.mkdir(parents=True, exist_ok=True)
 
         random_stem = uuid4().hex
@@ -254,7 +255,8 @@ class ImageGenerationTool(Tool):
         from utils.user_context import get_current_user_id
 
         user_id = str(get_current_user_id())
-        file_dir = Path("data/users") / user_id / "artifacts" / file_id
+        from utils.instance import user_data_base
+        file_dir = user_data_base() / user_id / "artifacts" / file_id
 
         if not file_dir.is_dir():
             raise ValueError(f"Image not found: {file_id}")

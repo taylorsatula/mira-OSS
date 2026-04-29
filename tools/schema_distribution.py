@@ -26,7 +26,8 @@ def initialize_user_database(user_id: str) -> None:
     Raises:
         RuntimeError: If database initialization fails
     """
-    db_path = Path(f"data/users/{user_id}/userdata.db")
+    from utils.instance import user_data_base
+    db_path = user_data_base() / user_id / "userdata.db"
 
     # Ensure user directory exists
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -91,7 +92,8 @@ def apply_schema_to_all_users(schema_name: str) -> Dict[str, List]:
     with open(schema_path, 'r') as f:
         schema_sql = f.read()
 
-    users_dir = Path("data/users")
+    from utils.instance import user_data_base
+    users_dir = user_data_base()
     results = {"success": [], "failed": []}
 
     if not users_dir.exists():
@@ -135,8 +137,9 @@ def apply_all_schemas_to_all_users() -> Dict[str, int]:
     Returns:
         Dict with counts of users updated and failed
     """
+    from utils.instance import user_data_base
     schema_dir = Path("tools/implementations/schemas")
-    users_dir = Path("data/users")
+    users_dir = user_data_base()
 
     if not schema_dir.exists():
         logger.error(f"Schema directory not found: {schema_dir}")

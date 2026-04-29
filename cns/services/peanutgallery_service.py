@@ -31,7 +31,9 @@ from utils.user_context import get_current_user_id
 
 logger = logging.getLogger(__name__)
 
-USER_DATA_BASE = Path("data/users")
+from utils.instance import user_data_base
+
+USER_DATA_BASE = user_data_base()
 
 
 class PeanutGalleryService:

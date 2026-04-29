@@ -266,7 +266,8 @@ class SubcorticalLayer:
                 logger.debug("No user context, skipping subcortical output persistence")
                 return
 
-            output_dir = Path("data/users") / str(user_id)
+            from utils.instance import user_data_base
+            output_dir = user_data_base() / str(user_id)
             output_dir.mkdir(parents=True, exist_ok=True)
             output_file = output_dir / "subcortical_outputs.jsonl"
 

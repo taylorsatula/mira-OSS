@@ -305,8 +305,8 @@ class PagerTool(Tool):
 
         try:
             # Construct user's database path
-            from pathlib import Path
-            user_db_path = Path("data/users") / self.user_id / "userdata.db"
+            from utils.instance import user_data_base
+            user_db_path = user_data_base() / self.user_id / "userdata.db"
 
             if not user_db_path.exists():
                 raise ValueError(f"User database not found for user_id {self.user_id}")
