@@ -197,8 +197,12 @@ async def lifespan(app: FastAPI):
     """Application lifecycle management."""
     
     # Startup
-    logger.info("  Starting MIRA...\n\n\n")
-    logger.info("====================")
+    from utils.instance import INSTANCE_NAME, database_name, vault_prefix, valkey_prefix
+    if INSTANCE_NAME != "default":
+        logger.warning(
+            f"MIRA instance '{INSTANCE_NAME}' — "
+            f"db={database_name()}, vault={vault_prefix()}, valkey_prefix={valkey_prefix()!r}"
+        )
 
     # Ensure single user exists and load credentials
     ensure_single_user(app)

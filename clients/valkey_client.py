@@ -125,12 +125,19 @@ class ValkeyClient:
     @property
     def valkey_binary(self) -> "valkey.Valkey":
         """
-        Access the binary client for storing raw bytes (e.g., embeddings).
+        Raw binary client (decode_responses=False). Bypasses instance prefix.
 
-        The binary client has decode_responses=False, preserving bytes as-is
-        without UTF-8 decoding. Used for numpy arrays and other binary data.
+        Prefer binary_get/binary_setex for instance-aware binary operations.
         """
         return self._binary_client
+
+    def binary_get(self, key: str) -> Optional[bytes]:
+        """Get raw bytes by key, with instance prefix applied."""
+        return self._binary_client.get(self._key(key))
+
+    def binary_setex(self, key: str, seconds: int, value: bytes) -> bool:
+        """Set raw bytes with expiration, with instance prefix applied."""
+        return self._binary_client.setex(self._key(key), seconds, value)
 
     def get(self, key: str) -> Optional[str]:
         """

@@ -47,7 +47,7 @@ class EmbeddingCache:
         Raises if Valkey operation fails.
         """
         cache_key = self._get_cache_key(text)
-        cached_data = self.valkey.valkey_binary.get(cache_key)
+        cached_data = self.valkey.binary_get(cache_key)
         if cached_data:
             return np.frombuffer(cached_data, dtype=np.float16)
 
@@ -61,7 +61,7 @@ class EmbeddingCache:
         """
         cache_key = self._get_cache_key(text)
         embedding_bytes = embedding.astype(np.float16).tobytes()
-        self.valkey.valkey_binary.setex(cache_key, 900, embedding_bytes)
+        self.valkey.binary_setex(cache_key, 900, embedding_bytes)
 
 
 def get_hybrid_embeddings_provider(cache_enabled: bool = True) -> 'HybridEmbeddingsProvider':

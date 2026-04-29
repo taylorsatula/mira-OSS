@@ -7,12 +7,20 @@ derive from this single value. When unset or "default", all names match
 the original hardcoded values for backwards compatibility.
 """
 import os
+import re
 from pathlib import Path
 
 
 def _read_instance_name() -> str:
-    raw = os.environ.get("MIRA_INSTANCE", "default")
-    return raw.strip().lower()
+    raw = os.environ.get("MIRA_INSTANCE", "default").strip().lower()
+    if not raw:
+        return "default"
+    if raw != "default" and not re.fullmatch(r'[a-z][a-z0-9_]*', raw):
+        raise ValueError(
+            f"MIRA_INSTANCE={raw!r} is invalid. "
+            "Must start with a letter and contain only lowercase letters, digits, and underscores."
+        )
+    return raw
 
 
 INSTANCE_NAME: str = _read_instance_name()

@@ -58,9 +58,16 @@ class ApiServerConfig(BaseModel):
 
     def model_post_init(self, __context: Any) -> None:
         import os
-        if port_override := os.environ.get("MIRA_PORT"):
+        port_override = os.environ.get("MIRA_PORT")
+        cors_override = os.environ.get("MIRA_CORS_ORIGINS")
+        if port_override:
             self.port = int(port_override)
-        if cors_override := os.environ.get("MIRA_CORS_ORIGINS"):
+            if not cors_override:
+                self.cors_origins = [
+                    origin.replace(":1993", f":{self.port}")
+                    for origin in self.cors_origins
+                ]
+        if cors_override:
             self.cors_origins = [o.strip() for o in cors_override.split(",")]
 
 

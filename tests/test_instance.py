@@ -22,6 +22,33 @@ class TestInstanceIdentity:
             from utils.instance import _read_instance_name
             assert _read_instance_name() == "kristen"
 
+    def test_empty_instance_name_falls_back_to_default(self):
+        with patch.dict(os.environ, {"MIRA_INSTANCE": ""}):
+            from utils.instance import _read_instance_name
+            assert _read_instance_name() == "default"
+
+    def test_whitespace_only_falls_back_to_default(self):
+        with patch.dict(os.environ, {"MIRA_INSTANCE": "   "}):
+            from utils.instance import _read_instance_name
+            assert _read_instance_name() == "default"
+
+    def test_invalid_characters_rejected(self):
+        with patch.dict(os.environ, {"MIRA_INSTANCE": "../etc"}):
+            from utils.instance import _read_instance_name
+            with pytest.raises(ValueError, match="invalid"):
+                _read_instance_name()
+
+    def test_leading_digit_rejected(self):
+        with patch.dict(os.environ, {"MIRA_INSTANCE": "2fast"}):
+            from utils.instance import _read_instance_name
+            with pytest.raises(ValueError, match="invalid"):
+                _read_instance_name()
+
+    def test_underscores_accepted(self):
+        with patch.dict(os.environ, {"MIRA_INSTANCE": "dev_test"}):
+            from utils.instance import _read_instance_name
+            assert _read_instance_name() == "dev_test"
+
 
 class TestVaultPrefix:
     def test_default_vault_prefix(self):
