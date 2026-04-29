@@ -44,7 +44,8 @@ class AcceptedShare:
 def _get_pg(user_id: UUID):
     """Get a PostgresClient with user_id set for RLS enforcement."""
     from clients.postgres_client import PostgresClient
-    return PostgresClient("mira_service", user_id=str(user_id))
+    from utils.instance import database_name
+    return PostgresClient(database_name(), user_id=str(user_id))
 
 
 def is_shared_label(label: str) -> bool:

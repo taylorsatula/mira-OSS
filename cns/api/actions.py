@@ -982,7 +982,8 @@ class DomainKnowledgeDomainHandler(BaseDomainHandler):
 
     def _get_pg(self):
         from clients.postgres_client import PostgresClient
-        return PostgresClient("mira_service", user_id=str(self.user_id))
+        from utils.instance import database_name
+        return PostgresClient(database_name(), user_id=str(self.user_id))
 
     def _validate_label(self, label: str) -> None:
         """Validate domaindoc label."""

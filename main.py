@@ -361,7 +361,8 @@ async def lifespan(app: FastAPI):
 
         def mira_resolve_username(username: str) -> Optional[str]:
             """Resolve username to user_id for Lattice federation."""
-            db = PostgresClient("mira_service")
+            from utils.instance import database_name
+            db = PostgresClient(database_name())
             result = db.execute_single(
                 "SELECT user_id FROM global_usernames WHERE username = %(username)s AND active = true",
                 {"username": username.lower()}

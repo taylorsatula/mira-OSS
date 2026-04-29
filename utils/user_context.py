@@ -203,7 +203,8 @@ def get_conversation_llms() -> dict[str, ConversationLLMConfig]:
         return _conversation_llm_cache
 
     from clients.postgres_client import PostgresClient
-    db = PostgresClient('mira_service')
+    from utils.instance import database_name
+    db = PostgresClient(database_name())
 
     results = db.execute_query(
         "SELECT name, model, thinking_budget, description, display_order, provider, endpoint_url, api_key_name, hidden FROM conversation_llm ORDER BY display_order"
@@ -262,7 +263,8 @@ def load_internal_llm_configs() -> None:
     """Load internal LLM configs at startup. Call during app boot."""
     global _internal_llm_cache
     from clients.postgres_client import PostgresClient
-    db = PostgresClient('mira_service')
+    from utils.instance import database_name
+    db = PostgresClient(database_name())
     results = db.execute_query(
         "SELECT name, tier, model, endpoint_url, api_key_name, description, "
         "max_tokens, effort FROM internal_llm"
@@ -325,7 +327,8 @@ def _resolve_user_internal_tier() -> str:
     user_id = get_current_user_id()
 
     from clients.postgres_client import PostgresClient
-    db = PostgresClient("mira_service", admin=True)
+    from utils.instance import database_name
+    db = PostgresClient(database_name(), admin=True)
     result = db.execute_single(
         "SELECT stripe_payment_method_id FROM users WHERE id = %s",
         (user_id,),
@@ -379,7 +382,8 @@ def get_user_preferences() -> UserPreferences:
         return UserPreferences(**data)
 
     # Cache miss - fetch from database
-    db = PostgresClient('mira_service')
+    from utils.instance import database_name
+    db = PostgresClient(database_name())
     result = db.execute_single(
         """SELECT first_name, last_name, timezone, temperature_unit, memory_manipulation_enabled, conversation_llm, created_at
            FROM users WHERE id = %s""",
@@ -421,7 +425,8 @@ def update_user_preference(field: str, value: Any) -> UserPreferences:
     from clients.postgres_client import PostgresClient
     from clients.valkey_client import get_valkey_client
 
-    db = PostgresClient('mira_service')
+    from utils.instance import database_name
+    db = PostgresClient(database_name())
 
     db.execute_update(
         f"UPDATE users SET {field} = %s WHERE id = %s",

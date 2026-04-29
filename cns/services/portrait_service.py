@@ -128,7 +128,8 @@ def read_portrait(user_id: str) -> str:
     """
     try:
         from clients.postgres_client import PostgresClient
-        db = PostgresClient('mira_service')
+        from utils.instance import database_name
+        db = PostgresClient(database_name())
         row = db.execute_single(
             "SELECT portrait FROM users WHERE id = %s",
             (user_id,)
@@ -192,8 +193,9 @@ def _save_portrait(user_id: str, content: str) -> None:
     """Write portrait to the users table in PostgreSQL."""
     from clients.postgres_client import PostgresClient
     from utils.timezone_utils import utc_now
+    from utils.instance import database_name
 
-    db = PostgresClient('mira_service')
+    db = PostgresClient(database_name())
     db.execute_update(
         "UPDATE users SET portrait = %s, portrait_generated_at = %s WHERE id = %s",
         (content, utc_now(), UUID(user_id)),

@@ -78,8 +78,9 @@ class PostgresClient:
         )
 
     def _needs_vector(self) -> bool:
-        """mira_service stores embeddings/vectors (memories, entities, messages)."""
-        return self.database_name == 'mira_service'
+        """mira_service (any instance) stores embeddings/vectors."""
+        from utils.instance import database_name
+        return self.database_name == database_name()
 
     def _ensure_connection_pool(self):
         """Ensure connection pool exists for this database."""

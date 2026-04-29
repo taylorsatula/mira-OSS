@@ -158,7 +158,8 @@ class DataEndpoint(BaseHandler):
         user_id = get_current_user_id()
 
         # DB health check — let infrastructure failures propagate
-        db = PostgresClient("mira_service", user_id=user_id)
+        from utils.instance import database_name
+        db = PostgresClient(database_name(), user_id=user_id)
         db.execute_single("SELECT 1")
 
         # Context usage metrics are managed by Anthropic's prompt caching
@@ -183,7 +184,8 @@ class DataEndpoint(BaseHandler):
         user_id = get_current_user_id()
 
         # Fetch real user data from database
-        db = PostgresClient("mira_service", user_id=user_id)
+        from utils.instance import database_name
+        db = PostgresClient(database_name(), user_id=user_id)
         user = db.execute_single(
             """SELECT id, email, first_name, last_name, created_at, last_login_at, timezone
                FROM users WHERE id = %(user_id)s""",

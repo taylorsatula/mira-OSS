@@ -31,9 +31,10 @@ class HealthEndpoint(BaseHandler):
         components: dict[str, dict] = {}
         overall_status = "healthy"
 
-        # Check database connectivity (unified mira_service database)
+        # Check database connectivity
         try:
-            db = PostgresClient("mira_service")
+            from utils.instance import database_name
+            db = PostgresClient(database_name())
             db.execute_single("SELECT 1")
             components["database"] = {"status": "healthy", "latency_ms": round((time.time() - start_time) * 1000, 1)}
         except (psycopg.OperationalError, psycopg.DatabaseError) as e:

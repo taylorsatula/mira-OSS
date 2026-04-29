@@ -79,7 +79,8 @@ class LTMemorySessionManager:
         if not user_id:
             raise ValueError("user_id is required for database operations")
 
-        pool = self._get_or_create_pool('mira_service')
+        from utils.instance import database_name
+        pool = self._get_or_create_pool(database_name())
         return LTMemorySession(pool, user_id)
 
     def get_admin_session(self) -> 'AdminSession':
@@ -91,31 +92,33 @@ class LTMemorySessionManager:
         Uses mira_admin role which has BYPASSRLS privilege.
 
         Returns:
-            AdminSession for mira_service database
+            AdminSession for the instance database
         """
-        pool = self._get_or_create_pool('mira_service_admin')
+        from utils.instance import database_name
+        pool = self._get_or_create_pool(f'{database_name()}_admin')
         return AdminSession(pool)
 
-    def _get_or_create_pool(self, database_name: str) -> ConnectionPool:
+    def _get_or_create_pool(self, pool_name: str) -> ConnectionPool:
         """
         Get existing pool or create new one for database.
 
         Args:
-            database_name: Name of database in Vault configuration
-                          'mira_service' = regular user access with RLS
-                          'mira_service_admin' = admin access with BYPASSRLS
+            pool_name: Pool identifier — the instance database name for regular
+                       access, or '{db_name}_admin' for BYPASSRLS access.
 
         Returns:
             Connection pool for the specified database
         """
         with self._lock:
-            if database_name not in self._pools:
+            if pool_name not in self._pools:
                 try:
                     from clients.vault_client import get_database_url
+                    from utils.instance import database_name as instance_db_name
 
                     # Determine if this is an admin pool
-                    is_admin = database_name == 'mira_service_admin'
-                    actual_db_name = 'mira_service'  # Both connect to same database
+                    db_name = instance_db_name()
+                    is_admin = pool_name == f'{db_name}_admin'
+                    actual_db_name = db_name  # Both connect to same database
 
                     conninfo = PostgresClient._parse_database_url(
                         get_database_url(actual_db_name, admin=is_admin)
@@ -133,13 +136,13 @@ class LTMemorySessionManager:
                         kwargs={'options': '-c statement_timeout=300000'}  # 5 minute statement timeout
                     )
 
-                    self._pools[database_name] = pool
+                    self._pools[pool_name] = pool
 
                 except Exception as e:
-                    logger.error(f"Failed to create connection pool for {database_name}: {e}")
+                    logger.error(f"Failed to create connection pool for {pool_name}: {e}")
                     raise ValueError(f"Database pool creation failed: {str(e)}")
 
-            return self._pools[database_name]
+            return self._pools[pool_name]
     
     def _cleanup_all_pools(self):
         """Clean up all connection pools on shutdown."""

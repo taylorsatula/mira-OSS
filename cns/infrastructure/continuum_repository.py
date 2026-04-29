@@ -80,7 +80,8 @@ class ContinuumRepository:
     def _get_client(self, user_id: str) -> PostgresClient:
         """Get or create database client for user."""
         if user_id not in self._db_cache:
-            self._db_cache[user_id] = PostgresClient("mira_service", user_id=user_id)
+            from utils.instance import database_name
+            self._db_cache[user_id] = PostgresClient(database_name(), user_id=user_id)
         return self._db_cache[user_id]
     
     def get_continuum(self, user_id: str) -> Continuum | None:

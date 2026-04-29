@@ -629,7 +629,8 @@ class PagerTool(Tool):
 
         # Check if user already has a username (MIRA's user registry)
         from clients.postgres_client import PostgresClient
-        postgres_db = PostgresClient("mira_service")
+        from utils.instance import database_name
+        postgres_db = PostgresClient(database_name())
 
         existing = postgres_db.execute_single(
             """
@@ -705,7 +706,8 @@ class PagerTool(Tool):
             ValueError: If recipient cannot be resolved
         """
         from clients.postgres_client import PostgresClient
-        postgres_db = PostgresClient("mira_service")
+        from utils.instance import database_name
+        postgres_db = PostgresClient(database_name())
 
         # Resolve username to user_id via global_usernames
         username_result = postgres_db.execute_single(
@@ -778,7 +780,8 @@ class PagerTool(Tool):
 
         # Get username for this user (from MIRA's user registry)
         from clients.postgres_client import PostgresClient
-        postgres_db = PostgresClient("mira_service")
+        from utils.instance import database_name
+        postgres_db = PostgresClient(database_name())
 
         username_result = postgres_db.execute_single(
             """
