@@ -6,7 +6,7 @@ Only values that operators change without code changes belong here:
 feature flags, infrastructure coordinates, scheduling cadences, deployment settings.
 """
 
-from typing import List
+from typing import Any, List
 
 from pydantic import BaseModel, Field
 
@@ -55,6 +55,13 @@ class ApiServerConfig(BaseModel):
     log_level: str = Field(default="warning", description="Log level for uvicorn server")
     extended_thinking: bool = Field(default=False, description="Enable extended thinking capability")
     extended_thinking_budget: int = Field(default=1024, description="Token budget for extended thinking (min: 1024)")
+
+    def model_post_init(self, __context: Any) -> None:
+        import os
+        if port_override := os.environ.get("MIRA_PORT"):
+            self.port = int(port_override)
+        if cors_override := os.environ.get("MIRA_CORS_ORIGINS"):
+            self.cors_origins = [o.strip() for o in cors_override.split(",")]
 
 
 class SystemConfig(BaseModel):
