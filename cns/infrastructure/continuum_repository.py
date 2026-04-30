@@ -687,9 +687,11 @@ class ContinuumRepository:
             # Include all messages, no additional filter
             pass
         else:
-            # Default to regular messages (exclude system notifications)
+            # Default to regular messages (exclude system notifications and tool interactions)
             where_conditions.append("(metadata->>'system_notification' IS NULL OR metadata->>'system_notification' != 'true')")
-        
+            where_conditions.append("role != 'tool'")
+            where_conditions.append("(metadata->>'has_tool_calls' IS NULL OR metadata->>'has_tool_calls' != 'true')")
+
         if start_date:
             where_conditions.append("created_at >= %s")
             params.append(start_date)
@@ -755,8 +757,10 @@ class ContinuumRepository:
             # Include all messages, no filter
             pass
         else:
-            # Default to regular messages (exclude system notifications)
-            type_filter = "AND (metadata->>'system_notification' IS NULL OR metadata->>'system_notification' != 'true')"
+            # Default to regular messages (exclude system notifications and tool interactions)
+            type_filter = ("AND (metadata->>'system_notification' IS NULL OR metadata->>'system_notification' != 'true') "
+                          "AND role != 'tool' "
+                          "AND (metadata->>'has_tool_calls' IS NULL OR metadata->>'has_tool_calls' != 'true')")
         
         # Use PostgreSQL full-text search
         query = f"""
