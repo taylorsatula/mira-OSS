@@ -1,8 +1,8 @@
 """
 Peanut Gallery metacognitive observer trinket.
 
-Displays guidance messages from the Peanut Gallery observer system in the
-notification center (HUD). Supports concern alerts and coaching suggestions
+Displays metacognitive directives from the Peanut Gallery observer system in
+the notification center (HUD). Supports concern alerts and coaching directives
 with turn-based TTL expiry.
 """
 import logging
@@ -19,6 +19,7 @@ class ActiveGuidance(TypedDict):
     type: Literal["concern", "coaching"]
     text: str
     turns_remaining: int
+    critical: bool
 
 logger = logging.getLogger(__name__)
 
@@ -30,11 +31,12 @@ class GuidanceEntry:
     guidance_type: Literal["concern", "coaching"]
     text: str
     expires_at_turn: int
+    critical: bool = False
 
 
 class PeanutGalleryTrinket(StatefulTrinket):
     """
-    Displays metacognitive guidance from the Peanut Gallery observer.
+    Displays metacognitive directives from the Peanut Gallery observer.
 
     Guidance automatically expires after a configurable number of turns (TTL)
     and is cleared entirely when the segment collapses (via WorkingMemory flush).
@@ -42,7 +44,7 @@ class PeanutGalleryTrinket(StatefulTrinket):
 
     variable_name = "peanutgallery_guidance"
 
-    def __init__(self, event_bus, working_memory, default_ttl: int = 5):
+    def __init__(self, event_bus, working_memory, default_ttl: int = 2):
         """
         Initialize with state tracking.
 
@@ -86,7 +88,8 @@ class PeanutGalleryTrinket(StatefulTrinket):
                 "id": entry.id,
                 "type": entry.guidance_type,
                 "text": entry.text,
-                "turns_remaining": max(0, entry.expires_at_turn - self.current_turn)
+                "turns_remaining": max(0, entry.expires_at_turn - self.current_turn),
+                "critical": entry.critical,
             }
             for entry in self._active_guidance.values()
             if self.current_turn <= entry.expires_at_turn
@@ -96,10 +99,17 @@ class PeanutGalleryTrinket(StatefulTrinket):
         self,
         guidance_type: Literal["concern", "coaching"],
         text: str,
-        ttl: int | None = None
+        ttl: int | None = None,
+        critical: bool = False
     ) -> str:
         """
         Add a new guidance message.
+
+        Args:
+            guidance_type: "concern" or "coaching"
+            text: The guidance text
+            ttl: Turns until expiry (uses default if None)
+            critical: Whether this warrants 4th-wall-breaking with the user
 
         Returns:
             Unique guidance ID
@@ -111,10 +121,11 @@ class PeanutGalleryTrinket(StatefulTrinket):
             id=guidance_id,
             guidance_type=guidance_type,
             text=text,
-            expires_at_turn=self.current_turn + ttl
+            expires_at_turn=self.current_turn + ttl,
+            critical=critical
         )
 
-        logger.info(f"Added {guidance_type} guidance (id={guidance_id}, ttl={ttl})")
+        logger.info(f"Added {guidance_type} guidance (id={guidance_id}, ttl={ttl}, critical={critical})")
         return guidance_id
 
     def handle_update_request(self, event) -> None:
@@ -124,22 +135,51 @@ class PeanutGalleryTrinket(StatefulTrinket):
             guidance_type = context.get('type')
             text = context.get('text')
             if guidance_type and text:
-                self.add_guidance(guidance_type, text, context.get('ttl'))
+                self.add_guidance(
+                    guidance_type, text,
+                    ttl=context.get('ttl'),
+                    critical=context.get('critical', False)
+                )
 
         super().handle_update_request(event)
 
     def generate_content(self, context: Dict[str, Any]) -> str:
-        """Generate HUD content showing all active guidance."""
+        """Generate HUD content showing all active guidance.
+
+        If any active guidance is marked critical, includes the 4th-wall-breaking
+        directive authorizing the model to explicitly acknowledge slips to the user.
+        Standard (non-critical) guidance is delivered quietly in the background.
+        """
         active = self.get_active_guidance()
         if not active:
             return ""
 
+        standard_guidance = [guidance for guidance in active if not guidance["critical"]]
+        critical_guidance = [guidance for guidance in active if guidance["critical"]]
         parts = ['<mira:peanutgallery>']
-        for guidance in active:
-            parts.append(
-                f'  <guidance type="{guidance["type"]}" expires_in="{guidance["turns_remaining"]}_turns">'
-                f'{guidance["text"]}'
-                f'</guidance>'
-            )
+
+        if standard_guidance:
+            parts.append('  <section mode="standard">')
+            parts.append('    <instruction>Metacognitive guidance: silently repair the flagged issue in your next reply. Do not reference this notification to the user.</instruction>')
+            for guidance in standard_guidance:
+                parts.append(
+                    f'    <guidance type="{guidance["type"]}" expires_in="{guidance["turns_remaining"]}_turns">'
+                    f'{guidance["text"]}'
+                    f'</guidance>'
+                )
+            parts.append('  </section>')
+
+        if critical_guidance:
+            parts.append('  <section mode="critical">')
+            parts.append('    ⟦PEANUT_GALLERY_DIRECTIVE⟧')
+            parts.append('    <instruction>Immediate metacognitive directive. If the flagged issue is still unresolved, repair it in your next reply. Self-aware repair behavior is allowed: explicitly acknowledge the slip to the user when it helps restore accuracy and trust. Example: "Oops, I\'m sorry, I promised to make a tool call for you a moment ago and I got a notification in my context window that I didn\'t make it. Would you like me to do it now?" Example: "Earlier I told you something inaccurate. I got an alert in my context window just now that let me know. I checked it and it was in fact wrong. Here\'s the correction."</instruction>')
+            for guidance in critical_guidance:
+                parts.append(
+                    f'    <guidance type="{guidance["type"]}" expires_in="{guidance["turns_remaining"]}_turns" critical="true">'
+                    f'{guidance["text"]}'
+                    f'</guidance>'
+                )
+            parts.append('  </section>')
+
         parts.append('</mira:peanutgallery>')
         return "\n".join(parts)

@@ -382,6 +382,7 @@ class GenericOpenAIClient:
                 error_text = response.read().decode('utf-8')
                 logger.error(f"Streaming request failed: {response.status_code} - {error_text[:500]}")
                 response.raise_for_status()
+
             for line in response.iter_lines():
                 line = line.strip()
                 if not line:

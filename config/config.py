@@ -28,6 +28,7 @@ class ApiConfig(BaseModel):
 
     # Operational limits
     timeout: int = Field(default=60, description="Request timeout in seconds")
+    provider_response_timeout: int = Field(default=15, description="Max seconds any LLM provider can accept the connection without producing output before it's killed.")
     emergency_fallback_recovery_minutes: int = Field(default=5, description="Minutes to wait before testing Anthropic recovery")
 
     # Generation settings
@@ -130,7 +131,7 @@ class SidebarDispatcherConfig(BaseModel):
 class InboxToolConfig(BaseModel):
     """Configuration for the inbox_tool."""
 
-    enabled: bool = Field(default=True, description="Whether this tool is enabled by default")
+    enabled: bool = Field(default=False, description="Whether this tool is enabled by default")
     inbox_path: str = Field(
         default="/tmp/mira-dropbox",
         description=(

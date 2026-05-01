@@ -381,7 +381,7 @@ class CNSIntegrationFactory:
         Initialize Peanut Gallery metacognitive observer service with event bus.
 
         The service subscribes to TurnCompletedEvent and periodically evaluates
-        the conversation for compaction, concerns, and coaching opportunities.
+        the conversation for evidence-backed concerns and coaching directives.
         """
         if self._peanutgallery_service is not None:
             return
@@ -395,20 +395,12 @@ class CNSIntegrationFactory:
         from cns.services.peanutgallery_model import PeanutGalleryModel
         from cns.services.peanutgallery_service import PeanutGalleryService
         from working_memory.trinkets.peanutgallery_trinket import PeanutGalleryTrinket
-        from lt_memory.factory import get_lt_memory_factory
-
-        # Get or create Valkey cache
-        if self._valkey_cache is None:
-            self._valkey_cache = ValkeyMessageCache()
-
-        # Get lt_memory factory for linking and proactive services
-        lt_factory = get_lt_memory_factory()
 
         from cns.services.peanutgallery_service import PG_TRIGGER_INTERVAL, PG_GUIDANCE_TTL_TURNS
 
         model = PeanutGalleryModel(
             llm_provider=llm_provider,
-            linking_service=lt_factory.linking
+            analysis_interval_turns=PG_TRIGGER_INTERVAL,
         )
 
         PeanutGalleryTrinket(
@@ -419,9 +411,7 @@ class CNSIntegrationFactory:
 
         self._peanutgallery_service = PeanutGalleryService(
             model=model,
-            valkey_cache=self._valkey_cache,
             event_bus=event_bus,
-            proactive_service=lt_factory.proactive
         )
 
         logger.info(

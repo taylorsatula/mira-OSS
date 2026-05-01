@@ -234,28 +234,16 @@ async def lifespan(app: FastAPI):
 
     # Load billing pricing cache and validate prices (skipped in OSS mode)
     try:
-        from billing.pricing import load_pricing_cache, build_config_lookup, ensure_internal_pricing_keys, get_pricing_cache
+        from billing.pricing import load_pricing_cache, build_config_lookup, ensure_internal_pricing_keys
 
         # 1. Seed: ensure internal_llm keys exist in usage_pricing (NULL prices)
         ensure_internal_pricing_keys()
         # 2. Load: read all pricing rows into memory
         load_pricing_cache()
         logger.info("Billing pricing cache loaded from database")
-        # 3. Resolve: fetch NULL prices from OpenRouter
-        try:
-            from billing.price_validator import validate_prices_against_openrouter
-            validate_prices_against_openrouter()
-        except ImportError:
-            pass  # OSS mode
-        except Exception as e:
-            logger.warning(f"Price validation failed (non-fatal, billing will reject unpriced models at call time): {e}")
-        # Warn about any remaining NULL-priced entries (they'll fail-fast at billing time)
-        null_keys = get_pricing_cache().has_null_prices()
-        if null_keys:
-            logger.warning(
-                f"{len(null_keys)} pricing entries have NULL prices and will reject usage at call time: "
-                f"{null_keys}. Set manual overrides in usage_pricing or ensure OpenRouter is reachable."
-            )
+        # 3. Resolve and validate: startup must fail if any pricing remains unresolved
+        from billing.price_validator import validate_prices_against_openrouter
+        validate_prices_against_openrouter()
         # 4. Lookup: build reverse map for runtime pricing_key resolution
         build_config_lookup()
     except ImportError:

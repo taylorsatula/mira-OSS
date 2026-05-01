@@ -62,14 +62,14 @@ import threading
 import time
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Any, Literal, Optional, Union, Generator, Tuple, NamedTuple, TypedDict
+from typing import Callable, Dict, List, Any, Literal, Optional, Union, Generator, Tuple, NamedTuple, TypedDict, TypeVar
 
 from config import config
 
 from cns.core.stream_events import (
     StreamEvent, TextEvent, ThinkingEvent, ToolDetectedEvent, ToolExecutingEvent,
     ToolCompletedEvent, ToolErrorEvent, CompleteEvent, ErrorEvent,
-    CircuitBreakerEvent, FileArtifactEvent, GenerationCancelled,
+    CircuitBreakerEvent, FileArtifactEvent, GenerationCancelled, ProviderSwitchEvent,
 )
 from utils.user_context import check_cancelled, get_cancel_event
 from tools.repo import ANTHROPIC_BETA_FLAGS
@@ -109,6 +109,21 @@ class ContextOverflowError(Exception):
         self.context_window = context_window
         self.provider = provider
         super().__init__(f"Context overflow: ~{estimated_tokens} tokens vs {context_window} limit ({provider})")
+
+
+class ProviderStallError(Exception):
+    """Raised when an LLM provider accepts a request but produces no output."""
+
+    def __init__(self, endpoint: str, timeout_seconds: int, mode: str):
+        self.endpoint = endpoint
+        self.timeout_seconds = timeout_seconds
+        self.mode = mode
+        super().__init__(
+            f"Provider {endpoint} stalled for {timeout_seconds}s without producing output ({mode})"
+        )
+
+
+T = TypeVar("T")
 
 
 # Retry configuration for transient API errors (overloaded_error)
@@ -569,6 +584,34 @@ class LLMProvider:
         """Check if failover is currently active."""
         return cls._failover_active
 
+    def _run_with_response_timeout(
+        self,
+        operation: Callable[[], T],
+        *,
+        endpoint: Optional[str],
+        mode: str,
+    ) -> T:
+        """Run a provider operation with time-to-output stall detection."""
+        timeout_seconds = config.api.provider_response_timeout
+        result: list[T] = []
+        errors: list[BaseException] = []
+
+        def invoke() -> None:
+            try:
+                result.append(operation())
+            except BaseException as e:
+                errors.append(e)
+
+        worker = threading.Thread(target=invoke, daemon=True)
+        worker.start()
+        worker.join(timeout=timeout_seconds)
+
+        if worker.is_alive():
+            raise ProviderStallError(endpoint or "anthropic", timeout_seconds, mode)
+        if errors:
+            raise errors[0]
+        return result[0]
+
     def _prepare_messages(self, messages: List[Dict]) -> tuple[Optional[Union[str, List[Dict]]], List[Dict]]:
         """
         Extract system prompt and prepare messages for Anthropic API.
@@ -1009,7 +1052,7 @@ class LLMProvider:
                     finish_reason = None
                     stream_usage = None  # Captured from final chunk (stream_options.include_usage)
 
-                    for chunk in generic_client.messages.create_streaming(
+                    chunk_iterator = iter(generic_client.messages.create_streaming(
                         messages=prepared_messages,
                         system=system_prompt,
                         tools=generic_tools,
@@ -1017,7 +1060,16 @@ class LLMProvider:
                         temperature=effective_temperature,
                         thinking_effort=thinking_effort,
                         thinking_budget=thinking_budget
-                    ):
+                    ))
+                    while True:
+                        try:
+                            chunk = self._run_with_response_timeout(
+                                lambda: next(chunk_iterator),
+                                endpoint=endpoint_url,
+                                mode="streaming",
+                            )
+                        except StopIteration:
+                            break
                         # Capture usage from final chunk (OpenRouter includes automatically;
                         # other providers need stream_options.include_usage)
                         if chunk.get("usage"):
@@ -1374,6 +1426,32 @@ class LLMProvider:
 
         except GenerationCancelled:
             raise
+        except ProviderStallError as e:
+            from utils.user_context import get_internal_llm
+            from clients.vault_client import get_api_key
+            self.logger.error(f"Dead provider bailed: {e} — switching to claude-high")
+            _llm_cfg = get_internal_llm("claude-high")
+            self.logger.info(f"Retrying with claude-high: {_llm_cfg.model} via {_llm_cfg.endpoint_url}")
+            yield ProviderSwitchEvent(
+                original_endpoint=e.endpoint,
+                backup_model=_llm_cfg.model,
+                reason=str(e),
+            )
+            # Retry with claude-high — resolve API key from vault if needed
+            backup_api_key = _llm_cfg.api_key_name and get_api_key(_llm_cfg.api_key_name) or None
+            yield from self._stream_response(
+                messages, tools,
+                model_override=_llm_cfg.model,
+                thinking=ThinkingConfig(),
+                temperature=temperature,
+                max_tokens=_llm_cfg.max_tokens,
+                container_id=container_id,
+                endpoint_url=_llm_cfg.endpoint_url,
+                api_key_override=backup_api_key,
+                system_override=system_override,
+                allow_negative=allow_negative,
+            )
+            return
         except Exception as e:
             self.logger.error(f"LLM API request failed: {e}", exc_info=True)
             yield ErrorEvent(error=str(e))
@@ -1393,6 +1471,7 @@ class LLMProvider:
         max_tokens: Optional[int] = None,
         container_id: Optional[str] = None,
         allow_negative: bool = False,
+        allow_provider_stall_fallback: bool = True,
         internal_llm_name: Optional[str] = None,
     ) -> anthropic.types.Message:
         """Non-streaming generation with Anthropic SDK or generic provider - returns Message object."""
@@ -1463,14 +1542,18 @@ class LLMProvider:
 
                 # Call generic client - handle tool validation errors with auto-load
                 try:
-                    _generic_resp = generic_client.messages.create(
-                        messages=messages,
-                        system=system_prompt,
-                        tools=generic_tools,
-                        max_tokens=effective_max_tokens,
-                        temperature=effective_temperature,
-                        thinking_effort=thinking_effort,
-                        thinking_budget=thinking_budget
+                    _generic_resp = self._run_with_response_timeout(
+                        lambda: generic_client.messages.create(
+                            messages=messages,
+                            system=system_prompt,
+                            tools=generic_tools,
+                            max_tokens=effective_max_tokens,
+                            temperature=effective_temperature,
+                            thinking_effort=thinking_effort,
+                            thinking_budget=thinking_budget
+                        ),
+                        endpoint=endpoint_url,
+                        mode="non-streaming",
                     )
                     # Traffic tap: log generic non-streaming response
                     from utils.llm_tap import is_active as _tap_active, log_response as _tap_response
@@ -1633,9 +1716,13 @@ class LLMProvider:
             for attempt in range(OVERLOAD_MAX_RETRIES):
                 try:
                     # Use beta API for code execution and Files API
-                    message = self.anthropic_client.beta.messages.create(
-                        **api_params,
-                        betas=ANTHROPIC_BETA_FLAGS
+                    message = self._run_with_response_timeout(
+                        lambda: self.anthropic_client.beta.messages.create(
+                            **api_params,
+                            betas=ANTHROPIC_BETA_FLAGS
+                        ),
+                        endpoint=endpoint_url or "anthropic",
+                        mode="non-streaming",
                     )
                     # Traffic tap: log non-streaming response
                     from utils.llm_tap import is_active as _tap_active, log_response as _tap_response
@@ -1730,6 +1817,29 @@ class LLMProvider:
 
             return message
 
+        except ProviderStallError as e:
+            if not allow_provider_stall_fallback:
+                self.logger.error(f"Backup provider stalled: {e}")
+                raise
+            from utils.user_context import get_internal_llm
+            from clients.vault_client import get_api_key
+            self.logger.error(f"Dead provider bailed: {e} — switching to claude-high")
+            _llm_cfg = get_internal_llm("claude-high")
+            self.logger.info(f"Retrying with claude-high: {_llm_cfg.model} via {_llm_cfg.endpoint_url}")
+            backup_api_key = _llm_cfg.api_key_name and get_api_key(_llm_cfg.api_key_name) or None
+            return self._generate_non_streaming(
+                messages, tools,
+                model_override=_llm_cfg.model,
+                endpoint_url=_llm_cfg.endpoint_url,
+                api_key_override=backup_api_key,
+                thinking=ThinkingConfig(),
+                temperature=temperature,
+                max_tokens=_llm_cfg.max_tokens,
+                container_id=container_id,
+                system_override=system_override,
+                allow_negative=allow_negative,
+                allow_provider_stall_fallback=False,
+            )
         except anthropic.APITimeoutError:
             self.logger.error("Request timed out")
             raise TimeoutError("Request timed out")
@@ -1899,7 +2009,17 @@ class LLMProvider:
                         # Stream events — track output chars for cancel billing
                         streamed_output_chars = 0
 
-                        for event in stream:
+                        stream_iterator = iter(stream)
+                        while True:
+                            try:
+                                event = self._run_with_response_timeout(
+                                    lambda: next(stream_iterator),
+                                    endpoint=endpoint_url or "anthropic",
+                                    mode="streaming",
+                                )
+                            except StopIteration:
+                                break
+
                             # Check cancellation between chunks
                             cancel_evt = get_cancel_event()
                             if cancel_evt is not None and cancel_evt.is_set():

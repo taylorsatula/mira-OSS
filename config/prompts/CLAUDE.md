@@ -2,7 +2,7 @@
 
 ## Rules
 
-- Naming: `{feature}_system.txt` = system message (instructions, output format); `{feature}_user.txt` = user message with `{variable}` placeholders. Exceptions: `memory_relationship_classification.txt` (single combined file), `peanutgallery_prerunner.txt` (fast-filter stage, not system/user split).
+- Naming: `{feature}_system.txt` = system message (instructions, output format); `{feature}_user.txt` = user message with `{variable}` placeholders. Exception: `memory_relationship_classification.txt` (single combined file).
 - Template variables use Python `.format()` syntax: `{variable_name}`. Literal braces in JSON examples require doubling: `{{` / `}}`. See `entity_gc_user.txt`.
 - Wrap runtime data in descriptive XML tags within user templates: `<conversation>`, `<entity_groups>`, `<candidate_memories>`, etc. — not bare text.
 - Each consuming service loads its own prompts in `__init__` via `open(Path("config/prompts") / "feature_system.txt")`. There is no centralized loader. Missing files raise `FileNotFoundError` — do not add fallbacks.
@@ -24,8 +24,7 @@
 - `portrait_synthesis_system.txt` / `portrait_synthesis_user.txt` — Produces concise factual user portrait injected via `{user_context}` into `config/system_prompt.txt`. Variable: `{segment_summaries}`. Consumer: `cns/services/portrait_service.py`.
 - `subcortical_system.txt` / `subcortical_user.txt` — Pre-LLM IR stage: entity extraction, passage filtering, query expansion, complexity assessment. XML output. Consumer: `cns/services/subcortical.py`.
 - `domaindoc_summary_system.txt` / `domaindoc_summary_user.txt` — One-sentence section summaries (max 100 chars). Plain text output. Consumer: `cns/services/domaindoc_summary_service.py`.
-- `peanutgallery_prerunner.txt` — Fast memory filter stage: selects seed memories relevant for metacognitive oversight. Variables: `{formatted_conversation}`, `{indexed_memories}`. Consumer: `cns/services/peanutgallery_model.py`.
-- `peanutgallery_system.txt` / `peanutgallery_user.txt` — Metacognitive observer: receives conversation + memory context, emits noop/compaction/concern/coaching signal. Consumer: `cns/services/peanutgallery_model.py`.
+- `peanutgallery_system.txt` / `peanutgallery_user.txt` — Metacognitive observer: receives conversation + execution trace, emits noop/concern/coaching signal as out-of-band corrective guidance. Consumer: `cns/services/peanutgallery_model.py`.
 - `behavioral_primer.txt` — Static synthetic dialogue (4 turns, user/assistant/user/assistant) injected between collapsed segment summaries and continuity messages as ambient behavioral priming for authenticity directives. Role-delimited format: `[role]` header + content, `---` separator. No template variables. Consumer: `cns/core/segment_cache_loader.py`.
 - `agents/base_system.txt` — Shared agent loop preamble: identity, loop mechanics, complete_task requirement. Prepended to agent-specific prompts when `inherit_base_prompt=True`. Consumer: `agents/base.py`.
 - `agents/forage_system.txt` — Background research agent rubric: quality rubric, output format. Consumer: `agents/implementations/forage_agent.py`.

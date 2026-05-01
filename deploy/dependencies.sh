@@ -177,7 +177,7 @@ elif [ "$OS" = "macos" ]; then
             break
         fi
     done
-
+    
     # If no suitable version found, default to 3.12 for installation
     if [ -z "$PYTHON_VER" ]; then
         PYTHON_VER="3.12"

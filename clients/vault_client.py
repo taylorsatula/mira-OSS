@@ -9,6 +9,7 @@ Core principles:
 - IAM-ready auth abstraction
 """
 
+import json
 import os
 import logging
 from typing import Optional, Dict, Any, TypedDict
@@ -20,6 +21,7 @@ logger = logging.getLogger(__name__)
 # Global singleton instance and cache
 _vault_client_instance: Optional['VaultClient'] = None
 _secret_cache: Dict[str, str] = {}
+_vertex_credentials = None  # google.oauth2.service_account.Credentials singleton
 
 
 def _ensure_vault_client() -> 'VaultClient':
@@ -134,12 +136,33 @@ def get_database_url(service: str, admin: bool = False) -> str:
     return value
 
 
+def _mint_vertex_token() -> str:
+    """Mint or refresh a Vertex AI access token from SA credentials in Vault."""
+    global _vertex_credentials
+    if _vertex_credentials is None:
+        from google.oauth2 import service_account
+        cache_key = 'mira/api_keys/google_vertex_sa'
+        sa_json = _secret_cache.get(cache_key) or _ensure_vault_client().get_secret('mira/api_keys', 'google_vertex_sa')
+        info = json.loads(sa_json)
+        _vertex_credentials = service_account.Credentials.from_service_account_info(
+            info, scopes=['https://www.googleapis.com/auth/cloud-platform']
+        )
+        logger.info("Vertex AI service account credentials initialized")
+    if not _vertex_credentials.valid:
+        import google.auth.transport.requests
+        _vertex_credentials.refresh(google.auth.transport.requests.Request())
+    return _vertex_credentials.token
+
+
 def get_api_key(key_name: str) -> str:
+    if key_name == 'google_vertex':
+        return _mint_vertex_token()
+
     cache_key = f"mira/api_keys/{key_name}"
-    
+
     if cache_key in _secret_cache:
         return _secret_cache[cache_key]
-    
+
     vault_client = _ensure_vault_client()
     value = vault_client.get_secret('mira/api_keys', key_name)
     _secret_cache[cache_key] = value
