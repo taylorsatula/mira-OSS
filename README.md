@@ -98,6 +98,21 @@ The script handles:
 8. Service verification (PostgreSQL, Valkey, Vault running and accessible)
 9. A litany of other configuration steps
 
+## Install MIRA via Docker
+Single-container deployment with PostgreSQL, Valkey, Vault, and MIRA all supervised by s6-overlay.
+
+```bash
+cp .env.example .env   # fill in MIRA_ANTHROPIC_KEY and MIRA_PROVIDER_KEY
+
+# Step 1: build the heavy base image (~15-20 min, only needed when requirements.txt changes)
+docker compose -f deploy/docker-compose.yml --profile build-base build mira-base
+
+# Step 2: build and run the thin app image (seconds)
+docker compose -f deploy/docker-compose.yml up --build
+```
+
+For an interactive first-boot wizard instead of `.env`-driven setup, run `docker compose -f deploy/docker-compose.yml run --rm -it mira` on first launch.
+
 ## Trying MIRA without installing anything
 I run a hosted copy of MIRA on [miraos.org](https://miraos.org/). It has a MacOS app that can be downloaded [here](https://miraos.org/assets/MIRA-for-Mac.dmg).
 

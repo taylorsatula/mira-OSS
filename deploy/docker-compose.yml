@@ -1,0 +1,48 @@
+# MIRA - Docker Compose
+# All services (PostgreSQL, Valkey, Vault, MIRA) run inside a single container
+# managed by s6-overlay process supervisor.
+#
+# Quick start (run from repo root):
+#   1. Copy .env.example to .env and fill in your API keys
+#   2. Build the base image once (heavy: ~15-20 min, ~5GB of deps + ML models):
+#        docker compose -f deploy/docker-compose.yml --profile build-base build mira-base
+#      Or build it directly without compose:
+#        docker build -t mira-base:latest -f deploy/docker/Dockerfile.base .
+#   3. Build and run the app (fast — seconds after code changes):
+#        docker compose -f deploy/docker-compose.yml up --build
+#
+# The base image is gated behind the `build-base` profile so it isn't rebuilt
+# on every `compose up`. Rebuild it only when requirements.txt changes.
+
+services:
+  mira-base:
+    profiles: ["build-base"]
+    build:
+      context: ..
+      dockerfile: deploy/docker/Dockerfile.base
+    image: mira-base:latest
+
+  mira:
+    build:
+      context: ..
+      dockerfile: deploy/docker/Dockerfile
+      args:
+        BASE_IMAGE: mira-base:latest
+    image: mira:latest
+    container_name: mira
+    ports:
+      - "1993:1993"
+    env_file:
+      - ../.env
+    volumes:
+      - mira-vault:/opt/vault
+      - mira-postgres:/var/lib/postgresql/17/main
+      - mira-valkey:/var/lib/valkey
+      - mira-models:/home/mira/.cache/huggingface
+    restart: unless-stopped
+
+volumes:
+  mira-vault:
+  mira-postgres:
+  mira-valkey:
+  mira-models:
