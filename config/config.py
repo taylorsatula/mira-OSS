@@ -162,3 +162,5 @@ class InboxToolConfig(BaseModel):
         if not path.is_absolute():
             raise ValueError("inbox_path must be an absolute path")
         return str(path)
+
+

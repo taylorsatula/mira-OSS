@@ -147,7 +147,10 @@ INSERT INTO internal_llm (name, tier, model, endpoint_url, api_key_name, descrip
     -- Forage: COF gets Kimi K2 via OpenRouter, free gets OSS 120B via Groq
     ('forage', 'cof', 'moonshotai/kimi-k2-thinking', 'https://openrouter.ai/api/v1/chat/completions', 'openaicompat_key', 'Forage agent tool-calling loop', 4096, NULL),
     -- Overwatch: passive agent iteration observer, same cheap model as subcortical
-    ('overwatch', 'cof', 'qwen/qwen3-32b', 'https://api.groq.com/openai/v1/chat/completions', 'subcortical_key', 'Passive agent iteration observer', 100, NULL)
+    ('overwatch', 'cof', 'qwen/qwen3-32b', 'https://api.groq.com/openai/v1/chat/completions', 'subcortical_key', 'Passive agent iteration observer', 100, NULL),
+    -- Phone-a-friend: high-capability outside voices for synchronous subagent consultation
+    ('phoneafriend_claude', 'cof', 'claude-opus-4-7', 'https://api.anthropic.com/v1/messages', 'anthropic_key', 'Phone-a-friend level-headed thought partner', 10000, 'high'),
+    ('phoneafriend_gemini', 'cof', 'google/gemini-3.1-pro-preview', 'https://openrouter.ai/api/v1/chat/completions', 'openaicompat_key', 'Phone-a-friend outside voice with broad world knowledge', 10000, NULL)
 ON CONFLICT (name, tier) DO NOTHING;
 
 GRANT SELECT ON internal_llm TO mira_dbuser;
@@ -173,6 +176,8 @@ INSERT INTO usage_pricing (name) VALUES
     ('entity_gc:cof'), ('entity_gc:free'),
     ('extraction:cof'), ('extraction:free'),
     ('forage:cof'), ('forage:free'),
+    ('phoneafriend_claude:cof'), ('phoneafriend_claude:free'),
+    ('phoneafriend_gemini:cof'), ('phoneafriend_gemini:free'),
     ('relationship:cof'), ('relationship:free'),
     ('summary:cof'), ('summary:free'),
     ('tidyup:cof'), ('tidyup:free')

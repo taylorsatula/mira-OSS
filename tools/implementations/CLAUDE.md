@@ -32,6 +32,7 @@ Every `anthropic_schema` parameter description is an LLM caller contract. Use ex
 - `maps_tool.py` — Google Maps geocoding, places, and distance; lazy client init
 - `memory_tool.py` — LT_Memory search, pin, touch, and manual create; `create_memory` queues to Valkey for deferred processing at segment collapse (no spaCy at init time)
 - `pager_tool.py` — Lattice federation messaging
+- `phoneafriend_tool.py` — Synchronous outside-model consultation; tool choices `claude`/`gemini` map to dedicated `internal_llm` keys `phoneafriend_claude`/`phoneafriend_gemini`; stores user-bound, segment-scoped subagent transcripts in Valkey under `phoneafriend:{user_id}:{segment_id}:{thread_id}` with TTL cleanup
 - `punchclock_tool.py` — Time tracking
 - `reminder_tool.py` — Reminder scheduling and management
 - `square_tool.py` — Square payment and POS integration
