@@ -15,7 +15,7 @@
 - `core/` — Immutable domain model: Continuum aggregate, Message value objects, domain events, stream events, segment cache reconstruction. No I/O.
 - `services/` — Stateless service layer: orchestrator, subcortical processing, summary generation, segment collapse, user model pipeline, peanut gallery, manifest query.
 - `infrastructure/` — Persistence and caching: PostgreSQL continuum repository, Valkey message cache, feedback storage.
-- `api/` — FastAPI endpoints: chat (HTTP + WebSocket), actions, data queries, health, tool config, federation.
+- `api/` — FastAPI endpoints: chat (HTTP), actions, data queries, health, tool config.
 - `integration/` — Event bus (pub/sub) and factory (dependency wiring for the entire CNS graph).
 
 ## Wiring
