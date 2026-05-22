@@ -584,11 +584,12 @@ class UserDomainHandler(BaseDomainHandler):
             "types": {}
         },
         "store_http_credential": {
-            "required": ["name", "value"],
+            "required": ["name", "value", "allowed_domains"],
             "optional": [],
             "types": {
                 "name": str,
-                "value": str
+                "value": str,
+                "allowed_domains": list
             }
         },
         "list_http_credentials": {
@@ -624,6 +625,7 @@ class UserDomainHandler(BaseDomainHandler):
         elif action == "update_profile":
             from utils.database_session_manager import get_shared_session_manager
             from clients.valkey_client import get_valkey_client
+            from utils.profile_validation import validate_profile_name
 
             # At least one field must be provided
             if not any(k in data for k in ["first_name", "last_name", "timezone", "temperature_unit"]):
@@ -652,11 +654,17 @@ class UserDomainHandler(BaseDomainHandler):
 
             if "first_name" in data:
                 update_fields.append("first_name = %(first_name)s")
-                params["first_name"] = data["first_name"]
+                try:
+                    params["first_name"] = validate_profile_name(data["first_name"], "first_name")
+                except ValueError as e:
+                    raise ValidationError(str(e))
 
             if "last_name" in data:
                 update_fields.append("last_name = %(last_name)s")
-                params["last_name"] = data["last_name"]
+                try:
+                    params["last_name"] = validate_profile_name(data["last_name"], "last_name")
+                except ValueError as e:
+                    raise ValidationError(str(e))
 
             if "timezone" in data:
                 update_fields.append("timezone = %(timezone)s")
@@ -771,9 +779,14 @@ class UserDomainHandler(BaseDomainHandler):
 
         elif action == "store_http_credential":
             from utils.user_credentials import UserCredentialService
+            from utils.url_safety import validate_allowed_domains
 
             name = data["name"]
             value = data["value"]
+            try:
+                allowed_domains = validate_allowed_domains(data["allowed_domains"])
+            except ValueError as e:
+                raise ValidationError(str(e))
 
             # Validate name format (alphanumeric + underscore/hyphen)
             if not name or not name.replace("_", "").replace("-", "").isalnum():
@@ -783,12 +796,14 @@ class UserDomainHandler(BaseDomainHandler):
             credential_service.store_credential(
                 credential_type="api_key",
                 service_name=name,
-                credential_value=value
+                credential_value=value,
+                metadata={"allowed_domains": allowed_domains}
             )
 
             return {
                 "success": True,
                 "name": name,
+                "allowed_domains": allowed_domains,
                 "message": f"Credential '{name}' stored successfully"
             }
 
@@ -801,7 +816,11 @@ class UserDomainHandler(BaseDomainHandler):
             # Extract api_key credentials - structure is {"api_key": {"name": {...}}}
             http_creds_dict = all_creds.get("api_key", {})
             http_creds = [
-                {"name": service_name, "created_at": cred_data.get("created_at")}
+                {
+                    "name": service_name,
+                    "created_at": cred_data.get("created_at"),
+                    "allowed_domains": cred_data.get("metadata", {}).get("allowed_domains", [])
+                }
                 for service_name, cred_data in http_creds_dict.items()
             ]
 

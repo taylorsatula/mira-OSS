@@ -13,6 +13,7 @@ import logging
 from typing import Dict, Any, TYPE_CHECKING
 
 from working_memory.trinkets.base import StatefulTrinket
+from utils.user_context import get_current_user_id
 
 if TYPE_CHECKING:
     from cns.integration.event_bus import EventBus
@@ -37,7 +38,15 @@ class ForageTrinket(StatefulTrinket):
 
     def __init__(self, event_bus: 'EventBus', working_memory: 'WorkingMemory'):
         super().__init__(event_bus, working_memory)
-        self.active_results: Dict[str, Dict[str, Any]] = {}
+        self._user_results: dict[str, Dict[str, Dict[str, Any]]] = {}
+
+    @property
+    def active_results(self) -> Dict[str, Dict[str, Any]]:
+        """Get the active user's forage results. Lazy-initializes on access to support in-place mutation."""
+        user_id = get_current_user_id()
+        if user_id not in self._user_results:
+            self._user_results[user_id] = {}
+        return self._user_results[user_id]
 
     def _expire_items(self) -> bool:
         """Remove error/timeout results past their display window."""
@@ -51,10 +60,10 @@ class ForageTrinket(StatefulTrinket):
         return bool(expired)
 
     def _clear_all_state(self) -> None:
-        """Clear all forage results on segment collapse."""
-        if self.active_results:
-            logger.info(f"Clearing {len(self.active_results)} forage results on segment collapse")
-        self.active_results.clear()
+        """Clear forage results for the current user on segment collapse."""
+        results = self._user_results.pop(get_current_user_id(), None)
+        if results:
+            logger.info(f"Clearing {len(results)} forage results on segment collapse")
 
     def handle_update_request(self, event) -> None:
         """

@@ -68,6 +68,17 @@ class ToolNotLoadedError(Exception):
         super().__init__(f"Tool '{tool_name}' not loaded")
 
 
+class GenericProviderErrorParser:
+    """Extract a readable message from generic provider error bodies."""
+
+    @staticmethod
+    def extract_message(error_body: Optional[dict], fallback_text: str) -> str:
+        if not error_body:
+            return fallback_text
+        error_info = error_body.get("error", {})
+        return error_info.get("message") or fallback_text
+
+
 class GenericOpenAIResponse:
     """
     Mimics anthropic.types.Message structure for compatibility.
@@ -77,6 +88,16 @@ class GenericOpenAIResponse:
 
     ⚠️ INTERNAL CLASS - DO NOT USE DIRECTLY IN APPLICATION CODE
     This is only used by LLMProvider when routing to third-party providers.
+
+    🚧 REPLACEMENT-LAYER INTEGRATION NOTE (2026-05-20):
+    This class does NOT expose a `.model` attribute, while `anthropic.types.Message`
+    does. `tools/implementations/phoneafriend_tool.py` relies on this asymmetry to
+    detect silent claude-high failover swaps (failover response has `.model`,
+    successful generic-provider response does not). When integrating the wholesale
+    LLM-provider rewrite, preserve a model-identity signal on the response object
+    (e.g. add `self.model = model` here, or attach the resolved endpoint/model on
+    the returned wrapper) so callers can verify the requested provider was actually
+    served. Otherwise the phoneafriend mismatch check silently breaks.
     """
 
     def __init__(self, content: List, stop_reason: str, usage: Dict,
@@ -379,9 +400,19 @@ class GenericOpenAIClient:
 
         with http_client.stream("POST", self.endpoint, json=payload, headers=headers, timeout=self.timeout) as response:
             if response.status_code >= 400:
-                error_text = response.read().decode('utf-8')
+                error_text = response.read().decode('utf-8', errors='replace')
                 logger.error(f"Streaming request failed: {response.status_code} - {error_text[:500]}")
-                response.raise_for_status()
+                error_body = None
+                try:
+                    error_body = json.loads(error_text)
+                except json.JSONDecodeError:
+                    pass
+                self._raise_provider_http_error(
+                    status=response.status_code,
+                    error_body=error_body,
+                    fallback_text=error_text,
+                    mode="streaming",
+                )
 
             for line in response.iter_lines():
                 line = line.strip()
@@ -679,12 +710,29 @@ class GenericOpenAIClient:
             RuntimeError: For rate limits and server errors
         """
         status = error.response.status_code
+        fallback_text = error.response.text if error.response is not None else str(error)
+        self._raise_provider_http_error(
+            status=status,
+            error_body=error_body,
+            fallback_text=fallback_text,
+            mode="non-streaming",
+        )
+
+    def _raise_provider_http_error(
+        self,
+        *,
+        status: int,
+        error_body: Optional[dict],
+        fallback_text: str,
+        mode: str,
+    ) -> NoReturn:
+        """Map provider HTTP status failures to typed exceptions."""
+        error_message = GenericProviderErrorParser.extract_message(error_body, fallback_text)
 
         # Check for context length exceeded error (400 with specific error code)
         if status == 400 and error_body:
             error_info = error_body.get("error", {})
             error_code = error_info.get("code", "")
-            error_message = error_info.get("message", "")
 
             if "context_length" in str(error_code) or "reduce the length" in error_message.lower():
                 logger.error("Generic OpenAI client context length exceeded")
@@ -706,10 +754,12 @@ class GenericOpenAIClient:
             raise PermissionError("Generic OpenAI client authentication failed")
         elif status == 429:
             logger.error("Generic OpenAI client rate limit exceeded")
-            raise RuntimeError("Generic OpenAI client rate limit exceeded")
+            from clients.llm_provider import ProviderHTTPStatusError
+            raise ProviderHTTPStatusError(self.endpoint, status, mode, error_message)
         elif status >= 500:
             logger.error(f"Generic OpenAI client server error: {status}")
-            raise RuntimeError(f"Generic OpenAI client server error: {status}")
+            from clients.llm_provider import ProviderHTTPStatusError
+            raise ProviderHTTPStatusError(self.endpoint, status, mode, error_message)
         else:
             logger.error(f"Generic OpenAI client API error: {status}")
-            raise RuntimeError(f"Generic OpenAI client API error: {status}")
+            raise RuntimeError(f"Generic OpenAI client API error: {status} - {error_message}")

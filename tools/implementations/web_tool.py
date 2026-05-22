@@ -7,14 +7,22 @@ Three operations:
 - http: Make direct HTTP requests to APIs
 """
 import re
+from dataclasses import dataclass
 from typing import Dict, Any, List, Literal, Optional
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 from pydantic import BaseModel, Field, field_validator
 
 from tools.repo import Tool
 from tools.registry import registry
 from utils import http_client
+from utils.url_safety import (
+    MAX_REDIRECT_HOPS,
+    ValidatedURL,
+    domain_matches,
+    validate_domain_filters,
+    validate_public_http_url,
+)
 
 try:
     from kagiapi import KagiClient
@@ -118,6 +126,14 @@ class HttpInput(BaseModel):
         return v
 
 
+@dataclass(frozen=True)
+class ResolvedCredential:
+    """Credential value plus the domains it is allowed to authenticate against."""
+
+    value: str
+    allowed_domains: List[str]
+
+
 # --- Tool Implementation ---
 
 class WebTool(Tool):
@@ -163,18 +179,6 @@ class WebTool(Tool):
             "required": ["operation"]
         }
     }
-
-    # SSRF protection patterns
-    _PRIVATE_NETWORK_PATTERNS = [
-        r'^localhost$',
-        r'^127\.',
-        r'^10\.',
-        r'^172\.(1[6-9]|2[0-9]|3[0-1])\.',
-        r'^192\.168\.',
-        r'^0\.0\.0\.0$',
-        r'^\[::1\]$',
-        r'^169\.254\.',
-    ]
 
     # Response headers that should NEVER be returned to LLM (security)
     _SENSITIVE_RESPONSE_HEADERS = {
@@ -341,11 +345,11 @@ class WebTool(Tool):
     def _fetch_http(self, url: str, timeout: int) -> tuple:
         """Fetch page via HTTP GET. Returns (html, info_dict) or (None, info_dict)."""
         try:
-            response = http_client.get(
+            response = self._request_with_validated_redirects(
+                "GET",
                 url,
                 timeout=timeout,
                 headers={"User-Agent": "Mozilla/5.0 (compatible; MIRA/1.0)"},
-                follow_redirects=True
             )
             response.raise_for_status()
             return response.text, {"content_type": response.headers.get("Content-Type", "text/html")}
@@ -463,7 +467,7 @@ class WebTool(Tool):
 
     # --- HTTP Operation ---
 
-    def _get_credential(self, credential_name: str) -> str:
+    def _get_credential(self, credential_name: str, request_host: str) -> ResolvedCredential:
         """
         Retrieve credential by name from UserCredentialService.
 
@@ -477,6 +481,18 @@ class WebTool(Tool):
         from utils.user_credentials import UserCredentialService
 
         credential_service = UserCredentialService()
+        metadata = credential_service.get_credential_metadata(
+            credential_type="api_key",
+            service_name=credential_name
+        )
+        allowed_domains = metadata.get("allowed_domains") or []
+        if not allowed_domains:
+            raise ValueError(
+                f"Credential '{credential_name}' is not bound to any allowed domains. "
+                f"Re-save it in Settings with explicit allowed domains before using it."
+            )
+        validate_domain_filters(request_host, allowed_domains=allowed_domains)
+
         credential_value = credential_service.get_credential(
             credential_type="api_key",
             service_name=credential_name
@@ -487,22 +503,24 @@ class WebTool(Tool):
                 f"Credential '{credential_name}' not found. "
                 f"Add it in Settings > API Credentials."
             )
-        return credential_value
+        return ResolvedCredential(value=credential_value, allowed_domains=allowed_domains)
 
     def _http(self, input: HttpInput) -> Dict[str, Any]:
         """Make HTTP request with optional credential injection."""
-        self._validate_url(input.url, input.allowed_domains, input.blocked_domains)
+        validated = self._validate_url(input.url, input.allowed_domains, input.blocked_domains)
         timeout = self._get_timeout(input.timeout)
 
         # Build headers dict (copy to avoid mutating input)
         headers = dict(input.headers) if input.headers else {}
         injected_credential_header = None
+        credential_allowed_domains = None
 
         # Credential injection - LLM references by name, we inject actual value
         if input.credential_name:
-            credential_value = self._get_credential(input.credential_name)
-            headers[input.credential_header] = f"{input.credential_prefix}{credential_value}"
+            credential = self._get_credential(input.credential_name, validated.hostname)
+            headers[input.credential_header] = f"{input.credential_prefix}{credential.value}"
             injected_credential_header = input.credential_header
+            credential_allowed_domains = credential.allowed_domains
             self.logger.info(f"Injected credential '{input.credential_name}' into '{input.credential_header}'")
 
         # Build kwargs for the request
@@ -518,15 +536,14 @@ class WebTool(Tool):
             kwargs["json"] = input.json_body
 
         try:
-            # Dispatch to appropriate http_client method
-            method_map = {
-                "GET": http_client.get,
-                "POST": http_client.post,
-                "PUT": http_client.put,
-                "DELETE": http_client.delete
-            }
-            http_method = method_map[input.method]
-            response = http_method(input.url, **kwargs)
+            response = self._request_with_validated_redirects(
+                input.method,
+                input.url,
+                allowed_domains=input.allowed_domains,
+                blocked_domains=input.blocked_domains,
+                credential_allowed_domains=credential_allowed_domains,
+                **kwargs
+            )
         except http_client.TimeoutException:
             return {"success": False, "error": "timeout", "message": f"Timed out after {timeout}s"}
         except http_client.ConnectError as e:
@@ -608,37 +625,76 @@ class WebTool(Tool):
             return default
         return min(timeout, max_timeout)
 
-    def _validate_url(self, url: str, allowed: List[str] = None, blocked: List[str] = None) -> None:
+    def _validate_url(
+        self,
+        url: str,
+        allowed: Optional[List[str]] = None,
+        blocked: Optional[List[str]] = None,
+    ) -> ValidatedURL:
         """Validate URL against SSRF protection and domain restrictions."""
-        parsed = urlparse(url)
-        # Use hostname (without port) for SSRF checks, netloc for domain matching
-        hostname = (parsed.hostname or "").lower()
-        domain = parsed.netloc.lower()
-
-        # SSRF protection - always enforced (check hostname without port)
-        for pattern in self._PRIVATE_NETWORK_PATTERNS:
-            if re.match(pattern, hostname, re.IGNORECASE):
-                raise ValueError(f"Blocked: private network access to {domain}")
-
-        # Allowlist takes precedence
-        if allowed:
-            if not any(self._domain_matches(domain, d) for d in allowed):
-                raise ValueError(f"Domain not in allowed list: {domain}")
-        elif blocked:
-            if any(self._domain_matches(domain, d) for d in blocked):
-                raise ValueError(f"Domain blocked: {domain}")
+        return validate_public_http_url(url, allowed, blocked)
 
     def _domain_matches(self, domain: str, pattern: str) -> bool:
         """Check if domain matches pattern (exact or subdomain)."""
-        pattern = pattern.lower()
-        return domain == pattern or domain.endswith("." + pattern)
+        return domain_matches(domain, pattern)
+
+    def _request_with_validated_redirects(
+        self,
+        method: str,
+        url: str,
+        allowed_domains: Optional[List[str]] = None,
+        blocked_domains: Optional[List[str]] = None,
+        credential_allowed_domains: Optional[List[str]] = None,
+        **kwargs: Any,
+    ):
+        """Issue an HTTP request while validating every redirect hop."""
+        current_url = url
+        current_method = method
+        body_kwargs = {
+            key: kwargs.get(key)
+            for key in ("data", "json")
+            if key in kwargs
+        }
+
+        for _ in range(MAX_REDIRECT_HOPS + 1):
+            validated = self._validate_url(current_url, allowed_domains, blocked_domains)
+            if credential_allowed_domains:
+                validate_domain_filters(validated.hostname, allowed_domains=credential_allowed_domains)
+            request_kwargs = dict(kwargs)
+            request_kwargs["follow_redirects"] = False
+            if current_method == "GET":
+                request_kwargs.pop("data", None)
+                request_kwargs.pop("json", None)
+            else:
+                request_kwargs.update(body_kwargs)
+
+            response = {
+                "GET": http_client.get,
+                "POST": http_client.post,
+                "PUT": http_client.put,
+                "DELETE": http_client.delete,
+            }[current_method](current_url, **request_kwargs)
+
+            if response.status_code not in {301, 302, 303, 307, 308}:
+                return response
+
+            location = response.headers.get("Location")
+            if not location:
+                return response
+            current_url = urljoin(str(response.url), location)
+            if response.status_code in {301, 302, 303}:
+                current_method = "GET"
+
+        raise ValueError(f"Too many redirects after {MAX_REDIRECT_HOPS} hops")
 
     def _should_include_url(self, url: str, allowed: List[str], blocked: List[str]) -> bool:
         """Check if URL should be included in search results."""
         if not url:
             return False
         try:
-            domain = urlparse(url).netloc.lower()
+            domain = (urlparse(url).hostname or "").lower()
+            if not domain:
+                return False
             if allowed:
                 return any(self._domain_matches(domain, d) for d in allowed)
             if blocked:

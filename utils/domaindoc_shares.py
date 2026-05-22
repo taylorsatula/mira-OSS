@@ -77,13 +77,15 @@ def resolve_domaindoc(
     if is_shared_label(label):
         return _resolve_shared(user_id, owner_label_from_shared(label))
 
-    # Own doc — check user's SQLite
+    # Own doc — check user's SQLite. db.select already decrypts via _decrypt_dict;
+    # calling _decrypt_dict again would try to decrypt plaintext and fail with
+    # InvalidToken.
     db = get_user_data_manager(user_id)
     results = db.select("domaindocs", "label = :label", {"label": label})
     if not results:
         raise ValueError(f"Domaindoc '{label}' not found")
 
-    doc = db._decrypt_dict(results[0])
+    doc = results[0]
     if require_enabled and not doc.get("enabled", True):
         raise ValueError(f"Domaindoc '{label}' is not enabled")
     return ResolvedDomaindoc(db=db, doc=doc, is_shared=False, owner_user_id=None)
@@ -106,11 +108,12 @@ def _resolve_shared(user_id: UUID, base_label: str) -> ResolvedDomaindoc:
 
     owner_user_id = share["owner_user_id"]
     owner_db = get_user_data_manager(owner_user_id)
+    # db.select already decrypts; a second _decrypt_dict would fail on plaintext.
     results = owner_db.select("domaindocs", "label = :label", {"label": base_label})
     if not results:
         raise ValueError(f"Shared domaindoc '{base_label}{SHARED_SUFFIX}' not found (owner may have deleted it)")
 
-    doc = owner_db._decrypt_dict(results[0])
+    doc = results[0]
     if not doc.get("enabled", True) or doc.get("archived", False):
         raise ValueError(f"Shared domaindoc '{base_label}{SHARED_SUFFIX}' is not available")
 

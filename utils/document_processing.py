@@ -47,6 +47,11 @@ SUPPORTED_DOCUMENT_FORMATS = {
 }
 
 MAX_DOCUMENT_SIZE_MB = 32  # Claude's PDF limit
+MAX_ZIP_ENTRIES = 1000
+MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES = 20 * 1024 * 1024
+MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES = 64 * 1024 * 1024
+MAX_ZIP_COMPRESSION_RATIO = 100
+MAX_EXTRACTED_TEXT_CHARS = 1_000_000
 
 
 @dataclass(frozen=True)
@@ -95,6 +100,8 @@ def process_document(
     """
     # Structured data: Upload to Files API for code execution
     if media_type in ("text/csv", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/json"):
+        if media_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+            validate_office_zip(doc_bytes)
         if files_manager is not None and segment_id is not None:
             # Upload to Files API, return file_id
             file_id = files_manager.upload_file(
@@ -174,10 +181,12 @@ def extract_docx_text(doc_bytes: bytes) -> str:
 
     Uses python-docx if available, otherwise falls back to stdlib XML parsing.
     """
+    validate_office_zip(doc_bytes)
     if HAS_DOCX:
-        return _extract_docx_with_library(doc_bytes)
+        text = _extract_docx_with_library(doc_bytes)
     else:
-        return _extract_docx_stdlib(doc_bytes)
+        text = _extract_docx_stdlib(doc_bytes)
+    return _cap_extracted_text(text)
 
 
 def extract_xlsx_text(doc_bytes: bytes) -> str:
@@ -186,10 +195,43 @@ def extract_xlsx_text(doc_bytes: bytes) -> str:
 
     Uses openpyxl if available, otherwise falls back to stdlib XML parsing.
     """
+    validate_office_zip(doc_bytes)
     if HAS_OPENPYXL:
-        return _extract_xlsx_with_library(doc_bytes)
+        text = _extract_xlsx_with_library(doc_bytes)
     else:
-        return _extract_xlsx_stdlib(doc_bytes)
+        text = _extract_xlsx_stdlib(doc_bytes)
+    return _cap_extracted_text(text)
+
+
+def validate_office_zip(doc_bytes: bytes) -> None:
+    """Reject DOCX/XLSX zip containers that expand beyond safe limits."""
+    try:
+        with zipfile.ZipFile(BytesIO(doc_bytes)) as z:
+            infos = z.infolist()
+    except zipfile.BadZipFile as e:
+        raise ValueError("Invalid Office document ZIP container") from e
+
+    if len(infos) > MAX_ZIP_ENTRIES:
+        raise ValueError(f"Document ZIP has too many entries: {len(infos)}")
+
+    total_uncompressed = 0
+    for info in infos:
+        if info.file_size > MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES:
+            raise ValueError(f"Document ZIP entry too large: {info.filename}")
+        total_uncompressed += info.file_size
+        if total_uncompressed > MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES:
+            raise ValueError("Document ZIP expands beyond allowed size")
+        if info.compress_size > 0 and info.file_size / info.compress_size > MAX_ZIP_COMPRESSION_RATIO:
+            raise ValueError(f"Document ZIP compression ratio too high: {info.filename}")
+        if info.compress_size == 0 and info.file_size > 0:
+            raise ValueError(f"Document ZIP entry has zero compressed size: {info.filename}")
+
+
+def _cap_extracted_text(text: str) -> str:
+    """Enforce a hard extracted-text cap after parsing."""
+    if len(text) > MAX_EXTRACTED_TEXT_CHARS:
+        raise ValueError("Extracted document text exceeds allowed size")
+    return text
 
 
 def _extract_docx_with_library(doc_bytes: bytes) -> str:

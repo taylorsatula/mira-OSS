@@ -23,7 +23,7 @@ import colorama
 from colorama import Fore, Style
 
 # Initialize colorama for cross-platform support
-colorama.init(autoreset=True)
+colorama.init(autoreset=True, strip=False)
 
 # Import for contextvar access
 from utils.user_context import get_current_user_id

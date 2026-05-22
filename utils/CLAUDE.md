@@ -30,7 +30,10 @@
 - `domaindoc_shares.py` — Cross-user domaindoc sharing resolution. Single source of truth for resolving domaindocs across user boundaries: `resolve_domaindoc()` (label → db + doc, own or shared), `get_accepted_shares()` (all accepted shares for a user), `invalidate_domaindoc_cache()` (Valkey trinket cache). All PostgresClient usage includes `user_id` for RLS enforcement.
 - `tag_parser.py` — Extracts structured tags from LLM responses; owns `format_memory_id()` / `parse_memory_id()` and the `mem_XXXXXXXX` short-ID format.
 - `text_sanitizer.py` — Text cleaning and sanitization utilities.
+- `url_safety.py` — DNS-resolved public HTTP(S) URL validation and allow/block domain helpers used by browser-capable tools.
 - `document_processing.py` — Document parsing and text extraction.
+- `profile_validation.py` — Shared profile/name validation helper for user-facing profile labels.
+- `tool_config_store.py` — User-scoped tool configuration persistence with secret redaction/hydration via credential storage.
 - `image_compression.py` — Image resizing/compression for uploads.
 - `prompt_injection_defense.py` — Input validation against prompt injection.
 - `http_client.py` — Shared HTTP client utilities.

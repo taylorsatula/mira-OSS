@@ -6,7 +6,6 @@ Tools with registered Pydantic config classes are automatically discoverable
 and configurable through these endpoints.
 """
 
-import json
 import logging
 from typing import Any
 
@@ -23,8 +22,17 @@ from cns.api.base import (
     generate_request_id,
 )
 from tools.registry import registry
-from utils.user_credentials import UserCredentialService
 from utils.timezone_utils import format_utc_iso, utc_now
+from utils.user_credentials import UserCredentialService
+from utils.tool_config_store import (
+    delete_user_tool_config,
+    load_user_tool_config,
+    persist_secret_updates,
+    prepare_tool_config_for_validation,
+    redact_tool_config,
+    save_user_tool_config,
+    strip_secret_fields,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,36 +47,17 @@ def _get_configurable_tools() -> dict[str, type]:
 
 def _get_user_tool_config(tool_name: str) -> dict[str, Any] | None:
     """Get user's saved config for a tool, or None if not set."""
-    credential_service = UserCredentialService()
-    config_json = credential_service.get_credential(
-        credential_type="tool_config",
-        service_name=tool_name
-    )
-    if not config_json:
-        return None
-    try:
-        return json.loads(config_json)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"Corrupt tool config for {tool_name}: {e}") from e
+    return load_user_tool_config(tool_name, hydrate_secrets=False)
 
 
 def _save_user_tool_config(tool_name: str, config: dict[str, Any]) -> None:
     """Save user's config for a tool."""
-    credential_service = UserCredentialService()
-    credential_service.store_credential(
-        credential_type="tool_config",
-        service_name=tool_name,
-        credential_value=json.dumps(config)
-    )
+    save_user_tool_config(tool_name, config)
 
 
 def _delete_user_tool_config(tool_name: str) -> bool:
     """Delete user's config for a tool. Returns True if deleted."""
-    credential_service = UserCredentialService()
-    return credential_service.delete_credential(
-        credential_type="tool_config",
-        service_name=tool_name
-    )
+    return delete_user_tool_config(tool_name)
 
 
 # Endpoints
@@ -149,13 +138,15 @@ async def get_tool_config(
             config = {**defaults, **user_config}
         else:
             config = defaults
+        redacted_config = redact_tool_config(tool_name, config)
+        redacted_defaults = redact_tool_config(tool_name, defaults)
 
         api_response = create_success_response(
             data={
                 "tool_name": tool_name,
-                "config": config,
+                "config": redacted_config,
                 "has_user_config": has_user_config,
-                "defaults": defaults
+                "defaults": redacted_defaults
             },
             meta={
                 "request_id": request_id,
@@ -246,9 +237,14 @@ async def update_tool_config(
         if config_class is None:
             raise NotFoundError("tool", tool_name)
 
+        prepared = prepare_tool_config_for_validation(
+            tool_name,
+            request_body.config,
+        )
+
         # Validate config by instantiating the Pydantic model
         try:
-            validated_config = config_class(**request_body.config)
+            validated_config = config_class(**prepared.config)
         except PydanticValidationError as e:
             # Convert Pydantic validation errors to our format
             errors = []
@@ -266,12 +262,14 @@ async def update_tool_config(
 
         # Save the validated config
         config_dict = validated_config.model_dump()
-        _save_user_tool_config(tool_name, config_dict)
+        persist_secret_updates(tool_name, prepared.secret_updates)
+        _save_user_tool_config(tool_name, strip_secret_fields(tool_name, config_dict))
+        redacted_config = redact_tool_config(tool_name, config_dict)
 
         api_response = create_success_response(
             data={
                 "tool_name": tool_name,
-                "config": config_dict,
+                "config": redacted_config,
                 "message": f"Configuration for {tool_name} saved successfully"
             },
             meta={
@@ -317,9 +315,14 @@ async def validate_tool_config(
         if config_class is None:
             raise NotFoundError("tool", tool_name)
 
+        prepared = prepare_tool_config_for_validation(
+            tool_name,
+            request_body.config,
+        )
+
         # Validate config by instantiating the Pydantic model
         try:
-            validated_config = config_class(**request_body.config)
+            validated_config = config_class(**prepared.config)
         except PydanticValidationError as e:
             errors = []
             for err in e.errors():
@@ -338,12 +341,13 @@ async def validate_tool_config(
 
         # Call tool-specific validation if the tool implements it
         discovered_data = _call_tool_validation(tool_name, config_dict)
+        redacted_config = redact_tool_config(tool_name, config_dict)
 
         api_response = create_success_response(
             data={
                 "tool_name": tool_name,
                 "valid": True,
-                "config": config_dict,
+                "config": redacted_config,
                 "discovered": discovered_data,
                 "message": f"Configuration for {tool_name} validated successfully"
             },
@@ -436,11 +440,12 @@ async def reset_tool_config(
 
         # Get defaults for response
         defaults = config_class().model_dump()
+        redacted_defaults = redact_tool_config(tool_name, defaults)
 
         api_response = create_success_response(
             data={
                 "tool_name": tool_name,
-                "config": defaults,
+                "config": redacted_defaults,
                 "was_reset": deleted,
                 "message": f"Configuration for {tool_name} reset to defaults"
             },

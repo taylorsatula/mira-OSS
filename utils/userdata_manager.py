@@ -7,6 +7,8 @@ connection creation. Connections are cleaned up on session collapse or process s
 """
 
 import base64
+import hashlib
+import hmac
 import json
 import logging
 import sqlite3
@@ -77,9 +79,10 @@ class UserDataManager:
     
     def _create_fernet(self) -> Fernet:
         """Create Fernet cipher from session key."""
-        key = base64.urlsafe_b64encode(self.session_key[:32])  # Ensure 32 bytes
+        key = base64.urlsafe_b64encode(self.session_key[:32])
         return Fernet(key)
-    
+
+
     @property
     def base_dir(self) -> Path:
         user_dir = Path("data/users") / str(self.user_id)
@@ -120,6 +123,9 @@ class UserDataManager:
 
         # Initialize trigger rules schema (sidebar agent trigger filters)
         self._init_trigger_rules_schema()
+
+        # Initialize Files API upload tracking schema
+        self._init_files_api_schema()
 
         logger.info("Tool schemas initialized successfully")
     
@@ -165,8 +171,8 @@ class UserDataManager:
             user_id UUID NOT NULL,
             sender_id TEXT NOT NULL,
             recipient_id TEXT NOT NULL,
-            content TEXT NOT NULL,
-            original_content TEXT,
+            encrypted__content TEXT,
+            encrypted__original_content TEXT,
             ai_distilled BOOLEAN NOT NULL DEFAULT FALSE,
             priority INTEGER NOT NULL DEFAULT 0,
             location TEXT,
@@ -176,7 +182,8 @@ class UserDataManager:
             delivered BOOLEAN NOT NULL DEFAULT TRUE,
             read BOOLEAN NOT NULL DEFAULT FALSE,
             message_signature TEXT,
-            sender_fingerprint TEXT
+            sender_fingerprint TEXT,
+            external_message_id TEXT
         )
         """
 
@@ -189,7 +196,9 @@ class UserDataManager:
             "CREATE INDEX IF NOT EXISTS idx_pager_messages_user_id ON pager_messages(user_id)",
             "CREATE INDEX IF NOT EXISTS idx_pager_messages_sender ON pager_messages(sender_id)",
             "CREATE INDEX IF NOT EXISTS idx_pager_messages_recipient ON pager_messages(recipient_id)",
-            "CREATE INDEX IF NOT EXISTS idx_pager_messages_expires ON pager_messages(expires_at)"
+            "CREATE INDEX IF NOT EXISTS idx_pager_messages_expires ON pager_messages(expires_at)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_pager_messages_external_id "
+            "ON pager_messages(user_id, external_message_id) WHERE external_message_id IS NOT NULL"
         ]
 
         # Execute schema creation
@@ -345,6 +354,25 @@ class UserDataManager:
         )
         self.connection.commit()
 
+    def _init_files_api_schema(self):
+        """Initialize persistent Files API upload tracking."""
+        cursor = self.connection.cursor()
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS files_api_uploads (
+            file_id TEXT PRIMARY KEY,
+            user_id UUID NOT NULL,
+            segment_id TEXT NOT NULL,
+            filename TEXT NOT NULL,
+            media_type TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """)
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_files_api_uploads_segment "
+            "ON files_api_uploads(segment_id)"
+        )
+        self.connection.commit()
+
     def _encrypt_value(self, value: Any) -> str:
         """Encrypt a value for storage."""
         json_str = json.dumps(value)
@@ -352,17 +380,10 @@ class UserDataManager:
         return encrypted_token.decode()  # Fernet returns base64-encoded bytes
     
     def _decrypt_value(self, encrypted_str: str) -> Any:
-        """Decrypt a value from storage."""
-        try:
-            decrypted_bytes = self.fernet.decrypt(encrypted_str.encode())
-            return json.loads(decrypted_bytes.decode())
-        except Exception:
-            # Fallback for unencrypted data (migration scenario)
-            try:
-                return json.loads(encrypted_str)
-            except json.JSONDecodeError:
-                return encrypted_str
-    
+        """Decrypt a value from storage. Raises on cipher or JSON failure."""
+        decrypted_bytes = self.fernet.decrypt(encrypted_str.encode())
+        return json.loads(decrypted_bytes.decode())
+
     def _encrypt_dict(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Encrypt fields with encrypted__ prefix (prefix is kept in column name)."""
         result = {}
@@ -384,15 +405,11 @@ class UserDataManager:
         return result
     
     def _decrypt_dict(self, data: Dict[str, str]) -> Dict[str, Any]:
-        """Decrypt fields prefixed with encrypted__."""
+        """Decrypt fields prefixed with encrypted__. Raises on cipher failure."""
         result = {}
         for key, value in data.items():
             if key.startswith("encrypted__") and value is not None:
-                try:
-                    result[key] = self._decrypt_value(value)
-                except Exception:
-                    # Decryption failed, use as-is
-                    result[key] = value
+                result[key] = self._decrypt_value(value)
             else:
                 result[key] = value
         return result
@@ -486,6 +503,7 @@ class UserDataManager:
             credential_type TEXT NOT NULL,
             service_name TEXT NOT NULL,
             encrypted__credential_value TEXT NOT NULL,
+            metadata TEXT NOT NULL DEFAULT '{}',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             UNIQUE(credential_type, service_name)
@@ -494,12 +512,11 @@ class UserDataManager:
 
 
 def derive_session_key(user_id: str) -> bytes:
-    """Derive persistent encryption key from user ID."""
-    import hashlib
-    # Create deterministic key from user UUID
-    # This key remains constant for the user's lifetime
-    key_material = f"userdata_encryption_{user_id}".encode()
-    return hashlib.sha256(key_material).digest()
+    """Derive per-user encryption key from the Vault-backed master key."""
+    from clients.vault_client import get_service_config
+
+    master_key = get_service_config("userdata_encryption_key").encode()
+    return hmac.new(master_key, str(user_id).encode(), hashlib.sha256).digest()
 
 
 def get_user_data_manager(user_id: UUID) -> UserDataManager:
@@ -564,4 +581,3 @@ class UserDataManagerCleanupHandler:
         except Exception as e:
             # Don't let cleanup failures break the collapse pipeline
             logger.warning(f"Failed to clean up UserDataManager for user {event.user_id}: {e}")
-

@@ -4,11 +4,12 @@ Health API endpoint - basic system health checks.
 Simple health monitoring for database, basic system status.
 """
 import logging
+import secrets
 import time
 
 import psycopg
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import JSONResponse
 
 from .base import BaseHandler, ErrorResponse, SuccessResponse, create_success_response, create_error_response
@@ -20,6 +21,8 @@ from utils.scheduled_task_monitor import ScheduledTaskMonitor
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+DIAGNOSTICS_TOKEN_HEADER = "X-MIRA-Diagnostics-Token"
 
 
 class HealthEndpoint(BaseHandler):
@@ -97,8 +100,24 @@ def health_endpoint():
         return JSONResponse(status_code=500, content=create_error_response(e).to_dict())
 
 
+def _require_diagnostics_token(x_mira_diagnostics_token: str | None = Header(default=None)) -> None:
+    """Require a Vault-backed diagnostics token for detailed health endpoints."""
+    from clients.vault_client import get_service_config
+
+    try:
+        expected_token = get_service_config("diagnostics_token")
+    except Exception as e:
+        logger.error(f"Diagnostics token is not configured: {e}", exc_info=True)
+        raise HTTPException(status_code=503, detail="Diagnostics endpoint not configured")
+
+    if not x_mira_diagnostics_token:
+        raise HTTPException(status_code=401, detail=f"Missing {DIAGNOSTICS_TOKEN_HEADER} header")
+    if not secrets.compare_digest(x_mira_diagnostics_token, expected_token):
+        raise HTTPException(status_code=403, detail="Invalid diagnostics token")
+
+
 @router.get("/health/threads")
-def thread_health_endpoint():
+def thread_health_endpoint(_: None = Depends(_require_diagnostics_token)):
     """
     Thread monitoring endpoint - shows active and stuck operations.
 
@@ -162,7 +181,7 @@ def thread_health_endpoint():
 
 
 @router.get("/health/thread-dump")
-def thread_dump_endpoint():
+def thread_dump_endpoint(_: None = Depends(_require_diagnostics_token)):
     """
     Generate a detailed thread dump for debugging.
 

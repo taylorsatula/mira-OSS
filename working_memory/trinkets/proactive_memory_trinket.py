@@ -2,6 +2,7 @@
 import logging
 from typing import List, Dict, Any, TYPE_CHECKING
 
+from utils.user_context import get_current_user_id
 from utils.tag_parser import format_memory_id
 from .base import EventAwareTrinket
 
@@ -23,44 +24,46 @@ class ProactiveMemoryTrinket(EventAwareTrinket):
     variable_name = "relevant_memories"
 
     def __init__(self, event_bus: 'EventBus', working_memory: 'WorkingMemory'):
-        """Initialize with memory cache."""
+        """Initialize with per-user memory cache."""
         super().__init__(event_bus, working_memory)
-        self._cached_memories: list[dict[str, Any]] = []
+        self._user_memories: dict[str, list[dict[str, Any]]] = {}
 
     def get_cached_memories(self) -> List[Dict[str, Any]]:
         """
-        Get the currently cached memories.
+        Get the currently cached memories for the active user.
 
-        Used by the orchestrator for memory retention evaluation -
+        Used by the orchestrator for memory retention evaluation —
         previous turn's surfaced memories are evaluated for continued relevance.
 
         Returns:
             List of memory dicts from the previous turn
         """
-        return self._cached_memories
+        return self._user_memories.get(get_current_user_id(), [])
     
     def generate_content(self, context: Dict[str, Any]) -> str:
         """
         Generate memory content from context.
-        
+
         Args:
             context: Update context containing 'memories' list
-            
+
         Returns:
             Formatted memories section or empty string if no memories
         """
+        user_id = get_current_user_id()
+
         # Update cache if memories are provided
         if 'memories' in context:
-            self._cached_memories = context['memories']
-        
-        # Use cached memories
-        if not self._cached_memories:
+            self._user_memories[user_id] = context['memories']
+
+        memories = self._user_memories.get(user_id, [])
+        if not memories:
             return ""
-        
+
         # Format memories for prompt
-        memory_content = self._format_memories_for_prompt(self._cached_memories)
-        
-        logger.debug(f"Formatted {len(self._cached_memories)} memories for display")
+        memory_content = self._format_memories_for_prompt(memories)
+
+        logger.debug(f"Formatted {len(memories)} memories for display")
         return memory_content
     
     def _format_memories_for_prompt(self, memories: List[Dict[str, Any]]) -> str:

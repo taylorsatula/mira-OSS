@@ -297,7 +297,8 @@ class DataEndpoint(BaseHandler):
                     owner_db = get_user_data_manager(share.owner_user_id)
                     owner_docs = owner_db.select("domaindocs", "label = :label AND enabled = TRUE AND archived = FALSE", {"label": share.domaindoc_label})
                     if owner_docs:
-                        owner_doc = owner_db._decrypt_dict(owner_docs[0])
+                        # db.select already decrypts; do not call _decrypt_dict again.
+                        owner_doc = owner_docs[0]
                         domain_list.append({
                             "label": share.collaborator_label,
                             "name": owner_doc.get("name", share.domaindoc_label),

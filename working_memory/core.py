@@ -51,7 +51,7 @@ class WorkingMemory:
         self.composer = SystemPromptComposer()
         self._trinkets: Dict[str, EventAwareTrinket] = {}
         self._current_continuum_id: Optional[str] = None
-        self._portrait_cache: Optional[str] = None  # Loaded once per session on first compose
+        self._portrait_cache: dict[str, str] = {}
 
         # Subscribe to core events
         # System prompt composition request
@@ -98,12 +98,13 @@ class WorkingMemory:
 
         personalized_prompt = event.base_prompt.replace("{first_name}", first_name)
 
-        # Inject user portrait — read from DB, cached for the session.
-        # Portrait is synthesized by the segment collapse chain, not on-demand.
-        if self._portrait_cache is None:
+        user_id = get_current_user_id()
+        if user_id not in self._portrait_cache:
             from cns.services.portrait_service import read_portrait
-            self._portrait_cache = read_portrait(get_current_user_id())
-        portrait_text = f"\n{self._portrait_cache}" if self._portrait_cache else ""
+            portrait = read_portrait(user_id)
+            self._portrait_cache[user_id] = portrait or ""
+        portrait = self._portrait_cache[user_id]
+        portrait_text = f"\n{portrait}" if portrait else ""
         personalized_prompt = personalized_prompt.replace("{user_context}", portrait_text)
 
         # Replace {relative time since account creation} with computed duration
@@ -207,17 +208,20 @@ class WorkingMemory:
         """
         Centralized flush of all stateful trinkets on segment collapse.
 
-        Clears in-memory state and Valkey cache for every StatefulTrinket.
-        This ensures no trinket can "forget" to handle collapse — extending
-        StatefulTrinket is sufficient to get correct cleanup behavior.
+        Clears in-memory state and Valkey cache for every StatefulTrinket,
+        scoped to the current user. Also invalidates the portrait cache
+        so re-synthesized portraits are picked up on next compose.
         """
+        user_id = get_current_user_id()
         flushed = []
         for name, trinket in self._trinkets.items():
             if isinstance(trinket, StatefulTrinket):
                 trinket._clear_all_state()
-                trinket.current_turn = 0
+                trinket.clear_user_turn(user_id)
                 trinket._clear_from_valkey()
                 flushed.append(name)
+
+        self._portrait_cache.pop(user_id, None)
 
         if flushed:
             logger.info(f"Flushed {len(flushed)} stateful trinkets on segment collapse: {', '.join(flushed)}")

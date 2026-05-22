@@ -320,8 +320,11 @@ class ContinuumOrchestrator:
 
         Produces one assistant message containing tool_use content blocks,
         followed by one tool message per interaction with the raw result.
-        Timestamps are offset by milliseconds to guarantee deterministic
-        DB ordering on reload.
+        Timestamps are offset by microseconds (not milliseconds) to guarantee
+        deterministic intra-batch ordering without leapfrogging the final text
+        assistant message that is created immediately after this returns —
+        millisecond offsets pushed tool history past the natural utc_now() of
+        the subsequent message, inverting chronological order in the DB.
         """
         from datetime import timedelta
         from cns.core.message import Message
@@ -345,7 +348,7 @@ class ContinuumOrchestrator:
             metadata={"has_tool_calls": True}
         )
         # Override frozen created_at for deterministic ordering
-        object.__setattr__(assistant_msg, 'created_at', base_time + timedelta(milliseconds=1))
+        object.__setattr__(assistant_msg, 'created_at', base_time + timedelta(microseconds=1))
         messages.append(assistant_msg)
 
         # One tool message per interaction
@@ -361,7 +364,7 @@ class ContinuumOrchestrator:
                 role="tool",
                 metadata={"tool_call_id": interaction.tool_id}
             )
-            object.__setattr__(tool_msg, 'created_at', base_time + timedelta(milliseconds=i + 2))
+            object.__setattr__(tool_msg, 'created_at', base_time + timedelta(microseconds=i + 2))
             messages.append(tool_msg)
 
         return messages

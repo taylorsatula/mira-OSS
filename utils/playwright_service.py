@@ -15,12 +15,14 @@ used from the thread that called sync_playwright().start().
 """
 import concurrent.futures
 import logging
-import re
 import threading
 import time
 from typing import Optional
+from urllib.parse import urlparse
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+
+from utils.url_safety import validate_public_http_url
 
 
 # Shut down Chromium after 10 minutes of no fetch_rendered_html() calls.
@@ -28,6 +30,7 @@ IDLE_TIMEOUT_SECONDS = 600
 
 # Process names Chromium may appear as (varies by OS/install method).
 _CHROMIUM_PROCESS_NAMES = frozenset({'chromium', 'chrome', 'headless_shell'})
+_NON_NETWORK_SCHEMES = frozenset({'about', 'blob', 'data'})
 
 
 class _CancelledError(Exception):
@@ -49,18 +52,6 @@ class PlaywrightService:
     def __init__(self):
         """Initialize the Playwright service (browser starts lazily)."""
         self.logger = logging.getLogger("playwright_service")
-
-        # Blocked network patterns for SSRF prevention
-        self._blocked_patterns = [
-            r'^https?://localhost',
-            r'^https?://127\.',
-            r'^https?://10\.',
-            r'^https?://172\.(1[6-9]|2[0-9]|3[0-1])\.',
-            r'^https?://192\.168\.',
-            r'^https?://0\.0\.0\.0',
-            r'^https?://\[::1\]',  # IPv6 localhost
-            r'^https?://169\.254\.',  # Link-local
-        ]
 
         # Browser state — guarded by _browser_lock
         self._browser_lock = threading.Lock()
@@ -248,13 +239,13 @@ class PlaywrightService:
             """Intercept and validate all network requests."""
             request_url = request.url
 
-            # Block internal network requests (SSRF protection)
-            for pattern in self._blocked_patterns:
-                if re.match(pattern, request_url, re.IGNORECASE):
-                    self.logger.warning(f"Blocked SSRF attempt: {request_url}")
-                    blocked_requests.append(request_url)
-                    route.abort()
-                    return
+            try:
+                validate_browser_request_url(request_url)
+            except ValueError as e:
+                self.logger.warning(f"Blocked browser request {request_url}: {e}")
+                blocked_requests.append(request_url)
+                route.abort()
+                return
 
             # Block unnecessary resource types for faster loading
             resource_type = request.resource_type
@@ -367,3 +358,14 @@ class PlaywrightService:
     def shutdown(self):
         """Full shutdown for process exit. Called from lifespan."""
         self._shutdown_browser()
+
+
+def validate_browser_request_url(request_url: str) -> None:
+    """Allow public HTTP(S) browser requests plus inert browser-local schemes."""
+    scheme = urlparse(request_url).scheme.lower()
+    if scheme in ("http", "https"):
+        validate_public_http_url(request_url)
+        return
+    if scheme in _NON_NETWORK_SCHEMES:
+        return
+    raise ValueError(f"Blocked non-HTTP browser request scheme: {scheme}")

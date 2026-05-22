@@ -10,6 +10,7 @@ import logging
 from typing import Any, Dict, TYPE_CHECKING
 
 from working_memory.trinkets.base import StatefulTrinket
+from utils.user_context import get_current_user_id
 
 if TYPE_CHECKING:
     from cns.integration.event_bus import EventBus
@@ -25,7 +26,7 @@ class EmailTrinket(StatefulTrinket):
 
     def __init__(self, event_bus: 'EventBus', working_memory: 'WorkingMemory'):
         super().__init__(event_bus, working_memory)
-        self._inbox_snapshot: list[dict] = []
+        self._inbox_snapshots: dict[str, list[dict]] = {}
 
     def handle_update_request(self, event) -> None:
         """Store inbox data from poller, then delegate to parent for rendering.
@@ -39,16 +40,17 @@ class EmailTrinket(StatefulTrinket):
         """
         data = event.context.get('data')
         if data is not None:
-            self._inbox_snapshot = data
+            self._inbox_snapshots[get_current_user_id()] = data
 
         super().handle_update_request(event)
 
     def generate_content(self, context: Dict[str, Any]) -> str:
         """Render inbox snapshot as XML for the HUD."""
-        if not self._inbox_snapshot:
+        snapshot = self._inbox_snapshots.get(get_current_user_id(), [])
+        if not snapshot:
             return ""
 
-        count = len(self._inbox_snapshot)
+        count = len(snapshot)
         lines = [
             '<inbox_status>',
             '<instruction>You have unread emails. Mention them to the user '
@@ -58,7 +60,7 @@ class EmailTrinket(StatefulTrinket):
             f'<unread count="{count}">',
         ]
 
-        for em in self._inbox_snapshot:
+        for em in snapshot:
             # Escape XML-sensitive chars in user-controlled content
             from_attr = _xml_attr_escape(em.get('from_addr', ''))
             subject_attr = _xml_attr_escape(em.get('subject', ''))
@@ -80,13 +82,13 @@ class EmailTrinket(StatefulTrinket):
         return False
 
     def _clear_all_state(self) -> None:
-        """Clear inbox snapshot on segment collapse."""
-        if self._inbox_snapshot:
+        """Clear inbox snapshot for the current user on segment collapse."""
+        snapshot = self._inbox_snapshots.pop(get_current_user_id(), None)
+        if snapshot:
             logger.debug(
-                f"Clearing {len(self._inbox_snapshot)} inbox items "
+                f"Clearing {len(snapshot)} inbox items "
                 "on segment collapse"
             )
-        self._inbox_snapshot.clear()
 
 
 def _xml_attr_escape(value: str) -> str:

@@ -28,7 +28,6 @@ Every `anthropic_schema` parameter description is an LLM caller contract. Use ex
 - `imagegen_tool.py` — Image generation/refinement via Google Gemini with Chat-based lineage; `generate` opens a new session, `refine` replays full history, `publish` emits `_image_artifact`; per-user API key via `UserCredentialService('google_genai')`; images uploaded to Anthropic Files API uncompressed
 - `inbox_tool.py` — Local file drop-off dropbox. User drops files into a configured filesystem path (default `/tmp/mira-dropbox`); tool exposes `list` / `read` (paginated text extraction for TXT/CSV/JSON/DOCX/XLSX) / `archive` (moves to `dropbox/archive/` with a `.meta.json` sidecar). Does not write to domain docs or memory itself — model composes with `domaindoc_tool` or `memory_tool` between `read` and `archive`. PDFs and images are archive-only. Disabled by default (`InboxToolConfig.enabled=False`); not in `ESSENTIAL_TOOLS` — opt in via config to load
 - `invokeother_tool.py` — Meta-tool for on-demand loading of non-essential tools at runtime
-- `kasa_tool.py` — TP-Link Kasa smart home device control
 - `maps_tool.py` — Google Maps geocoding, places, and distance; lazy client init
 - `memory_tool.py` — LT_Memory search, pin, touch, and manual create; `create_memory` queues to Valkey for deferred processing at segment collapse (no spaCy at init time)
 - `pager_tool.py` — Lattice federation messaging

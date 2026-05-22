@@ -28,7 +28,7 @@ class ApiConfig(BaseModel):
 
     # Operational limits
     timeout: int = Field(default=60, description="Request timeout in seconds")
-    provider_response_timeout: int = Field(default=15, description="Max seconds any LLM provider can accept the connection without producing output before it's killed.")
+    provider_response_timeout: int = Field(default=60, description="Max seconds any LLM provider can accept the connection without producing output before it's killed.")
     emergency_fallback_recovery_minutes: int = Field(default=5, description="Minutes to wait before testing Anthropic recovery")
 
     # Generation settings

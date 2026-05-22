@@ -6,7 +6,8 @@ the existing UserDataManager's SQLite-based credential storage with
 automatic encryption in user-specific databases.
 """
 
-from typing import Optional, Dict
+import json
+from typing import Any, Optional, Dict
 
 from typing_extensions import TypedDict
 from utils.user_context import get_current_user_id
@@ -17,6 +18,7 @@ class CredentialMetadata(TypedDict):
     """Metadata for a stored credential."""
     created_at: Optional[str]
     updated_at: Optional[str]
+    metadata: Dict[str, Any]
 
 
 class UserCredentialService:
@@ -40,7 +42,8 @@ class UserCredentialService:
         self,
         credential_type: str,
         service_name: str,
-        credential_value: str
+        credential_value: str,
+        metadata: Optional[Dict[str, Any]] = None
     ) -> None:
         """Store an encrypted credential using UserDataManager."""
         dm = get_user_data_manager(self.user_id)
@@ -59,6 +62,7 @@ class UserCredentialService:
             'credential_type': credential_type,
             'service_name': service_name,
             'encrypted__credential_value': credential_value,
+            'metadata': json.dumps(metadata or {}, sort_keys=True),
             'updated_at': now
         }
 
@@ -91,6 +95,24 @@ class UserCredentialService:
         )
 
         return results[0]['encrypted__credential_value'] if results else None
+
+    def get_credential_metadata(
+        self,
+        credential_type: str,
+        service_name: str
+    ) -> Dict[str, Any]:
+        """Retrieve credential metadata without returning the secret value."""
+        dm = get_user_data_manager(self.user_id)
+        dm._ensure_credentials_table()
+
+        results = dm.select(
+            'credentials',
+            'credential_type = :ctype AND service_name = :service',
+            {'ctype': credential_type, 'service': service_name}
+        )
+        if not results:
+            return {}
+        return json.loads(results[0].get('metadata') or "{}")
     
     def delete_credential(
         self,
@@ -126,7 +148,8 @@ class UserCredentialService:
 
             credentials[ctype][service] = {
                 'created_at': row.get('created_at'),
-                'updated_at': row.get('updated_at')
+                'updated_at': row.get('updated_at'),
+                'metadata': json.loads(row.get('metadata') or "{}")
             }
 
         return credentials

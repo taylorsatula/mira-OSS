@@ -6,11 +6,12 @@ Manages file uploads, lifecycle, and cleanup for structured data files
 """
 
 import logging
-from typing import Dict, Set
+from typing import Set
 import anthropic
 from anthropic import APIStatusError
 
 from tools.repo import FILES_API_BETA_FLAG
+from utils.timezone_utils import format_utc_iso, utc_now
 
 
 class FilesManager:
@@ -38,8 +39,10 @@ class FilesManager:
         """
         self.client = anthropic_client
         self.logger = logging.getLogger("files_manager")
-        # Track uploaded files: {segment_id: Set[file_id]}
-        self._uploaded_files: Dict[str, Set[str]] = {}
+        from utils.user_context import get_current_user_id
+        from utils.userdata_manager import get_user_data_manager
+        self._db = get_user_data_manager(get_current_user_id())
+        self._db._init_files_api_schema()
 
     def upload_file(
         self,
@@ -75,10 +78,7 @@ class FilesManager:
 
             file_id = response.id
 
-            # Track for cleanup by segment
-            if segment_id not in self._uploaded_files:
-                self._uploaded_files[segment_id] = set()
-            self._uploaded_files[segment_id].add(file_id)
+            self._track_upload(file_id, segment_id, filename, media_type)
 
             self.logger.info(f"Uploaded file {filename} → file_id: {file_id} (segment: {segment_id})")
             return file_id
@@ -109,7 +109,7 @@ class FilesManager:
             self.logger.error(f"Unexpected error uploading file {filename}: {e}", exc_info=True)
             raise RuntimeError(f"Failed to upload file: {str(e)}")
 
-    def delete_file(self, file_id: str) -> None:
+    def delete_file(self, file_id: str) -> bool:
         """
         Delete single file by ID.
 
@@ -126,15 +126,19 @@ class FilesManager:
                 betas=[FILES_API_BETA_FLAG]
             )
             self.logger.debug(f"Deleted file: {file_id}")
+            return True
         except APIStatusError as e:
             if e.status_code == 404:
                 # File already deleted or never existed - not an error
                 self.logger.debug(f"File not found (may already be deleted): {file_id}")
+                return True
             else:
                 self.logger.warning(f"Error deleting file {file_id}: {e}", exc_info=True)
+                return False
         except Exception as e:
             # Log but don't fail request on cleanup errors
             self.logger.warning(f"Unexpected error deleting file {file_id}: {e}", exc_info=True)
+            return False
 
     def cleanup_segment_files(self, segment_id: str) -> None:
         """
@@ -149,10 +153,7 @@ class FilesManager:
             Removes tracking and deletes all uploaded files for segment.
             Gracefully handles deletion failures (logs warnings).
         """
-        if segment_id not in self._uploaded_files:
-            return
-
-        file_ids = self._uploaded_files.pop(segment_id)
+        file_ids = self._get_tracked_file_ids(segment_id)
 
         if not file_ids:
             return
@@ -160,6 +161,35 @@ class FilesManager:
         self.logger.debug(f"Cleaning up {len(file_ids)} files for segment {segment_id}")
 
         for file_id in file_ids:
-            self.delete_file(file_id)
+            if self.delete_file(file_id):
+                self._delete_tracked_upload(file_id)
 
         self.logger.info(f"Cleanup complete for segment {segment_id}")
+
+    def _track_upload(self, file_id: str, segment_id: str, filename: str, media_type: str) -> None:
+        """Persist upload tracking in user SQLite."""
+        self._db.insert('files_api_uploads', {
+            'file_id': file_id,
+            'user_id': self._db.user_id,
+            'segment_id': segment_id,
+            'filename': filename,
+            'media_type': media_type,
+            'created_at': format_utc_iso(utc_now()),
+        })
+
+    def _get_tracked_file_ids(self, segment_id: str) -> Set[str]:
+        """Return persisted file IDs for a segment."""
+        rows = self._db.select(
+            'files_api_uploads',
+            'segment_id = :segment_id',
+            {'segment_id': segment_id}
+        )
+        return {row['file_id'] for row in rows}
+
+    def _delete_tracked_upload(self, file_id: str) -> None:
+        """Delete persistent tracking after remote deletion succeeds."""
+        self._db.delete(
+            'files_api_uploads',
+            'file_id = :file_id',
+            {'file_id': file_id}
+        )

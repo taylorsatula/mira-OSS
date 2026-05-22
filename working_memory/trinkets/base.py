@@ -167,9 +167,23 @@ class StatefulTrinket(EventAwareTrinket):
 
     def __init__(self, event_bus: 'EventBus', working_memory: 'WorkingMemory'):
         super().__init__(event_bus, working_memory)
-        self.current_turn: int = 0
+        self._turn_counts: dict[str, int] = {}
 
         self.event_bus.subscribe('TurnCompletedEvent', self._on_turn_completed)
+
+    @property
+    def current_turn(self) -> int:
+        """Current turn number for the active user (from ambient context)."""
+        return self._turn_counts.get(get_current_user_id(), 0)
+
+    @current_turn.setter
+    def current_turn(self, value: int) -> None:
+        """Set turn number for the active user."""
+        self._turn_counts[get_current_user_id()] = value
+
+    def clear_user_turn(self, user_id: str) -> None:
+        """Remove a user's turn counter entry."""
+        self._turn_counts.pop(user_id, None)
 
     def _on_turn_completed(self, event: 'TurnCompletedEvent') -> None:
         """Update turn counter and expire stale items."""

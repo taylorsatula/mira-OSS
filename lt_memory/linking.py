@@ -21,6 +21,7 @@ from lt_memory.vector_ops import VectorOps
 from lt_memory.db_access import LTMemoryDB
 from clients.llm_provider import LLMProvider
 from utils.timezone_utils import utc_now, format_utc_iso
+from utils.user_context import get_current_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,16 @@ CLASSIFICATION_MAX_TOKENS = 500
 ENTITY_SIMILARITY_FLOOR = 0.55     # pg_trgm floor for entity co-occurrence candidates
 TFIDF_SIMILARITY_THRESHOLD = 0.20  # TF-IDF cosine floor for term-based discovery
 TFIDF_MAX_CANDIDATES = 10
+
+
+class _TfidfState:
+    """TF-IDF matrix state scoped to a single user."""
+
+    def __init__(self, vectorizer, matrix, memory_ids: List[UUID], memory_count: int):
+        self.vectorizer = vectorizer
+        self.matrix = matrix
+        self.memory_ids = memory_ids
+        self.memory_count = memory_count
 
 
 def _cosine_similarity(vec_a: List[float], vec_b: List[float]) -> float:
@@ -64,11 +75,7 @@ class LinkingService:
         self.llm_provider = llm_provider
         self._load_prompts()
 
-        # TF-IDF state — lazily initialized on first candidate discovery call
-        self._tfidf_vectorizer = None
-        self._tfidf_matrix = None
-        self._tfidf_memory_ids: List[UUID] = []
-        self._tfidf_memory_count: int = 0
+        self._tfidf_states: dict[str, _TfidfState] = {}
 
     def _load_prompts(self) -> None:
         """
@@ -200,8 +207,11 @@ class LinkingService:
 
         return candidates
 
-    def _ensure_tfidf(self) -> None:
-        """Rebuild TF-IDF matrix if stale or uninitialized."""
+    def _ensure_tfidf(self) -> _TfidfState:
+        """Rebuild TF-IDF matrix for the current user if stale or uninitialized."""
+        user_id = get_current_user_id()
+        state = self._tfidf_states.get(user_id)
+
         memories = self.db.get_all_memories()
         active = [
             m for m in memories
@@ -210,21 +220,28 @@ class LinkingService:
             and not m.is_archived
         ]
 
-        if self._tfidf_vectorizer is not None and len(active) == self._tfidf_memory_count:
-            return  # still fresh
+        if state is not None and len(active) == state.memory_count:
+            return state  # still fresh
 
         from sklearn.feature_extraction.text import TfidfVectorizer
 
-        self._tfidf_memory_ids = [m.id for m in active]
+        memory_ids = [m.id for m in active]
         texts = [m.text for m in active]
 
         vectorizer = TfidfVectorizer(
             max_features=10000, stop_words='english', min_df=2, max_df=0.8
         )
-        self._tfidf_matrix = vectorizer.fit_transform(texts)
-        self._tfidf_vectorizer = vectorizer
-        self._tfidf_memory_count = len(active)
+        matrix = vectorizer.fit_transform(texts)
+
+        state = _TfidfState(
+            vectorizer=vectorizer,
+            matrix=matrix,
+            memory_ids=memory_ids,
+            memory_count=len(active),
+        )
+        self._tfidf_states[user_id] = state
         logger.info(f"Rebuilt TF-IDF matrix: {len(active)} memories, {len(vectorizer.vocabulary_)} terms")
+        return state
 
     def _find_tfidf_candidates(
         self,
@@ -248,16 +265,16 @@ class LinkingService:
         if not source_memory:
             return []
 
-        self._ensure_tfidf()
+        state = self._ensure_tfidf()
 
-        if self._tfidf_vectorizer is None or self._tfidf_matrix is None:
+        if state.vectorizer is None or state.matrix is None:
             return []
 
         # Transform source text against fitted vocabulary
-        source_vector = self._tfidf_vectorizer.transform([source_memory.text])
+        source_vector = state.vectorizer.transform([source_memory.text])
 
         from sklearn.metrics.pairwise import cosine_similarity
-        similarities = cosine_similarity(source_vector, self._tfidf_matrix).flatten()
+        similarities = cosine_similarity(source_vector, state.matrix).flatten()
 
         # Collect candidates above threshold, excluding source
         threshold = TFIDF_SIMILARITY_THRESHOLD
@@ -265,7 +282,7 @@ class LinkingService:
         scored = []
 
         for idx, sim in enumerate(similarities):
-            mid = self._tfidf_memory_ids[idx]
+            mid = state.memory_ids[idx]
             if mid == memory_id:
                 continue
             if sim >= threshold:
@@ -278,7 +295,7 @@ class LinkingService:
         if not top_ids:
             return []
 
-        # Batch-fetch Memory objects
+        # Batch-fetch Memory objects (RLS-filtered by user context)
         return self.db.get_memories_by_ids(top_ids)
 
     def build_classification_payload(

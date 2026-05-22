@@ -11,6 +11,7 @@ from typing import Dict, List, Literal, Any, TypedDict
 from uuid import uuid4
 
 from working_memory.trinkets.base import StatefulTrinket
+from utils.user_context import get_current_user_id
 
 
 class ActiveGuidance(TypedDict):
@@ -55,20 +56,22 @@ class PeanutGalleryTrinket(StatefulTrinket):
         """
         super().__init__(event_bus, working_memory)
 
-        self._active_guidance: Dict[str, GuidanceEntry] = {}
+        self._user_guidance: dict[str, Dict[str, GuidanceEntry]] = {}
         self._default_ttl = default_ttl
 
         logger.info(f"PeanutGalleryTrinket initialized with {default_ttl}-turn default TTL")
 
     def _expire_items(self) -> bool:
         """Remove guidance entries past their TTL."""
+        user_id = get_current_user_id()
+        guidance = self._user_guidance.get(user_id, {})
         expired = [
-            gid for gid, entry in self._active_guidance.items()
+            gid for gid, entry in guidance.items()
             if self.current_turn > entry.expires_at_turn
         ]
 
         for gid in expired:
-            del self._active_guidance[gid]
+            del guidance[gid]
 
         if expired:
             logger.info(f"Cleaned up {len(expired)} expired guidance entries")
@@ -76,13 +79,15 @@ class PeanutGalleryTrinket(StatefulTrinket):
         return bool(expired)
 
     def _clear_all_state(self) -> None:
-        """Clear all guidance entries."""
-        if self._active_guidance:
-            logger.info(f"Clearing {len(self._active_guidance)} guidance entries on segment collapse")
-        self._active_guidance.clear()
+        """Clear guidance entries for the current user on segment collapse."""
+        guidance = self._user_guidance.pop(get_current_user_id(), None)
+        if guidance:
+            logger.info(f"Clearing {len(guidance)} guidance entries on segment collapse")
 
     def get_active_guidance(self) -> list[ActiveGuidance]:
         """Get all currently active (non-expired) guidance messages."""
+        user_id = get_current_user_id()
+        guidance = self._user_guidance.get(user_id, {})
         return [
             {
                 "id": entry.id,
@@ -91,7 +96,7 @@ class PeanutGalleryTrinket(StatefulTrinket):
                 "turns_remaining": max(0, entry.expires_at_turn - self.current_turn),
                 "critical": entry.critical,
             }
-            for entry in self._active_guidance.values()
+            for entry in guidance.values()
             if self.current_turn <= entry.expires_at_turn
         ]
 
@@ -117,7 +122,9 @@ class PeanutGalleryTrinket(StatefulTrinket):
         guidance_id = str(uuid4())[:8]
         ttl = ttl if ttl is not None else self._default_ttl
 
-        self._active_guidance[guidance_id] = GuidanceEntry(
+        user_id = get_current_user_id()
+        guidance = self._user_guidance.setdefault(user_id, {})
+        guidance[guidance_id] = GuidanceEntry(
             id=guidance_id,
             guidance_type=guidance_type,
             text=text,

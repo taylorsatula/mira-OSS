@@ -278,7 +278,8 @@ class PagerTool(Tool):
         from_address: str,
         content: str,
         priority: int,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        external_message_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Deliver a federated message to this user's pager (write-only, no read access).
@@ -304,20 +305,24 @@ class PagerTool(Tool):
         logger = logging.getLogger(__name__)
 
         try:
-            # Construct user's database path
-            from pathlib import Path
-            user_db_path = Path("data/users") / self.user_id / "userdata.db"
-
-            if not user_db_path.exists():
-                raise ValueError(f"User database not found for user_id {self.user_id}")
-
-            # Get user-scoped SQLite client (write-only access)
-            from clients.sqlite_client import get_sqlite_client
-            db_client = get_sqlite_client(str(user_db_path), self.user_id)
+            if external_message_id:
+                existing = self.db.select(
+                    'pager_messages',
+                    'external_message_id = :external_message_id',
+                    {'external_message_id': external_message_id}
+                )
+                if existing:
+                    return {
+                        'success': True,
+                        'message_id': existing[0]['id'],
+                        'delivered_to': existing[0]['recipient_id'],
+                        'duplicate': True
+                    }
 
             # Look up the user's single active pager device
-            pager_devices = db_client.execute_query(
-                "SELECT * FROM pager_devices WHERE user_id = :user_id AND active = :active",
+            pager_devices = self.db.select(
+                'pager_devices',
+                'user_id = :user_id AND active = :active',
                 {'user_id': self.user_id, 'active': 1}
             )
 
@@ -344,16 +349,28 @@ class PagerTool(Tool):
                 'delivered': 1,
                 'read': 0,
                 'sender_fingerprint': 'FEDERATED',  # Mark as federated source
-                'message_signature': ''  # No signature for federated messages
+                'message_signature': '',  # No signature for federated messages
+                'external_message_id': external_message_id
             }
 
-            # Insert message (WRITE-ONLY operation)
-            columns = ', '.join(message_data.keys())
-            placeholders = ', '.join(f':{k}' for k in message_data.keys())
-            db_client.execute_insert(
-                f"INSERT INTO pager_messages ({columns}) VALUES ({placeholders})",
-                message_data
-            )
+            # Insert through UserDataManager so encrypted__ fields are encrypted at rest.
+            try:
+                self.db.insert('pager_messages', message_data)
+            except Exception:
+                if external_message_id:
+                    existing = self.db.select(
+                        'pager_messages',
+                        'external_message_id = :external_message_id',
+                        {'external_message_id': external_message_id}
+                    )
+                    if existing:
+                        return {
+                            'success': True,
+                            'message_id': existing[0]['id'],
+                            'delivered_to': existing[0]['recipient_id'],
+                            'duplicate': True
+                        }
+                raise
 
             logger.info(
                 f"Delivered federated message {message_id} from {from_address} "
@@ -366,8 +383,8 @@ class PagerTool(Tool):
                 'delivered_to': pager_id
             }
 
-        except Exception as e:
-            logger.error(f"Failed to deliver federated message to user {self.user_id}: {e}")
+        except ValueError as e:
+            logger.warning(f"Rejected federated message for user {self.user_id}: {e}")
             return {
                 'success': False,
                 'error': str(e)
@@ -387,25 +404,26 @@ class PagerTool(Tool):
     
     def _message_to_dict(self, message_row: Dict[str, Any], sender_name: str = None, recipient_name: str = None) -> Dict[str, Any]:
         """Convert message row to dictionary (UTC timestamps, frontend handles display conversion)."""
+        decrypted = self.db._decrypt_dict(message_row)
         return {
-            "id": message_row["id"],
-            "sender_id": message_row["sender_id"],
+            "id": decrypted["id"],
+            "sender_id": decrypted["sender_id"],
             "sender_name": sender_name,
-            "recipient_id": message_row["recipient_id"],
+            "recipient_id": decrypted["recipient_id"],
             "recipient_name": recipient_name,
-            "content": message_row["content"],
-            "original_content": message_row["original_content"],
-            "ai_distilled": message_row["ai_distilled"],
-            "priority": message_row["priority"],
-            "priority_label": ["normal", "high", "urgent"][message_row["priority"]] if 0 <= message_row["priority"] <= 2 else "unknown",
-            "location": message_row["location"],
-            "sent_at": message_row["sent_at"],  # UTC timestamp
-            "expires_at": message_row["expires_at"],  # UTC timestamp  
-            "read_at": message_row["read_at"],  # UTC timestamp
-            "delivered": message_row["delivered"],
-            "read": message_row["read"],
-            "sender_fingerprint": message_row["sender_fingerprint"],
-            "message_signature": message_row["message_signature"]
+            "content": decrypted["encrypted__content"],
+            "original_content": decrypted["encrypted__original_content"],
+            "ai_distilled": decrypted["ai_distilled"],
+            "priority": decrypted["priority"],
+            "priority_label": ["normal", "high", "urgent"][decrypted["priority"]] if 0 <= decrypted["priority"] <= 2 else "unknown",
+            "location": decrypted["location"],
+            "sent_at": decrypted["sent_at"],  # UTC timestamp
+            "expires_at": decrypted["expires_at"],  # UTC timestamp
+            "read_at": decrypted["read_at"],  # UTC timestamp
+            "delivered": decrypted["delivered"],
+            "read": decrypted["read"],
+            "sender_fingerprint": decrypted["sender_fingerprint"],
+            "message_signature": decrypted["message_signature"]
         }
 
     def run(self, operation: str, **kwargs) -> Dict[str, Any]:

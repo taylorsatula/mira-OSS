@@ -229,9 +229,14 @@ init_vault() {
         username="mira_dbuser" \
         password="$CONFIG_DB_PASSWORD"
 
+    CONFIG_USERDATA_ENCRYPTION_KEY=$(openssl rand -base64 32)
+    CONFIG_DIAGNOSTICS_TOKEN=$(openssl rand -base64 32)
+
     vault kv put secret/mira/services \
         app_url="http://localhost:1993" \
-        valkey_url="valkey://localhost:6379"
+        valkey_url="valkey://localhost:6379" \
+        userdata_encryption_key="$CONFIG_USERDATA_ENCRYPTION_KEY" \
+        diagnostics_token="$CONFIG_DIAGNOSTICS_TOKEN"
 
     # Update provider endpoint in database if non-Groq
     if [ "$CONFIG_PROVIDER_NAME" != "Groq" ] && [ -n "$CONFIG_PROVIDER_ENDPOINT" ]; then

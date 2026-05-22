@@ -10,7 +10,6 @@ import email
 import email.header
 import email.parser
 import imaplib
-import json
 import logging
 
 from cns.services.pollers.segment_poller import SegmentPoller
@@ -35,24 +34,10 @@ class InboxPollerService(SegmentPoller):
         the event bus catches and logs them. Only returns None when the
         user genuinely has no email credentials configured.
         """
-        from utils.user_credentials import UserCredentialService
+        from utils.tool_config_store import load_user_tool_config
 
-        credential_service = UserCredentialService()
-        config_json = credential_service.get_credential(
-            credential_type="tool_config",
-            service_name="email_tool",
-        )
-
-        if not config_json:
-            return None
-
-        try:
-            config = json.loads(config_json)
-        except (json.JSONDecodeError, TypeError):
-            logger.warning(
-                "inbox poller: email_tool config is malformed JSON, "
-                "skipping poller start"
-            )
+        config = load_user_tool_config("email_tool", hydrate_secrets=True)
+        if not config:
             return None
 
         # Require minimum viable IMAP config

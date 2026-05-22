@@ -47,7 +47,8 @@ class SquareToolConfig(BaseModel):
     )
     client_secret: str = Field(
         default="",
-        description="Your Square Application Secret"
+        description="Your Square Application Secret",
+        json_schema_extra={"secret": True}
     )
     oauth_status: str = Field(
         default="disconnected",
@@ -1241,16 +1242,9 @@ SUPPORT OPERATIONS:
 
     def _get_tool_config(self) -> Dict[str, Any]:
         """Get user's tool configuration."""
-        credential_service = UserCredentialService()
-        config_json = credential_service.get_credential("tool_config", "square_tool")
+        from utils.tool_config_store import load_user_tool_config
 
-        if not config_json:
-            return {}
-
-        try:
-            return json.loads(config_json)
-        except json.JSONDecodeError:
-            return {}
+        return load_user_tool_config("square_tool", hydrate_secrets=True) or {}
 
     def _format_customer(self, customer: Dict[str, Any]) -> Dict[str, Any]:
         """Format customer for response."""

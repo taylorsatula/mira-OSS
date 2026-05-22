@@ -444,7 +444,7 @@ class ToolRepository:
         # TODO: Add type coercion layer here based on tool's anthropic_schema.
         # Currently, tools receive params as-is from JSON parsing, which means numeric
         # values may arrive as strings (e.g., "10" instead of 10). Each tool handles
-        # this individually with int()/float() casts (see email_tool, kasa_tool,
+        # this individually with int()/float() casts (see email_tool,
         # weather_tool, continuum_tool._coerce_to_int). A unified solution would:
         # 1. Read the tool's input_schema from anthropic_schema
         # 2. Coerce each param to its declared type (integer, number, boolean, array)

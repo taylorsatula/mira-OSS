@@ -156,8 +156,20 @@ vault_put_if_not_exists secret/mira/database \
     username="mira_dbuser" \
     service_url="postgresql://mira_dbuser:${CONFIG_DB_PASSWORD}@localhost:5432/mira_service"
 
+CONFIG_USERDATA_ENCRYPTION_KEY=$(openssl rand -base64 32)
+CONFIG_DIAGNOSTICS_TOKEN=$(openssl rand -base64 32)
+
 vault_put_if_not_exists secret/mira/services \
     app_url="http://localhost:1993" \
-    valkey_url="valkey://localhost:6379"
+    valkey_url="valkey://localhost:6379" \
+    userdata_encryption_key="${CONFIG_USERDATA_ENCRYPTION_KEY}" \
+    diagnostics_token="${CONFIG_DIAGNOSTICS_TOKEN}"
+
+if ! vault kv get -field=userdata_encryption_key secret/mira/services > /dev/null 2>&1; then
+    vault kv patch secret/mira/services userdata_encryption_key="${CONFIG_USERDATA_ENCRYPTION_KEY}" > /dev/null
+fi
+if ! vault kv get -field=diagnostics_token secret/mira/services > /dev/null 2>&1; then
+    vault kv patch secret/mira/services diagnostics_token="${CONFIG_DIAGNOSTICS_TOKEN}" > /dev/null
+fi
 
 print_success "All credentials configured in Vault"

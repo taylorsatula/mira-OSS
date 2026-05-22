@@ -344,28 +344,15 @@ def _extract_text(path: Path, mime: str) -> str:
 
 
 def _extract_docx(path: Path) -> str:
-    try:
-        import docx  # python-docx
-    except ImportError:
-        raise ValueError("python-docx is not installed — cannot read .docx files.")
-    doc = docx.Document(str(path))
-    return "\n".join(p.text for p in doc.paragraphs if p.text)
+    from utils.document_processing import extract_docx_text
+
+    return extract_docx_text(path.read_bytes())
 
 
 def _extract_xlsx(path: Path) -> str:
-    try:
-        import openpyxl
-    except ImportError:
-        raise ValueError("openpyxl is not installed — cannot read .xlsx files.")
-    wb = openpyxl.load_workbook(str(path), data_only=True, read_only=True)
-    lines = []
-    for sheet in wb.worksheets:
-        lines.append(f"## Sheet: {sheet.title}")
-        for row in sheet.iter_rows(values_only=True):
-            lines.append("\t".join("" if v is None else str(v) for v in row))
-        lines.append("")
-    wb.close()
-    return "\n".join(lines)
+    from utils.document_processing import extract_xlsx_text
+
+    return extract_xlsx_text(path.read_bytes())
 
 
 def _human_size(n: int) -> str:

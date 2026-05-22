@@ -32,7 +32,8 @@ class EmailToolConfig(BaseModel):
     )
     password: str = Field(
         default="",
-        description="Email account password or app-specific password"
+        description="Email account password or app-specific password",
+        json_schema_extra={"secret": True}
     )
     imap_server: str = Field(
         default="",
@@ -434,24 +435,13 @@ class EmailTool(Tool):
         if self._config_loaded:
             return
 
-        import json
-        from utils.user_credentials import UserCredentialService
+        from utils.tool_config_store import load_user_tool_config
 
-        credential_service = UserCredentialService()
-        config_json = credential_service.get_credential(
-            credential_type="tool_config",
-            service_name="email_tool"
-        )
+        config = load_user_tool_config("email_tool", hydrate_secrets=True)
 
-        if not config_json:
+        if not config:
             self.logger.error("No email configuration found. Configure email in Settings > Tools.")
             raise ValueError("No email configuration found. Configure email in Settings > Tools.")
-
-        try:
-            config = json.loads(config_json)
-        except json.JSONDecodeError as e:
-            self.logger.error(f"Invalid email configuration format: {e}")
-            raise ValueError(f"Invalid email configuration format: {e}")
 
         # Required fields
         self.imap_server = config.get("imap_server")

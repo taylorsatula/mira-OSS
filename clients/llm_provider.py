@@ -123,6 +123,19 @@ class ProviderStallError(Exception):
         )
 
 
+class ProviderHTTPStatusError(Exception):
+    """Raised when a provider returns a retryable HTTP status."""
+
+    def __init__(self, endpoint: str, status_code: int, mode: str, message: str):
+        self.endpoint = endpoint
+        self.status_code = status_code
+        self.mode = mode
+        self.provider_message = message
+        super().__init__(
+            f"Provider {endpoint} returned HTTP {status_code} during {mode}: {message}"
+        )
+
+
 T = TypeVar("T")
 
 
@@ -1426,10 +1439,10 @@ class LLMProvider:
 
         except GenerationCancelled:
             raise
-        except ProviderStallError as e:
+        except (ProviderStallError, ProviderHTTPStatusError) as e:
             from utils.user_context import get_internal_llm
             from clients.vault_client import get_api_key
-            self.logger.error(f"Dead provider bailed: {e} — switching to claude-high")
+            self.logger.error(f"Provider bailed: {e} — switching to claude-high")
             _llm_cfg = get_internal_llm("claude-high")
             self.logger.info(f"Retrying with claude-high: {_llm_cfg.model} via {_llm_cfg.endpoint_url}")
             yield ProviderSwitchEvent(
@@ -1817,13 +1830,13 @@ class LLMProvider:
 
             return message
 
-        except ProviderStallError as e:
+        except (ProviderStallError, ProviderHTTPStatusError) as e:
             if not allow_provider_stall_fallback:
-                self.logger.error(f"Backup provider stalled: {e}")
+                self.logger.error(f"Backup provider failed: {e}")
                 raise
             from utils.user_context import get_internal_llm
             from clients.vault_client import get_api_key
-            self.logger.error(f"Dead provider bailed: {e} — switching to claude-high")
+            self.logger.error(f"Provider bailed: {e} — switching to claude-high")
             _llm_cfg = get_internal_llm("claude-high")
             self.logger.info(f"Retrying with claude-high: {_llm_cfg.model} via {_llm_cfg.endpoint_url}")
             backup_api_key = _llm_cfg.api_key_name and get_api_key(_llm_cfg.api_key_name) or None

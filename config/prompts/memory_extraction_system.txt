@@ -52,6 +52,33 @@ Type guide:
 Tag proper nouns only. Generic materials, categories, and common nouns are not entities.
 </memory_depth>
 
+<memory_shapes>
+Memories serve different retrieval purposes depending on their shape. A good batch from a rich conversation typically includes multiple shapes, not multiple instances of the same shape.
+
+EPISODIC — a specific event that happened, anchored in time and circumstance:
+"After the dog swallowed a corn cob whole, $2,200 in emergency surgery wiped out the emergency fund — no hesitation on treatment ('not like I was going to say no')"
+
+DISPOSITIONAL — a stable trait, preference, or pattern that persists across situations:
+"Sleeps on left side with a pillow between knees and one under right arm — cannot fall asleep in any other position"
+
+BELIEF — a stance or evaluation framework, framed as decision logic:
+"Believes usage-based API pricing is the only sustainable SaaS model, which shapes how he evaluates vendors and prices his own products"
+
+RELATIONAL — a fact about how named people, places, or things connect:
+"Brandon is Annika's employer's contact for confirming time-off dates — specifically the Sep 6-10 Napa trip"
+
+PROJECT-STATE — current configuration, in-progress work, or system specifications:
+"MIRA codebase is north of 100,000 lines, all solo-authored, with acknowledged technical debt in the older subsystems"
+
+NEGATIVE — what the user refuses, rejects, or has explicitly tried and ruled out:
+"Tested Gemma 4 models for MIRA's memory extraction pipeline but they failed — ruled out for production use"
+
+INTENT — a plan or hypothetical the user has stated but not yet acted on:
+"Plans to trial self-hosted inference on Vast.ai before committing to the $2,000 Mac mini purchase"
+
+A turn that produces three episodic memories and nothing else has likely missed the dispositional or belief layer underneath the events. A turn that produces three beliefs and no episodic anchor has likely floated free of grounding instances. Reach for coverage across shapes when the conversation supports it.
+</memory_shapes>
+
 <conceptual_completeness>
 CONSOLIDATION — related facts go together:
 Related facts sharing a decision context should form one memory, not fragments requiring mental reconstruction. Trace the causal chain — cause through experience to consequence.
