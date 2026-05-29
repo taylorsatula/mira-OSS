@@ -7,20 +7,37 @@ domain logic: prompt, initial message, and tool list.
 Loop terminates when the LLM calls sidebar_tool.complete_task().
 The base class intercepts that call, enriches it with work item metadata,
 executes the tool (which writes the activity record to SQLite), publishes
-an UpdateTrinketEvent to refresh the AsyncActivityTrinket, and exits.
+an UpdateTrinketEvent to refresh the agent's completion trinket
+(AsyncActivityTrinket by default; subclasses override
+_get_completion_trinket() / _build_completion_context() to target a
+different trinket), and exits.
 """
 import json
 import logging
 import re
+import sqlite3
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
-from typing_extensions import TypedDict
+from typing import Any, Literal, TYPE_CHECKING
+from typing_extensions import NotRequired, TypedDict
 
-from clients.llm_provider import LLMProvider, ToolCall
+from clients.llm.tool_messages import (
+    assistant_message_from_result,
+    tool_result_messages,
+)
+from clients.llm.types import Result, ToolCall, ToolResult
+from clients.llm_provider import LLMProvider
 from utils.timezone_utils import utc_now, format_utc_iso
 
 _AGENT_PROMPTS_DIR = Path("config/prompts/agents")
+
+_OVERWATCH_SYSTEM_PROMPT = (
+    "You produce one-sentence research progress log entries. "
+    "Each entry reports what an agent found or attempted in a single "
+    "iteration. Lead with findings, not process. Be specific — name "
+    "topics, counts, sources. The research query is already shown in "
+    "context; don't echo it.\n/nothink"
+)
 
 if TYPE_CHECKING:
     from agents.sidebar import WorkItem
@@ -66,7 +83,11 @@ ACTIVITY_INDEX_DDL = """\
 CREATE INDEX IF NOT EXISTS idx_activity_interface
 ON sidebar_activity(interface_name)"""
 
-# Migration for existing tables that lack the run_count column.
+# Migration for sidebar_activity tables created before 2026-04-05 (commit
+# c375367f added run_count to the DDL above). Retire when: (a) the schema-
+# version table TODO in utils/userdata_manager.py:110 lands, OR (b) all
+# userdata.db files in production have been audited to confirm run_count
+# exists.
 _ACTIVITY_MIGRATION_RUN_COUNT = """\
 ALTER TABLE sidebar_activity ADD COLUMN run_count INTEGER NOT NULL DEFAULT 1"""
 
@@ -88,8 +109,8 @@ ON scratchpad(thread_id)"""
 def ensure_activity_schema(db) -> None:
     """Create sidebar_activity + scratchpad tables and apply pending migrations.
 
-    Safe to call repeatedly -- CREATE IF NOT EXISTS + ALTER wrapped in
-    try/except for the already-exists case.
+    Safe to call repeatedly -- CREATE IF NOT EXISTS handles existing
+    tables, and the ALTER is caught only for "column already exists".
     """
     db.execute(ACTIVITY_TABLE_DDL)
     db.execute(ACTIVITY_INDEX_DDL)
@@ -97,7 +118,7 @@ def ensure_activity_schema(db) -> None:
     db.execute(SCRATCHPAD_INDEX_DDL)
     try:
         db.execute(_ACTIVITY_MIGRATION_RUN_COUNT)
-    except Exception:
+    except sqlite3.OperationalError:
         pass  # Column already exists
 
 
@@ -118,16 +139,23 @@ class IterationTrace(TypedDict):
     tool_calls: list[ToolCallTrace]
 
 
+class SentryTrace(TypedDict):
+    model: str | None
+    decision: Literal['proceed', 'skip']
+    reason: str
+
+
 class AgentTrace(TypedDict):
     agent_id: str
     work_item_id: str
     interface_name: str
     model: str | None
     started_at: str
-    completed_at: str
-    total_iterations: int
     iterations: list[IterationTrace]
     status: str | None
+    completed_at: NotRequired[str]
+    total_iterations: NotRequired[int]
+    sentry: NotRequired[SentryTrace]
 
 
 # -----------------------------------------------------------------------
@@ -147,16 +175,20 @@ class SidebarAgent(ABC):
         build_initial_message(item) -> str  -- first user message
 
     The base class owns: LLM init, tool schema assembly (always includes
-    sidebar_tool + implementation tools), sentry gate (opt-in cheap
-    pre-filter), message loop with heartbeat, tool execution,
-    complete_task detection, trace capture, and activity publishing.
+    sidebar_tool + implementation tools), message loop with heartbeat,
+    tool execution, complete_task detection, trace capture, and activity
+    publishing.
 
-    Optional sentry gate:
-        Set sentry_llm_key to an internal_llm name to activate a cheap
-        one-shot LLM call before the main loop. Override
-        build_sentry_message() to provide the evaluation prompt.
-        The sentry decides proceed/skip — if skip, the agent exits with
-        a 'dismissed' activity record without entering the main loop.
+    Optional features (set the relevant attribute to activate):
+        sentry_llm_key           -- cheap pre-filter; see build_sentry_message()
+        overwatch_llm_key        -- passive iteration observer
+        use_batch                -- Anthropic Batch API (50% cost)
+        sanitize_untrusted_input -- injection defense before main loop
+        max_retries              -- dispatcher retry-on-failure threshold
+
+    Completion publishing:
+        Override _get_completion_trinket() and _build_completion_context()
+        to publish to a non-default trinket.
     """
 
     # Required -- subclasses must define
@@ -166,7 +198,7 @@ class SidebarAgent(ABC):
 
     def __init__(self, tool_repo: 'ToolRepository'):
         self._tool_repo = tool_repo
-        self._trace: dict[str, Any] | None = None
+        self._trace: AgentTrace | None = None
         self._overwatch_history: list[str] = []
         self._work_item: 'WorkItem | None' = None
         self._event_bus: 'EventBus | None' = None
@@ -185,10 +217,10 @@ class SidebarAgent(ABC):
     use_batch: bool = False
     batch_timeout_seconds: int = 3600  # Max wait per batch iteration result
 
-    # Per-tool schema overrides. Maps tool name → custom anthropic_schema.
+    # Per-tool schema overrides. Maps tool name → custom tool_schema.
     # Used to restrict tool capabilities for sidebar agents (e.g.
     # email_tool → reply_to_email only).
-    tool_schema_overrides: dict[str, dict] = {}
+    tool_schema_overrides: dict[str, dict[str, Any]] = {}
 
     # Sentry gate -- opt-in cheap pre-filter before the main loop.
     # Set sentry_llm_key to an internal_llm name to activate.
@@ -251,7 +283,7 @@ class SidebarAgent(ABC):
         iteration: int,
         assistant_text: str,
         tool_calls: list[ToolCall],
-        tool_results: list[dict[str, Any]],
+        tool_results: list[ToolResult],
     ) -> None:
         """Spawn background thread for non-blocking overwatch LLM call."""
         if not self.overwatch_llm_key:
@@ -282,23 +314,14 @@ class SidebarAgent(ABC):
         work_item: 'WorkItem',
         iteration: int,
         assistant_text: str,
-        tool_calls: list[dict[str, Any]],
-        tool_results: list[dict[str, Any]],
+        tool_calls: list[ToolCall],
+        tool_results: list[ToolResult],
         prior_entries: list[str],
     ) -> None:
         """Overwatch thread body — one-shot LLM call, then publish summary."""
         try:
-            from utils.user_context import get_internal_llm
-            from clients.vault_client import get_api_key
-
             assert self.overwatch_llm_key is not None
-            llm_cfg = get_internal_llm(self.overwatch_llm_key)
-            api_key = (
-                get_api_key(llm_cfg.api_key_name)
-                if llm_cfg.api_key_name else None
-            )
-            llm = LLMProvider(max_tokens=self.overwatch_max_tokens)
-
+            llm = LLMProvider()
             task_context = self.get_overwatch_context(work_item)
             prompt = _build_overwatch_prompt(
                 task_context, iteration, self.max_iterations,
@@ -308,17 +331,9 @@ class SidebarAgent(ABC):
 
             response = llm.generate_response(
                 messages=[{"role": "user", "content": prompt}],
-                endpoint_url=llm_cfg.endpoint_url,
-                model_override=llm_cfg.model,
-                api_key_override=api_key,
-                system_override=(
-                    "You produce one-sentence research progress log "
-                    "entries. Each entry reports what an agent found or "
-                    "attempted in a single iteration. Lead with findings, "
-                    "not process. Be specific — name topics, counts, "
-                    "sources. The research query is already shown in "
-                    "context; don't echo it.\n/nothink"
-                ),
+                internal_llm=self.overwatch_llm_key,
+                max_tokens=self.overwatch_max_tokens,
+                system_prompt=_OVERWATCH_SYSTEM_PROMPT,
             )
 
             summary = llm.extract_text_content(response).strip()
@@ -328,8 +343,8 @@ class SidebarAgent(ABC):
                     event_bus, work_item, iteration, summary
                 )
 
-        except Exception as e:
-            logger.debug(f"{self.agent_id}: Overwatch failed: {e}")
+        except Exception:
+            logger.debug("%s: Overwatch failed", self.agent_id, exc_info=True)
 
     def build_recovery_context(self, prior_run: dict) -> str | None:
         """Build recovery context from a prior failed run.
@@ -381,8 +396,8 @@ class SidebarAgent(ABC):
 
         if not decision_match:
             logger.warning(
-                f"{self.agent_id}: Sentry response missing "
-                "<decision> tag, proceeding"
+                "%s: Sentry response missing <decision> tag, proceeding",
+                self.agent_id,
             )
             return (True, "sentry parse failed — proceeding")
 
@@ -395,33 +410,27 @@ class SidebarAgent(ABC):
     def _run_sentry(
         self,
         work_item: 'WorkItem',
-        trace: dict[str, Any],
+        trace: AgentTrace,
         event_bus: 'EventBus',
     ) -> bool:
         """Run the sentry gate. Returns True to proceed, False to skip.
 
-        On skip: writes dismissed activity record and calls on_completion.
-        On error: logs warning and returns True (fail open)."""
+        On skip: routes through _exit() with activity_status='dismissed'.
+        On error: logs warning and returns True (fail open).
+        """
         assert trace is not None
         assert event_bus is not None
         try:
             from utils.user_context import get_internal_llm
-            from clients.vault_client import get_api_key
 
             assert self.sentry_llm_key is not None
             sentry_cfg = get_internal_llm(self.sentry_llm_key)
-            api_key = (
-                get_api_key(sentry_cfg.api_key_name)
-                if sentry_cfg.api_key_name else None
-            )
-            llm = LLMProvider(max_tokens=self.sentry_max_tokens)
-
+            llm = LLMProvider()
             message = self.build_sentry_message(work_item)
             response = llm.generate_response(
                 messages=[{"role": "user", "content": message}],
-                endpoint_url=sentry_cfg.endpoint_url,
-                model_override=sentry_cfg.model,
-                api_key_override=api_key,
+                internal_llm=self.sentry_llm_key,
+                max_tokens=self.sentry_max_tokens,
             )
 
             response_text = llm.extract_text_content(response)
@@ -429,34 +438,27 @@ class SidebarAgent(ABC):
                 response_text
             )
 
-            trace['sentry'] = {
-                'model': sentry_cfg.model,
-                'decision': 'proceed' if should_proceed else 'skip',
-                'reason': reason,
-            }
+            trace['sentry'] = SentryTrace(
+                model=sentry_cfg.model,
+                decision='proceed' if should_proceed else 'skip',
+                reason=reason,
+            )
 
             if not should_proceed:
-                _write_activity_record(
-                    work_item, self.agent_id, f"Sentry: {reason}",
-                    run_count=work_item.context.get('run_count', 1),
-                    status='dismissed',
-                )
-                self.on_completion(
-                    event_bus, work_item, 'skipped', reason
-                )
+                self._exit('skipped', reason, activity_status='dismissed')
                 return False
 
             return True
 
         except Exception as e:
             logger.warning(
-                f"{self.agent_id}: Sentry failed, proceeding: {e}"
+                "%s: Sentry failed, proceeding", self.agent_id, exc_info=True
             )
-            trace['sentry'] = {
-                'model': None,
-                'decision': 'proceed',
-                'reason': f'sentry error: {e}',
-            }
+            trace['sentry'] = SentryTrace(
+                model=None,
+                decision='proceed',
+                reason=f'sentry error: {e}',
+            )
             return True
 
     # ------------------------------------------------------------------
@@ -522,9 +524,9 @@ class SidebarAgent(ABC):
             parts.append(status)
         return "\n\n".join(parts)
 
-    def _iteration_status(self, iteration: int) -> str:
+    def _iteration_status(self, iteration: int) -> str | None:
         """Optional per-iteration system-prompt addendum. Default: none."""
-        return ""
+        return None
 
     # ------------------------------------------------------------------
     # Input sanitization
@@ -577,9 +579,6 @@ class SidebarAgent(ABC):
         event_bus: 'EventBus',
     ) -> None:
         """Execute the agent loop. Implementations should not override this."""
-        from utils.user_context import get_internal_llm
-        from clients.vault_client import get_api_key
-
         self._work_item = work_item
         self._event_bus = event_bus
         start_time = utc_now()
@@ -637,13 +636,19 @@ class SidebarAgent(ABC):
             self._exit('failed', 'Agent hit iteration cap without completing')
 
         except Exception as e:
-            logger.error(f"{self.agent_id}: Failed: {e}", exc_info=True)
+            logger.exception("%s: Failed", self.agent_id)
             self._exit('failed', f'Agent error: {e}')
 
         finally:
             self._finalize_trace()
 
-    def _exit(self, status: str, summary: str) -> None:
+    def _exit(
+        self,
+        status: str,
+        summary: str,
+        *,
+        activity_status: str = 'failed',
+    ) -> None:
         """Shared exit path for all termination cases."""
         assert self._trace is not None
         assert self._work_item is not None
@@ -652,6 +657,7 @@ class SidebarAgent(ABC):
         _write_activity_record(
             self._work_item, self.agent_id, summary,
             run_count=self._work_item.context.get('run_count', 1),
+            status=activity_status,
         )
         self.on_completion(self._event_bus, self._work_item, status, summary)
 
@@ -669,7 +675,7 @@ class SidebarAgent(ABC):
 
         assert self._trace is not None
         llm_cfg = get_internal_llm(self.internal_llm_key)
-        llm = LLMProvider(max_tokens=llm_cfg.max_tokens)
+        llm = LLMProvider()
         self._trace['model'] = llm_cfg.model
         return llm, llm_cfg
 
@@ -681,7 +687,7 @@ class SidebarAgent(ABC):
             self.tool_schema_overrides,
         )
 
-    def _run_injection_gate(self, work_item: 'WorkItem') -> bool | None:
+    def _run_injection_gate(self, work_item: 'WorkItem') -> bool:
         """Run injection defense if enabled. Returns True to proceed, False to exit."""
         if not self.sanitize_untrusted_input:
             return True
@@ -689,20 +695,19 @@ class SidebarAgent(ABC):
             self._sanitize_work_item(work_item)
             return True
         except ValueError as e:
-            logger.warning(f"{self.agent_id}: Input rejected: {e}")
+            logger.warning("%s: Input rejected: %s", self.agent_id, e)
             self._exit('rejected', f'Input rejected: {e}')
             return False
 
-    def _run_sentry_gate(self, work_item: 'WorkItem') -> bool | None:
+    def _run_sentry_gate(self, work_item: 'WorkItem') -> bool:
         """Run sentry gate if configured. Returns True to proceed, False to exit."""
         if self.sentry_llm_key is None:
             return True
         assert self._trace is not None
         assert self._event_bus is not None
-        should_proceed = self._run_sentry(
+        return self._run_sentry(
             work_item, self._trace, self._event_bus
         )
-        return should_proceed if should_proceed else False
 
     def _run_iteration(
         self,
@@ -715,7 +720,6 @@ class SidebarAgent(ABC):
     ) -> bool:
         """Execute a single iteration. Returns True if agent completed."""
         assert self._trace is not None
-        from clients.vault_client import get_api_key
 
         if self.use_batch:
             from agents.batch import batch_generate_response
@@ -730,17 +734,14 @@ class SidebarAgent(ABC):
             response = llm.generate_response(
                 messages=messages,
                 tools=tool_schemas,
-                endpoint_url=llm_cfg.endpoint_url,
-                model_override=llm_cfg.model,
-                api_key_override=(
-                    get_api_key(llm_cfg.api_key_name)
-                    if llm_cfg.api_key_name else None
-                ),
-                system_override=system_prompt,
+                internal_llm=llm_cfg.name,
+                system_prompt=system_prompt,
             )
 
         tool_calls = llm.extract_tool_calls(response)
         assistant_text = llm.extract_text_content(response)
+
+        messages.append(assistant_message_from_result(response))
 
         if not tool_calls:
             self._trace['iterations'].append(IterationTrace(
@@ -748,10 +749,6 @@ class SidebarAgent(ABC):
                 assistant_text=assistant_text,
                 tool_calls=[],
             ))
-            messages.append({
-                "role": "assistant",
-                "content": _serialize_response(response),
-            })
             messages.append({
                 "role": "user",
                 "content": (
@@ -761,11 +758,6 @@ class SidebarAgent(ABC):
             })
             return False
 
-        messages.append({
-            "role": "assistant",
-            "content": _serialize_response(response),
-        })
-
         completed, tool_results = self._execute_tool_calls(tool_calls)
 
         self._trace['iterations'].append(IterationTrace(
@@ -773,17 +765,17 @@ class SidebarAgent(ABC):
             assistant_text=assistant_text,
             tool_calls=[
                 ToolCallTrace(
-                    tool_name=tc['tool_name'],
-                    input=tc['input'],
-                    result=_parse_result(tr['content']),
-                    is_error=tr.get('is_error', False),
+                    tool_name=tc.tool_name,
+                    input=dict(tc.input),
+                    result=_parse_result(tr.content),
+                    is_error=tr.is_error,
                 )
                 for tc, tr in zip(tool_calls, tool_results)
             ],
         ))
 
         if completed:
-            complete_result = _parse_result(tool_results[-1]['content'])
+            complete_result = _parse_result(tool_results[-1].content)
             summary = (
                 complete_result.get('summary', '')
                 if isinstance(complete_result, dict) else ''
@@ -807,42 +799,41 @@ class SidebarAgent(ABC):
             else self.get_heartbeat(iteration)
         )
 
-        messages.append({
-            "role": "user",
-            "content": tool_results + [
-                {"type": "text", "text": heartbeat}
-            ],
-        })
+        messages.extend(tool_result_messages(tuple(tool_results)))
+        messages.append({"role": "user", "content": heartbeat})
         return False
 
     def _execute_tool_calls(
         self,
         tool_calls: list[ToolCall],
-    ) -> tuple[bool, list[dict[str, Any]]]:
+    ) -> tuple[bool, list[ToolResult]]:
         """Execute tool calls, inject identity into sidebar_tool, detect completion."""
         assert self._work_item is not None
-        tool_results: list[dict[str, Any]] = []
+        tool_results: list[ToolResult] = []
         completed = False
 
         for tc in tool_calls:
-            is_sidebar = tc['tool_name'] == 'sidebar_tool'
+            is_sidebar = tc.tool_name == 'sidebar_tool'
             is_complete = (
                 is_sidebar
-                and tc['input'].get('operation') == 'complete_task'
+                and dict(tc.input).get('operation') == 'complete_task'
             )
             if is_sidebar:
-                tc['input']['thread_id'] = self._work_item.item_id
+                # Mutate a copy of the frozen input mapping for sidebar identity injection
+                mutable_input = dict(tc.input)
+                mutable_input['thread_id'] = self._work_item.item_id
                 if is_complete:
-                    tc['input']['interface_name'] = self._work_item.interface_name
-                    tc['input']['agent_id'] = self.agent_id
-                    tc['input']['run_count'] = self._work_item.context.get('run_count', 1)
+                    mutable_input['interface_name'] = self._work_item.interface_name
+                    mutable_input['agent_id'] = self.agent_id
+                    mutable_input['run_count'] = self._work_item.context.get('run_count', 1)
+                tc = ToolCall(id=tc.id, tool_name=tc.tool_name, input=mutable_input)
 
             result = _execute_tool_call(
                 self._tool_repo, tc, self.agent_id
             )
             tool_results.append(result)
 
-            if is_complete and not result.get('is_error'):
+            if is_complete and not result.is_error:
                 completed = True
 
         return completed, tool_results
@@ -854,24 +845,24 @@ class SidebarAgent(ABC):
 
 def _init_trace(
     agent_id: str, work_item: 'WorkItem', start_time: Any
-) -> dict[str, Any]:
+) -> AgentTrace:
     """Initialize trace dict. completed_at and total_iterations set in finally."""
-    return {
-        'agent_id': agent_id,
-        'work_item_id': work_item.item_id,
-        'interface_name': work_item.interface_name,
-        'model': None,
-        'started_at': format_utc_iso(start_time),
-        'iterations': [],
-        'status': None,
-    }
+    return AgentTrace(
+        agent_id=agent_id,
+        work_item_id=work_item.item_id,
+        interface_name=work_item.interface_name,
+        model=None,
+        started_at=format_utc_iso(start_time),
+        iterations=[],
+        status=None,
+    )
 
 
 def _get_tool_schemas(
     tool_repo: 'ToolRepository',
     tool_names: list[str],
     agent_id: str,
-    overrides: dict[str, dict] | None = None,
+    overrides: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     schemas = []
     for tool_name in tool_names:
@@ -881,48 +872,31 @@ def _get_tool_schemas(
         try:
             tool = tool_repo.get_tool(tool_name)
             if tool:
-                schemas.append(tool.anthropic_schema)
-        except Exception as e:
-            logger.debug(f"{agent_id}: Tool {tool_name} unavailable: {e}")
+                schemas.append(tool.tool_schema)
+        except Exception:
+            logger.debug("%s: Tool %s unavailable", agent_id, tool_name, exc_info=True)
     return schemas
-
-
-def _serialize_response(response: Any) -> list[dict[str, Any]]:
-    content = []
-    for block in response.content:
-        if block.type == "text":
-            content.append({"type": "text", "text": block.text})
-        elif block.type == "tool_use":
-            content.append({
-                "type": "tool_use",
-                "id": block.id,
-                "name": block.name,
-                "input": block.input,
-            })
-    return content
 
 
 def _execute_tool_call(
     tool_repo: 'ToolRepository',
     tc: ToolCall,
     agent_id: str,
-) -> dict[str, Any]:
+) -> ToolResult:
     try:
-        tool = tool_repo.get_tool(tc['tool_name'])
-        result = tool.run(**tc['input'])
-        return {
-            "type": "tool_result",
-            "tool_use_id": tc['id'],
-            "content": json.dumps(result, default=str),
-        }
+        tool = tool_repo.get_tool(tc.tool_name)
+        result = tool.run(**dict(tc.input))
+        return ToolResult(
+            tool_call_id=tc.id,
+            content=json.dumps(result, default=str),
+        )
     except Exception as e:
-        logger.warning(f"{agent_id}: Tool {tc['tool_name']} failed: {e}")
-        return {
-            "type": "tool_result",
-            "tool_use_id": tc['id'],
-            "content": json.dumps({"error": str(e)}),
-            "is_error": True,
-        }
+        logger.warning("%s: Tool %s failed", agent_id, tc.tool_name, exc_info=True)
+        return ToolResult(
+            tool_call_id=tc.id,
+            content=json.dumps({"error": str(e)}),
+            is_error=True,
+        )
 
 
 def _parse_result(content: str) -> Any:
@@ -964,6 +938,8 @@ def _write_activity_record(
             'run_count': run_count,
         },
     )
+
+
 def _publish_trinket_refresh(event_bus: 'EventBus') -> None:
     """Publish UpdateTrinketEvent so AsyncActivityTrinket re-renders."""
     try:
@@ -973,8 +949,8 @@ def _publish_trinket_refresh(event_bus: 'EventBus') -> None:
             target_trinket='AsyncActivityTrinket',
             context={'action': 'refresh'},
         ))
-    except Exception as e:
-        logger.error(f"Failed to publish trinket refresh: {e}")
+    except Exception:
+        logger.exception("Failed to publish trinket refresh")
 
 
 def _build_overwatch_prompt(
@@ -982,8 +958,8 @@ def _build_overwatch_prompt(
     iteration: int,
     max_iterations: int,
     assistant_text: str,
-    tool_calls: list[dict[str, Any]],
-    tool_results: list[dict[str, Any]],
+    tool_calls: list[ToolCall],
+    tool_results: list[ToolResult],
     prior_entries: list[str],
 ) -> str:
     """Build compact prompt for the overwatch observer model."""
@@ -997,10 +973,10 @@ def _build_overwatch_prompt(
     # Tools first — most concrete data about what happened
     tool_lines = []
     for tc, tr in zip(tool_calls, tool_results):
-        name = tc['tool_name']
+        name = tc.tool_name
         if name == 'sidebar_tool':
             continue
-        result_str = tr.get('content', '')[:200]
+        result_str = (tr.content[:200] if isinstance(tr.content, str) else json.dumps(tr.content)[:200])
         tool_lines.append(f"- {name} → {result_str}")
     if tool_lines:
         parts.append("This iteration's tools:\n" + "\n".join(tool_lines))
@@ -1015,7 +991,7 @@ def _build_overwatch_prompt(
 
 
 def _save_trace(
-    agent_id: str, item_id: str, trace: dict[str, Any]
+    agent_id: str, item_id: str, trace: AgentTrace
 ) -> None:
     try:
         from utils.userdata_manager import get_user_data_manager
@@ -1026,5 +1002,5 @@ def _save_trace(
         path = trace_dir / f"{item_id}.json"
         with open(path, 'w') as f:
             json.dump(trace, f, indent=2, default=str)
-    except Exception as e:
-        logger.warning(f"{agent_id}: Failed to save trace: {e}")
+    except Exception:
+        logger.warning("%s: Failed to save trace", agent_id, exc_info=True)

@@ -149,7 +149,7 @@ class WebTool(Tool):
     name = "web_tool"
     description = "Web search, fetch webpages, and HTTP requests"
 
-    anthropic_schema = {
+    tool_schema = {
         "name": "web_tool",
         "description": "Search the web, fetch and extract webpage content, make HTTP requests to APIs.",
         "input_schema": {
@@ -446,14 +446,15 @@ class WebTool(Tool):
             user_message = text
 
         try:
-            llm = LLMProvider(max_tokens=2048)
+            llm = LLMProvider()
             response = llm.generate_response(
                 messages=[{"role": "user", "content": user_message}],
-                stream=False,
                 endpoint_url=tool_config.synthesis_endpoint,
-                model_override=tool_config.synthesis_model,
-                api_key_override=api_key,
-                system_override=f"{self._SYNTHESIS_PROMPT}\n\nSource: {url}"
+                dialect_name="groq",
+                model=tool_config.synthesis_model,
+                api_key=api_key,
+                max_tokens=2048,
+                system_prompt=f"{self._SYNTHESIS_PROMPT}\n\nSource: {url}"
             )
             return llm.extract_text_content(response)
         except Exception as e:

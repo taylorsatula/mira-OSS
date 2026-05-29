@@ -119,13 +119,13 @@ fi
 if [ "$CONFIG_OFFLINE_MODE" != "yes" ]; then
     SCHEMA="/opt/mira/app/deploy/mira_service_schema.sql"
 
-    # --- Chat tier: patch primary row if generic, or if Anthropic with non-default model ---
+    # --- Chat tier: patch primary row if OpenAI-compatible, or if Anthropic with non-default model ---
     if [ "$CONFIG_CHAT_PROVIDER_TYPE" = "generic" ]; then
-        echo -ne "${DIM}${ARROW}${RESET} Configuring chat tier (generic: ${CONFIG_CHAT_MODEL})... "
+        echo -ne "${DIM}${ARROW}${RESET} Configuring chat tier (OpenAI-compatible: ${CONFIG_CHAT_MODEL})... "
         if [ "$OS" = "macos" ]; then
-            sed -i '' "s|('primary', 'claude-sonnet-4-6', 0, 'Primary', 1, 'anthropic', NULL, NULL, FALSE)|('primary', '${CONFIG_CHAT_MODEL}', 0, 'Primary', 1, 'generic', '${CONFIG_CHAT_ENDPOINT}', 'openaicompat_key', FALSE)|" "$SCHEMA"
+            sed -i '' "s|('primary', 'claude-sonnet-4-6', 0, 'Primary', 1, 'anthropic', NULL, NULL, FALSE)|('primary', '${CONFIG_CHAT_MODEL}', 0, 'Primary', 1, 'openai_compat', '${CONFIG_CHAT_ENDPOINT}', 'provider_key', FALSE)|" "$SCHEMA"
         else
-            sed -i "s|('primary', 'claude-sonnet-4-6', 0, 'Primary', 1, 'anthropic', NULL, NULL, FALSE)|('primary', '${CONFIG_CHAT_MODEL}', 0, 'Primary', 1, 'generic', '${CONFIG_CHAT_ENDPOINT}', 'openaicompat_key', FALSE)|" "$SCHEMA"
+            sed -i "s|('primary', 'claude-sonnet-4-6', 0, 'Primary', 1, 'anthropic', NULL, NULL, FALSE)|('primary', '${CONFIG_CHAT_MODEL}', 0, 'Primary', 1, 'openai_compat', '${CONFIG_CHAT_ENDPOINT}', 'provider_key', FALSE)|" "$SCHEMA"
         fi
         echo -e "${CHECKMARK}"
     elif [ "$CONFIG_CHAT_MODEL" != "claude-sonnet-4-6" ] && [ -n "$CONFIG_CHAT_MODEL" ]; then

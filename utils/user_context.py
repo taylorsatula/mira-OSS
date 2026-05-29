@@ -10,11 +10,11 @@ concurrent operations while working identically for single-threaded use.
 """
 
 import contextvars
+import json
 import logging
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
 from typing import Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -58,7 +58,7 @@ def check_cancelled() -> None:
     """
     evt = _cancel_event.get(None)
     if evt is not None and evt.is_set():
-        from cns.core.stream_events import GenerationCancelled
+        from clients.llm.events import GenerationCancelled
         raise GenerationCancelled()
 
 
@@ -169,12 +169,6 @@ def set_current_segment_id(segment_id: str) -> contextvars.Token:
 # ConversationLLM - Database-backed conversation LLM definitions
 # ============================================================
 
-class LLMProvider(str, Enum):
-    """LLM provider routing type."""
-    ANTHROPIC = "anthropic"  # Direct Anthropic SDK
-    GENERIC = "generic"      # OpenAI-compatible endpoint (Groq, OpenRouter, Ollama, etc.)
-
-
 @dataclass(frozen=True)
 class ConversationLLMConfig:
     """LLM configuration for a user-facing conversation model."""
@@ -183,7 +177,7 @@ class ConversationLLMConfig:
     thinking_budget: int
     description: str
     display_order: int
-    provider: LLMProvider = LLMProvider.ANTHROPIC
+    dialect_name: str = "anthropic"
     endpoint_url: Optional[str] = None
     api_key_name: Optional[str] = None
     hidden: bool = False
@@ -206,7 +200,7 @@ def get_conversation_llms() -> dict[str, ConversationLLMConfig]:
     db = PostgresClient('mira_service')
 
     results = db.execute_query(
-        "SELECT name, model, thinking_budget, description, display_order, provider, endpoint_url, api_key_name, hidden FROM conversation_llm ORDER BY display_order"
+        "SELECT name, model, thinking_budget, description, display_order, dialect_name, endpoint_url, api_key_name, hidden FROM conversation_llm ORDER BY display_order"
     )
 
     _conversation_llm_cache = {
@@ -216,10 +210,10 @@ def get_conversation_llms() -> dict[str, ConversationLLMConfig]:
             thinking_budget=row['thinking_budget'],
             description=row['description'] or '',
             display_order=row['display_order'],
-            provider=LLMProvider(row['provider']),
+            dialect_name=row['dialect_name'],
             endpoint_url=row['endpoint_url'],
             api_key_name=row['api_key_name'],
-            hidden=row.get('hidden', False) or False
+            hidden=row.get('hidden', False) or False,
         )
         for row in results
     }
@@ -252,7 +246,8 @@ class InternalLLMConfig:
     api_key_name: Optional[str]
     description: str
     max_tokens: int
-    effort: Optional[str] = None  # 'low'|'medium'|'high'|'max'
+    dialect_name: str
+    effort: Optional[str] = None  # 'low'|'medium'|'high'|'xhigh'|'max'
 
 
 _internal_llm_cache: dict[tuple[str, str], InternalLLMConfig] | None = None
@@ -265,7 +260,7 @@ def load_internal_llm_configs() -> None:
     db = PostgresClient('mira_service')
     results = db.execute_query(
         "SELECT name, tier, model, endpoint_url, api_key_name, description, "
-        "max_tokens, effort FROM internal_llm"
+        "max_tokens, effort, dialect_name FROM internal_llm"
     )
     _internal_llm_cache = {
         (row['name'], row['tier']): InternalLLMConfig(
@@ -275,6 +270,7 @@ def load_internal_llm_configs() -> None:
             api_key_name=row['api_key_name'],
             description=row['description'] or '',
             max_tokens=row['max_tokens'],
+            dialect_name=row['dialect_name'],
             effort=row.get('effort'),
         )
         for row in results

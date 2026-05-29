@@ -42,7 +42,7 @@ class ImageGenerationTool(Tool):
     description = "Generate, refine, and publish images using AI with full refinement lineage"
     parallel_safe = False
 
-    anthropic_schema = {
+    tool_schema = {
         "name": "imagegen_tool",
         "description": (
             "Generate and refine AI images. Results return to you only — "
@@ -273,7 +273,7 @@ class ImageGenerationTool(Tool):
     def _build_content_blocks(
         self, image_bytes: bytes, mime_type: str, metadata: Dict[str, str]
     ) -> List[Dict[str, Any]]:
-        """Build Anthropic content blocks with compressed image + metadata.
+        """Build rich content blocks with compressed image + metadata.
 
         Compresses to 512px WebP (same storage tier as user uploads) so the
         image is small enough to persist in conversation history and replay
@@ -285,11 +285,8 @@ class ImageGenerationTool(Tool):
         return [
             {
                 "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": "image/webp",
-                    "data": compressed.storage_base64,
-                }
+                "media_type": "image/webp",
+                "data": compressed.storage_base64,
             },
             {
                 "type": "text",
@@ -412,12 +409,10 @@ class ImageGenerationTool(Tool):
         # Save Chat history for future refinements
         self._save_session(session_id, chat)
 
-        content_blocks = self._build_content_blocks(
+        return self._build_content_blocks(
             image_bytes, mime_type,
             {"image_id": image_id, "status": "generated", "prompt": prompt},
         )
-
-        return {"_content_blocks": content_blocks}
 
     def _refine(
         self,
@@ -481,13 +476,11 @@ class ImageGenerationTool(Tool):
         # Save updated Chat history
         self._save_session(session_id, chat)
 
-        content_blocks = self._build_content_blocks(
+        return self._build_content_blocks(
             image_bytes, mime_type,
             {"image_id": new_image_id, "status": "refined", "previous_image_id": image_id,
              "instructions": instructions},
         )
-
-        return {"_content_blocks": content_blocks}
 
     def _publish(
         self,

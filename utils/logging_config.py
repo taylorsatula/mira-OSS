@@ -177,8 +177,7 @@ def _extract_messages_tail(messages: list, limit: int = 500) -> str:
                 if isinstance(block, dict):
                     if block.get("type") == "text":
                         parts.append(block.get("text", ""))
-                    elif block.get("type") == "tool_result":
-                        parts.append(f"<tool_result:{block.get('tool_use_id', '')[:8]}>")
+
             if parts:
                 all_text.append(f"[{role}] {' '.join(parts)}")
     full = "\n".join(all_text)

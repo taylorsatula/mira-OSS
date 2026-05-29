@@ -65,7 +65,7 @@ class HomeassistantTool(Tool):
 
     simple_description = "Query and control Home Assistant smart home devices. Get entity states, toggle lights/switches/fans, and call domain-specific services."
 
-    anthropic_schema = {
+    tool_schema = {
         "name": "homeassistant_tool",
         "description": "Query and control Home Assistant smart home devices. Get entity states, toggle devices, call domain-specific services, and search the local device registry by name.",
         "input_schema": {

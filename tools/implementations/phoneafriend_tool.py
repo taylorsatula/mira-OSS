@@ -73,7 +73,7 @@ class PhoneAFriendTool(Tool):
         "partner; gemini has a strong understanding of the world."
     )
 
-    anthropic_schema = {
+    tool_schema = {
         "name": "phoneafriend_tool",
         "description": (
             "Phone another model as an outside voice to an inquiry. The consulted "
@@ -148,29 +148,14 @@ class PhoneAFriendTool(Tool):
         messages = thread["messages"]
         messages.append({"role": "user", "content": inquiry})
 
-        from utils.user_context import get_internal_llm
-
         internal_llm_key = MODEL_INTERNAL_LLMS[model_choice]
-        expected_model = get_internal_llm(internal_llm_key).model
-
         llm_provider = self.llm_provider or LLMProvider()
         response = llm_provider.generate_response(
             messages=list(messages),
             internal_llm=internal_llm_key,
-            system_override=MODEL_SYSTEM_PROMPTS[model_choice],
+            system_prompt=MODEL_SYSTEM_PROMPTS[model_choice],
+            allow_provider_stall_fallback=False,
         )
-
-        # LLMProvider silently fails over to claude-high on ProviderStallError.
-        # That swap defeats phone-a-friend's whole purpose — the caller asked
-        # for a specific outside voice. Detect a failover swap and surface it.
-        actual_model = getattr(response, "model", None)
-        if actual_model is not None and actual_model != expected_model:
-            raise RuntimeError(
-                f"phoneafriend_tool requested {model_choice} ({expected_model}) "
-                f"but LLM provider served {actual_model} after upstream stall. "
-                f"Retry the inquiry; the outside-model thread was not advanced."
-            )
-
         response_text = llm_provider.extract_text_content(response).strip()
         if not response_text:
             raise RuntimeError(f"{model_choice} returned an empty phone-a-friend response")

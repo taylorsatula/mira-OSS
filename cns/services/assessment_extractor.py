@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import List, Literal, Optional
 from uuid import UUID
 
-from cns.core.message import Message, TOOL_RESULT_TRUNCATION_LIMIT, _MEDIA_BLOCK_TYPES
+from cns.core.message import Message, _MEDIA_BLOCK_TYPES
 from cns.services.system_prompt_parser import (
     anonymize_prompt,
     format_section_list,
@@ -52,7 +52,7 @@ class AssessmentExtractor:
     """
 
     def __init__(self, llm_provider: Optional[LLMProvider] = None):
-        self.llm_provider = llm_provider or LLMProvider(enable_prompt_caching=False)
+        self.llm_provider = llm_provider or LLMProvider()
         self._load_prompts()
 
         # Pre-compute system prompt sections and anonymized prompt
@@ -163,9 +163,9 @@ class AssessmentExtractor:
             if isinstance(content, list):
                 for block in content:
                     if isinstance(block, dict):
-                        if block.get('type') == 'thinking':
-                            thinking_len += len(block.get('thinking', ''))
-                            total_len += len(block.get('thinking', ''))
+                        if block.get('type') == 'reasoning':
+                            thinking_len += len(block.get('text', ''))
+                            total_len += len(block.get('text', ''))
                         elif block.get('type') == 'text':
                             total_len += len(block.get('text', ''))
             elif isinstance(content, str):
@@ -194,15 +194,10 @@ class AssessmentExtractor:
                         block_type = block.get('type', '')
                         if block_type == 'text':
                             text_parts.append(block.get('text', ''))
-                        elif block_type == 'thinking' and include_thinking:
-                            thinking_parts.append(block.get('thinking', ''))
-                        elif block_type == 'tool_use':
+                        elif block_type == 'reasoning' and include_thinking:
+                            thinking_parts.append(block.get('text', ''))
+                        elif block_type == 'tool_call':
                             text_parts.append(f"[Used tool: {block.get('name', 'unknown')}]")
-                        elif block_type == 'tool_result':
-                            result = block.get('content', '')
-                            if isinstance(result, str) and len(result) > TOOL_RESULT_TRUNCATION_LIMIT:
-                                result = result[:TOOL_RESULT_TRUNCATION_LIMIT] + '...'
-                            text_parts.append(f"[Tool result: {result}]")
                         elif block_type in _MEDIA_BLOCK_TYPES:
                             media_count += 1
 

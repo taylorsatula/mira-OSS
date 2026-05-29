@@ -9,14 +9,15 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime
-from typing import Any, TypedDict
-from uuid import UUID
+from typing import Any, NamedTuple, TypedDict
+from uuid import UUID, uuid4
 
 from cns.core.continuum import Continuum
 from cns.core.state import ContinuumState
 from cns.core.message import Message
 from clients.postgres_client import PostgresClient
 from utils.timezone_utils import utc_now, format_utc_iso, parse_utc_time_string
+from utils.user_context import get_current_segment_id, set_current_segment_id
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,22 @@ class ActiveSegmentRow(TypedDict):
     user_id: str
     metadata: dict[str, Any]
     created_at: datetime
+
+
+class IncrementSegmentTurnResult(NamedTuple):
+    """
+    Return value from `increment_segment_turn`.
+
+    `segment_id` is always populated. For continuing sessions it is read from
+    the existing active sentinel; for new sessions it is freshly allocated in
+    memory and the corresponding sentinel is NOT yet persisted — persistence
+    is deferred to `save_messages_batch` so sentinel and first message land
+    together. The id is exposed to tools (and the deferred sentinel) via the
+    `current_segment_id` contextvar, so no separate channel threads it through
+    the persistence call stack.
+    """
+    turn_number: int
+    segment_id: str
 
 
 # Module-level singleton instance
@@ -263,11 +280,13 @@ class ContinuumRepository:
             # ON CONFLICT handles updates to existing messages (e.g., collapsed segment sentinels)
             db.execute_query(
                 """
-                INSERT INTO messages (id, continuum_id, user_id, role, content, metadata, created_at, segment_embedding)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s::vector(768))
+                INSERT INTO messages (id, continuum_id, user_id, role, content, metadata, created_at, tool_call_id, is_error, segment_embedding)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector(768))
                 ON CONFLICT (id) DO UPDATE SET
                     content = EXCLUDED.content,
                     metadata = EXCLUDED.metadata,
+                    tool_call_id = EXCLUDED.tool_call_id,
+                    is_error = EXCLUDED.is_error,
                     segment_embedding = EXCLUDED.segment_embedding
                 """,
                 base_tuple + (segment_embedding_value,)
@@ -337,8 +356,8 @@ class ContinuumRepository:
                     SELECT created_at FROM messages
                     WHERE continuum_id = %s
                         AND created_at > %s
-                        AND (metadata->>'is_segment_boundary' IS NULL OR metadata->>'is_segment_boundary' = 'false')
-                        AND (metadata->>'system_notification' IS NULL OR metadata->>'system_notification' = 'false')
+                        AND COALESCE(metadata->>'is_segment_boundary', 'false') = 'false'
+                        AND COALESCE(metadata->>'system_notification', 'false') = 'false'
                     ORDER BY created_at ASC
                     LIMIT 1
                 """
@@ -348,8 +367,8 @@ class ContinuumRepository:
                 first_message_query = """
                     SELECT created_at FROM messages
                     WHERE continuum_id = %s
-                        AND (metadata->>'is_segment_boundary' IS NULL OR metadata->>'is_segment_boundary' = 'false')
-                        AND (metadata->>'system_notification' IS NULL OR metadata->>'system_notification' = 'false')
+                        AND COALESCE(metadata->>'is_segment_boundary', 'false') = 'false'
+                        AND COALESCE(metadata->>'system_notification', 'false') = 'false'
                     ORDER BY created_at ASC
                     LIMIT 1
                 """
@@ -361,9 +380,15 @@ class ContinuumRepository:
             # Create segment boundary sentinel (initializes segment_turn_count to 1)
             from cns.services.segment_helpers import create_segment_boundary_sentinel
 
+            # The segment_id was allocated at API entry by increment_segment_turn
+            # and exposed to tools via set_current_segment_id(). Source it from the
+            # request contextvar so the persisted sentinel uses the same id the
+            # tools saw this turn. When absent (e.g. fixture loaders with no request
+            # context) the helper allocates a fresh uuid4.
             sentinel = create_segment_boundary_sentinel(
                 first_message_time=first_message_time,
-                continuum_id=str(continuum_id)
+                continuum_id=str(continuum_id),
+                segment_id=get_current_segment_id(),
             )
 
             # Direct INSERT with conflict on the unique partial index
@@ -373,8 +398,8 @@ class ContinuumRepository:
             base_tuple = sentinel.to_db_tuple(continuum_id, user_id)
             db.execute_query(
                 """
-                INSERT INTO messages (id, continuum_id, user_id, role, content, metadata, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO messages (id, continuum_id, user_id, role, content, metadata, created_at, tool_call_id, is_error)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (continuum_id)
                     WHERE metadata->>'is_segment_boundary' = 'true'
                       AND metadata->>'status' = 'active'
@@ -442,8 +467,8 @@ class ContinuumRepository:
 
                 db.execute_query(
                     """
-                    INSERT INTO messages (id, continuum_id, user_id, role, content, metadata, created_at, segment_embedding)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s::vector(768))
+                    INSERT INTO messages (id, continuum_id, user_id, role, content, metadata, created_at, tool_call_id, is_error, segment_embedding)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector(768))
                     """,
                     base_tuple + (segment_embedding_value,)
                 )
@@ -492,14 +517,23 @@ class ContinuumRepository:
                 except json.JSONDecodeError:
                     logger.debug("Failed to parse message metadata JSON; defaulting to empty dict")
                     metadata = {}
+            metadata = metadata or {}
+
+            # Read tool_call_id/is_error from dedicated columns
+            tool_call_id = row.get("tool_call_id")
+            is_error = row.get("is_error", False)
+
+            role = row.get("role")
 
             messages.append(
                 Message(
                     id=canonical_id,
                     content=content,
-                    role=row.get("role"),
+                    role=role,
                     created_at=row.get("created_at"),
-                    metadata=metadata or {},
+                    metadata=metadata,
+                    tool_call_id=tool_call_id,
+                    is_error=is_error,
                 )
             )
 
@@ -680,15 +714,14 @@ class ContinuumRepository:
         # Build query with optional date filtering
         where_conditions = ["user_id = %s"]
         params = [user_id]
-        param_counter = 2
-        
+
         # Filter by message type
         if message_type == "all":
             # Include all messages, no additional filter
             pass
         else:
             # Default to regular messages (exclude system notifications)
-            where_conditions.append("(metadata->>'system_notification' IS NULL OR metadata->>'system_notification' != 'true')")
+            where_conditions.append("COALESCE(metadata->>'system_notification', 'false') != 'true'")
         
         if start_date:
             where_conditions.append("created_at >= %s")
@@ -756,7 +789,7 @@ class ContinuumRepository:
             pass
         else:
             # Default to regular messages (exclude system notifications)
-            type_filter = "AND (metadata->>'system_notification' IS NULL OR metadata->>'system_notification' != 'true')"
+            type_filter = "AND COALESCE(metadata->>'system_notification', 'false') != 'true'"
         
         # Use PostgreSQL full-text search
         query = f"""
@@ -899,7 +932,7 @@ class ContinuumRepository:
 
         return messages[0] if messages else None
 
-    def increment_segment_turn(self, continuum_id: str | UUID, user_id: str) -> int:
+    def increment_segment_turn(self, continuum_id: str | UUID, user_id: str) -> IncrementSegmentTurnResult:
         """
         Increment segment turn counter on the active or paused segment sentinel.
 
@@ -909,13 +942,19 @@ class ContinuumRepository:
         If the segment is paused, atomically resumes it to 'active' —
         the timeout clock restarts from this message.
 
+        For continuing segments the sentinel already exists in the DB, so we
+        read its segment_id from the RETURNING clause. For new segments we
+        allocate a fresh segment_id in memory and expose it via the
+        ``current_segment_id`` contextvar; sentinel persistence is deferred
+        to ``save_messages_batch`` so the sentinel and first message land
+        in the same commit.
+
         Args:
             continuum_id: Continuum ID
             user_id: User ID
 
         Returns:
-            New turn number (1-indexed). Returns 1 if no active/paused segment
-            exists yet (segment will be created when message is saved).
+            IncrementSegmentTurnResult with turn_number and segment_id.
         """
         db = self._get_client(user_id)
 
@@ -937,18 +976,24 @@ class ContinuumRepository:
             WHERE continuum_id = %s
                 AND metadata->>'is_segment_boundary' = 'true'
                 AND metadata->>'status' IN ('active', 'paused')
-            RETURNING (metadata->>'segment_turn_count')::int as turn_count
+            RETURNING (metadata->>'segment_turn_count')::int as turn_count,
+                      metadata->>'segment_id' as segment_id
         """
 
         rows = db.execute_returning(query, (now_iso, str(continuum_id)))
 
         if rows and rows[0].get('turn_count'):
-            return rows[0]['turn_count']
+            segment_id = rows[0]['segment_id']
+            set_current_segment_id(segment_id)
+            return IncrementSegmentTurnResult(rows[0]['turn_count'], segment_id)
 
-        # No active/paused segment exists - create one now.
-        # This ensures find_active_segment() will succeed immediately after this call.
-        self._ensure_active_segment(UUID(str(continuum_id)), user_id, utc_now(), db)
-        return 1
+        # No active/paused segment exists — allocate a fresh id in memory.
+        # Sentinel persistence is deferred to save_messages_batch so the
+        # sentinel and first message land in the same commit, eliminating the
+        # orphan-sentinel window.
+        new_segment_id = str(uuid4())
+        set_current_segment_id(new_segment_id)
+        return IncrementSegmentTurnResult(1, new_segment_id)
 
     def pause_segment(self, continuum_id: str | UUID, user_id: str) -> bool:
         """
@@ -1205,12 +1250,47 @@ class ContinuumRepository:
             SELECT * FROM messages
             WHERE continuum_id = %s
                 AND created_at >= %s
-                AND (metadata->>'is_segment_boundary' IS NULL OR metadata->>'is_segment_boundary' = 'false')
-                AND (metadata->>'system_notification' IS NULL OR metadata->>'system_notification' = 'false')
+                AND COALESCE(metadata->>'is_segment_boundary', 'false') = 'false'
+                AND COALESCE(metadata->>'system_notification', 'false') = 'false'
             ORDER BY created_at ASC
         """
 
         rows = db.execute_query(query, (str(continuum_id), sentinel_time))
+        return self._parse_message_rows(rows)
+
+    def load_messages_for_live_compaction_range(
+        self,
+        continuum_id: str | UUID,
+        user_id: str,
+        covered_start: datetime,
+        covered_end: datetime,
+    ) -> list[Message]:
+        """
+        Load DB-backed ordinary messages for live active-context compaction.
+
+        This query intentionally excludes segment boundaries, system
+        notifications, and any compaction synopsis scaffolding. It returns the
+        raw persisted messages in chronological order.
+        """
+        db = self._get_client(user_id)
+
+        query = """
+            SELECT *
+            FROM messages
+            WHERE continuum_id = %s
+              AND user_id = %s
+              AND created_at > %s
+              AND created_at <= %s
+              AND COALESCE(metadata->>'is_segment_boundary', 'false') = 'false'
+              AND COALESCE(metadata->>'system_notification', 'false') = 'false'
+              AND COALESCE(metadata->>'is_compaction_synopsis', 'false') = 'false'
+            ORDER BY created_at ASC, id ASC
+        """
+
+        rows = db.execute_query(
+            query,
+            (str(continuum_id), user_id, covered_start, covered_end),
+        )
         return self._parse_message_rows(rows)
 
     def load_continuity_messages(
@@ -1251,9 +1331,9 @@ class ContinuumRepository:
             WHERE m.continuum_id = %s
                 AND m.created_at < boundary_time.cutoff_time
                 AND m.role IN ('user', 'assistant')
-                AND (m.metadata->>'is_segment_boundary' IS NULL OR m.metadata->>'is_segment_boundary' = 'false')
-                AND (m.metadata->>'system_notification' IS NULL OR m.metadata->>'system_notification' = 'false')
-                AND (m.metadata->>'has_tool_calls' IS NULL OR m.metadata->>'has_tool_calls' != 'true')
+                AND COALESCE(m.metadata->>'is_segment_boundary', 'false') = 'false'
+                AND COALESCE(m.metadata->>'system_notification', 'false') = 'false'
+                AND COALESCE(m.metadata->>'has_tool_calls', 'false') != 'true'
             ORDER BY m.created_at DESC
             LIMIT %s
         """

@@ -13,7 +13,7 @@
 
 ## Config Models (6 total)
 
-- `ApiConfig` — Anthropic API: feature flags (`analysis_enabled`, `show_generic_thinking`, `emergency_fallback_enabled`), infrastructure coordinates (vault key names, endpoints), generation defaults (model, max_tokens, temperature), timeouts.
+- `ApiConfig` — LLM API: feature flags (`analysis_enabled`, `show_openai_compat_thinking`, `emergency_fallback_enabled`), infrastructure coordinates (vault key names, endpoints), generation defaults (model, max_tokens, temperature), timeouts.
 - `ApiServerConfig` — Server deployment: host/port/workers, CORS, uvicorn log level, extended thinking toggle.
 - `SystemConfig` — System-level: `log_level`, `timezone`, `peanutgallery_enabled`.
 - `ScheduledJobsConfig` — Background job cadences: extraction retry, batch polling, consolidation, score recalc, entity GC, batch cleanup, portrait synthesis. All operational knobs.

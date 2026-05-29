@@ -8,66 +8,66 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Literal, TypedDict
+from typing import TypedDict
 from uuid import UUID, uuid4
 from utils.timezone_utils import utc_now
+
+from clients.llm.types import CacheTTL
 
 
 class TextBlock(TypedDict, total=False):
     """Text content block in a multimodal message."""
     type: str  # "text"
     text: str
-    cache_control: dict[str, str]
+    cache: CacheTTL
 
 
 class ImageBlock(TypedDict, total=False):
     """Image content block in a multimodal message."""
     type: str  # "image"
-    source: dict[str, object]
+    media_type: str
+    data: str
+    cache: CacheTTL
 
 
 class DocumentBlock(TypedDict, total=False):
     """Document content block in a multimodal message."""
     type: str  # "document"
-    source: dict[str, object]
+    media_type: str
+    data: str
+    cache: CacheTTL
 
 
-class ContainerUploadBlock(TypedDict, total=False):
-    """Container file upload content block."""
-    type: str  # "container_upload"
-    container_id: str
+class FileRefBlock(TypedDict, total=False):
+    """File reference content block (uploaded file)."""
+    type: str  # "file_ref"
     file_id: str
+    cache: CacheTTL
 
 
-class ToolUseBlock(TypedDict):
-    """Tool use content block in an assistant message (Anthropic API format)."""
-    type: str  # "tool_use"
+class ToolCallBlock(TypedDict):
+    """Tool call content block in an assistant message."""
+    type: str  # "tool_call"
     id: str
     name: str
     input: dict[str, object]
 
 
-class ThinkingBlock(TypedDict, total=False):
-    """Thinking content block from extended thinking (Anthropic API format).
+class ReasoningBlock(TypedDict, total=False):
+    """Reasoning content block — display text from model thinking.
 
-    Must be passed back unmodified — the signature is cryptographic and the
-    API rejects tampered blocks. Two variants:
-    - type="thinking": has ``thinking`` + ``signature`` fields
-    - type="redacted_thinking": has ``data`` field (opaque base64)
+    Signatures and redacted data are stored separately in
+    message metadata (thinking_signatures) for provider round-trip.
     """
-    type: str  # "thinking" | "redacted_thinking"
-    thinking: str  # type="thinking" only
-    signature: str  # type="thinking" only
-    data: str  # type="redacted_thinking" only
+    type: str  # "reasoning"
+    text: str
 
 
-ContentBlock = TextBlock | ImageBlock | DocumentBlock | ContainerUploadBlock | ToolUseBlock
+ContentBlock = TextBlock | ImageBlock | DocumentBlock | FileRefBlock | ToolCallBlock | ReasoningBlock
 
 # --- Content block preprocessing (shared across extraction, summarization, peanut gallery) ---
 
-TOOL_RESULT_TRUNCATION_LIMIT = 500
-
-_MEDIA_BLOCK_TYPES = frozenset({"image", "image_url", "container_upload", "document"})
+_MEDIA_BLOCK_TYPES = frozenset({"image", "document", "file_ref"})
 
 
 @dataclass(frozen=True)
@@ -104,14 +104,13 @@ def preprocess_content_blocks(content: str | list[ContentBlock]) -> Preprocessed
                 text_parts.append(text)
         elif block_type in _MEDIA_BLOCK_TYPES:
             image_count += 1
-        elif block_type == "tool_use":
+        elif block_type == "tool_call":
             text_parts.append(f"[Used tool: {block.get('name', 'unknown')}]")
-        elif block_type == "tool_result":
-            result = block.get("content", "")
-            if isinstance(result, str) and len(result) > TOOL_RESULT_TRUNCATION_LIMIT:
-                result = result[:TOOL_RESULT_TRUNCATION_LIMIT] + "..."
-            text_parts.append(f"[Tool result: {result}]")
-        # thinking, redacted_thinking: skip
+        elif block_type == "reasoning":
+            text = block.get("text", "")
+            if text:
+                text_parts.append(text)
+        # tool_result is not a content block type; it's role="tool" messages
 
     return PreprocessedContent(text_parts=text_parts, image_count=image_count)
 
@@ -136,14 +135,15 @@ class MessageMetadata(TypedDict, total=False):
     # Tool call fields
     has_tool_calls: bool
     tool_calls: list[dict[str, object]]
-    tool_call_id: str
+    # Reasoning round-trip fields (Anthropic adapter reads these)
+    thinking_signatures: list[dict[str, object]]
+    reasoning_details: list[dict[str, object]]
     # System notification fields
     system_notification: bool | str
     notification_type: str
     # LLM response fields
     emotion: str
     thinking: str
-    thinking_blocks: list[ThinkingBlock]
     model_error: bool
     model_error_reason: str
     # Embedding fields
@@ -172,6 +172,8 @@ class Message:
     id: UUID = field(default_factory=uuid4)
     created_at: datetime = field(default_factory=utc_now)
     metadata: MessageMetadata = field(default_factory=dict)
+    tool_call_id: str | None = None
+    is_error: bool = False
     
     def __post_init__(self):
         """Validate message on creation."""
@@ -180,19 +182,26 @@ class Message:
         
         # Check for empty content - handle both None and empty strings
         # Allow assistant messages with tool calls but no content
+        # Allow tool messages with tool_call_id (may have empty text with image content)
         if self.content is None or (isinstance(self.content, str) and self.content.strip() == ""):
             if not (self.role == "assistant" and self.metadata.get("has_tool_calls", False)):
-                raise ValueError(f"Message content cannot be empty for {self.role} messages")
+                if not (self.role == "tool" and self.tool_call_id is not None):
+                    raise ValueError(f"Message content cannot be empty for {self.role} messages")
     
     def to_dict(self) -> dict[str, object]:
         """Convert to dictionary representation."""
-        return {
+        result = {
             "id": str(self.id),  # Convert UUID to string for serialization
             "role": self.role,
             "content": self.content,
             "created_at": self.created_at.isoformat(),
             "metadata": self.metadata
         }
+        if self.tool_call_id is not None:
+            result["tool_call_id"] = self.tool_call_id
+        if self.is_error:
+            result["is_error"] = self.is_error
+        return result
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> Message:
@@ -208,7 +217,9 @@ class Message:
             role=data["role"],
             content=data["content"],
             created_at=created_at,
-            metadata=data.get("metadata", {})
+            metadata=data.get("metadata", {}),
+            tool_call_id=data.get("tool_call_id"),
+            is_error=data.get("is_error", False),
         )
     
     def with_metadata(self, **metadata_updates: object) -> Message:
@@ -219,10 +230,12 @@ class Message:
             role=self.role,
             content=self.content,
             created_at=self.created_at,
-            metadata=new_metadata
+            metadata=new_metadata,
+            tool_call_id=self.tool_call_id,
+            is_error=self.is_error,
         )
     
-    def to_db_tuple(self, continuum_id: UUID, user_id: str) -> tuple[UUID, UUID, str, str, str, str, datetime]:
+    def to_db_tuple(self, continuum_id: UUID, user_id: str) -> tuple[UUID, UUID, str, str, str, str, datetime, str | None, bool]:
         """Convert to tuple for database insertion - UUIDs handled by PostgresClient."""
         import json
         return (
@@ -231,6 +244,8 @@ class Message:
             user_id,
             self.role,
             self.content if isinstance(self.content, str) else json.dumps(self.content),
-            json.dumps(self.metadata) if self.metadata else '{}',  # Serialize metadata to JSON, empty object if None
-            self.created_at
+            json.dumps(self.metadata) if self.metadata else '{}',
+            self.created_at,
+            self.tool_call_id,
+            self.is_error,
         )

@@ -14,6 +14,7 @@ from typing import TypedDict
 
 from utils.database_session_manager import get_shared_session_manager
 from utils.timezone_utils import utc_now
+from utils.user_activity import get_user_cumulative_activity_days
 
 
 class LoraContent(TypedDict):
@@ -56,9 +57,7 @@ class FeedbackTracker:
         Returns:
             True if synthesis should run
         """
-        from utils.user_context import get_user_cumulative_activity_days
-
-        activity_days = get_user_cumulative_activity_days()
+        activity_days = get_user_cumulative_activity_days(user_id)
 
         if activity_days <= 0:
             return False
@@ -124,11 +123,9 @@ class FeedbackTracker:
             synthesis_output: User model XML (stored for next run)
             needs_checkin: Whether the model contains check-in topics
         """
-        from utils.user_context import get_user_cumulative_activity_days
-
         session_manager = get_shared_session_manager()
         now = utc_now()
-        activity_days = get_user_cumulative_activity_days()
+        activity_days = get_user_cumulative_activity_days(user_id)
 
         with session_manager.get_session(user_id) as session:
             session.execute_single("""
@@ -157,8 +154,6 @@ class FeedbackTracker:
             Dict with use_days_since_synthesis (computed), last_synthesis_at,
             has_previous_synthesis, needs_checkin
         """
-        from utils.user_context import get_user_cumulative_activity_days
-
         session_manager = get_shared_session_manager()
 
         with session_manager.get_session(user_id) as session:
@@ -171,7 +166,7 @@ class FeedbackTracker:
             """, (user_id,))
 
             if result:
-                activity_days = get_user_cumulative_activity_days()
+                activity_days = get_user_cumulative_activity_days(user_id)
                 last_snapshot = result.get('activity_days_at_last_synthesis', 0)
                 return {
                     'use_days_since_synthesis': activity_days - last_snapshot,
@@ -254,10 +249,8 @@ class FeedbackTracker:
         Args:
             user_id: User ID
         """
-        from utils.user_context import get_user_cumulative_activity_days
-
         session_manager = get_shared_session_manager()
-        activity_days = get_user_cumulative_activity_days()
+        activity_days = get_user_cumulative_activity_days(user_id)
 
         with session_manager.get_session(user_id) as session:
             session.execute_single("""

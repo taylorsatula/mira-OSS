@@ -16,6 +16,7 @@ from pathlib import Path
 from pydantic import BaseModel, create_model
 from utils.user_context import get_current_user_id
 from utils.userdata_manager import get_user_data_manager
+from clients.llm.types import ToolDefinition
 
 from tools.registry import registry
 
@@ -30,17 +31,6 @@ ESSENTIAL_TOOLS = [
     "memory_tool", "domaindoc_tool", "forage_tool", "sidebaragents_tool",
     "email_tool", "phoneafriend_tool"
 ]
-
-# Anthropic beta feature constants
-CODE_EXECUTION_BETA_FLAG = "code-execution-2025-08-25"
-FILES_API_BETA_FLAG = "files-api-2025-04-14"
-
-# Code execution tool definition
-CODE_EXECUTION = {"type": "code_execution_20250825", "name": "code_execution"}
-
-# Combined beta flags for Anthropic API calls
-ANTHROPIC_BETA_FLAGS = [CODE_EXECUTION_BETA_FLAG, FILES_API_BETA_FLAG]
-
 
 class Tool(ABC):
     """
@@ -398,8 +388,8 @@ class ToolRepository:
             self.logger.debug(f"Instantiated tool: {name}")
             return tool_instance
             
-        except Exception as e:
-            self.logger.error(f"Error instantiating tool {name}: {e}")
+        except Exception:
+            self.logger.exception("Error instantiating tool %s", name)
             raise
     
     def invoke_tool(self, name: str, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -439,14 +429,34 @@ class ToolRepository:
             raise TypeError(f"Parameters for tool '{name}' must be a mapping or JSON string")
 
         tool = self.get_tool(name)  # This creates a fresh instance with current user context
-        self.logger.debug(f"Invoking tool: {name} with params: {params}")
 
-        # TODO: Add type coercion layer here based on tool's anthropic_schema.
+        # Filter params to only keys declared in the tool's schema. The LLM can legally
+        # reference any property in input_schema, but individual operations (e.g.
+        # get_reminders) only need a subset. Stripping here prevents TypeError at
+        # dispatch time without requiring each tool to manually prune kwargs.
+        if hasattr(tool, 'tool_schema'):
+            allowed = set(tool.tool_schema.get('input_schema', {}).get('properties', {}).keys())
+            if allowed:
+                rejected = set(params.keys()) - allowed
+                if rejected:
+                    self.logger.debug(
+                        "Tool '%s' called with %d undeclared params (dropped): %s",
+                        name, len(rejected), ', '.join(sorted(rejected))
+                    )
+                params = {k: v for k, v in params.items() if k in allowed}
+
+        self.logger.debug(
+            "Invoking tool %s with parameter keys: %s",
+            name,
+            sorted(params.keys())
+        )
+
+        # TODO: Add type coercion layer here based on tool's tool_schema.
         # Currently, tools receive params as-is from JSON parsing, which means numeric
         # values may arrive as strings (e.g., "10" instead of 10). Each tool handles
         # this individually with int()/float() casts (see email_tool,
         # weather_tool, continuum_tool._coerce_to_int). A unified solution would:
-        # 1. Read the tool's input_schema from anthropic_schema
+        # 1. Read the tool's input_schema from tool_schema
         # 2. Coerce each param to its declared type (integer, number, boolean, array)
         # 3. Handle LLM quirks like [10] instead of 10 (single-element list unwrapping)
         # This would eliminate ad-hoc casting in every tool and centralize error handling.
@@ -476,28 +486,27 @@ class ToolRepository:
         tool = self.get_tool(name)
         return tool.get_metadata()
     
-    def get_tool_definition(self, name: str) -> Optional[Dict[str, Any]]:
+    def get_tool_definition(self, name: str) -> ToolDefinition:
         """
-        Get the Anthropic schema definition for a specific tool.
+        Get the internal schema definition for a specific tool.
 
         Args:
             name: The name of the tool
 
         Returns:
-            The tool's Anthropic schema if available, None otherwise
+            The tool's schema.
         """
         if name not in self.tool_classes:
-            self.logger.warning(f"Tool '{name}' not found in repository")
-            return None
+            self.logger.error(f"Tool '{name}' not found in repository")
+            raise KeyError(f"Tool '{name}' not found")
 
         tool = self.get_tool(name)
-        if hasattr(tool, 'anthropic_schema'):
-            return tool.anthropic_schema
-        else:
-            self.logger.warning(f"Tool '{name}' does not have an anthropic_schema attribute")
-            return None
+        if not hasattr(tool, 'tool_schema'):
+            self.logger.error(f"Tool '{name}' does not have a tool_schema attribute")
+            raise AttributeError(f"Tool '{name}' does not have a tool_schema attribute")
+        return ToolDefinition.from_mapping(tool.tool_schema)
 
-    def get_all_tool_definitions(self) -> List[Dict[str, Any]]:
+    def get_all_tool_definitions(self) -> List[ToolDefinition]:
         """
         Get tool schemas for LLM context - only enabled and available tools.
 
@@ -505,33 +514,18 @@ class ToolRepository:
         loaded on-demand via invokeother_tool. Ephemeral tools cleaned up on turn end;
         pinned tools persist for the session.
         """
-        definitions = []
+        definitions: List[ToolDefinition] = []
 
         # Standard enabled tools (explicit enable/disable)
         for name in self.enabled_tools:
-            tool = self.get_tool(name)
-            if hasattr(tool, 'anthropic_schema'):
-                definitions.append(tool.anthropic_schema)
-            else:
-                self.logger.warning(f"Tool '{name}' does not have an anthropic_schema attribute")
+            definitions.append(self.get_tool_definition(name))
 
         # Gated tools - check is_available() at runtime
         for name in self.gated_tools:
-            try:
-                tool = self.get_tool(name)
-                if hasattr(tool, 'is_available') and tool.is_available():
-                    if hasattr(tool, 'anthropic_schema'):
-                        definitions.append(tool.anthropic_schema)
-                        self.logger.debug(f"Gated tool '{name}' is available")
-                    else:
-                        self.logger.warning(f"Gated tool '{name}' has no anthropic_schema")
-            except Exception as e:
-                # Gated tool check failures should not break the tool list
-                self.logger.warning(f"Error checking gated tool '{name}': {e}")
-
-        # Add code_execution tool - always available since we send the beta flag
-        # This is a server-side tool that runs in Anthropic's sandbox
-        definitions.insert(0, CODE_EXECUTION.copy())
+            tool = self.get_tool(name)
+            if hasattr(tool, 'is_available') and tool.is_available():
+                definitions.append(self.get_tool_definition(name))
+                self.logger.debug(f"Gated tool '{name}' is available")
 
         return definitions
 
@@ -641,6 +635,6 @@ class ToolRepository:
             try:
                 if name not in self.enabled_tools:
                     self.enable_tool(name)
-            except Exception as e:
-                self.logger.error(f"Error enabling tool {name}: {e}")
+            except Exception:
+                self.logger.exception("Error enabling tool %s", name)
     

@@ -5,22 +5,22 @@
 Every tool follows this exact four-part structure:
 1. Define `XxxToolConfig(BaseModel)` with `enabled: bool = Field(default=True, ...)`
 2. `registry.register("xxx_tool", XxxToolConfig)` at module level — discovery depends on this
-3. Subclass `Tool` (from `tools.repo`) with `name`, `anthropic_schema`, `description`, `simple_description` class attributes
+3. Subclass `Tool` (from `tools.repo`) with `name`, `tool_schema`, `description`, `simple_description` class attributes
 4. Implement `run(**params)` routing on `params.pop("operation")`
 
 Per-user credentials via `UserCredentialService().get_credential(type, service_name)`. Raise on missing — never fall back to a default or env var.
 
 User-scoped file storage: `data/users/{user_id}/artifacts/{file_id}/{uuid4_hex}.bin` + `.meta` sidecar (`filename`, `mime_type`). Served by `/files/{file_id}` (download) or `/images/{file_id}` (inline). Persistent across segments — no segment-collapse cleanup.
 
-Tools returning images use two special result-dict keys: `_content_blocks` (list of Anthropic content blocks — `LLMProvider` pops and passes natively) and `_image_artifact` (`{file_id, alt_text}` — orchestrator emits `![alt](/v0/api/images/{file_id})` to stream).
+Tools returning images use two special result-dict keys: `_content_blocks` (provider-neutral rich content blocks passed through the LLM lifecycle) and `_image_artifact` (`{file_id, alt_text}` — orchestrator emits `![alt](/v0/api/images/{file_id})` to stream).
 
-Every `anthropic_schema` parameter description is an LLM caller contract. Use exact token names, state co-dependencies inline, name the failure mode. No hedging, no internal jargon.
+Every `tool_schema` parameter description is an LLM caller contract. Use exact token names, state co-dependencies inline, name the failure mode. No hedging, no internal jargon.
 
 ## Files
 
 - `contacts_tool.py` — Contact CRUD, search, and group management; owns `contacts` SQLite schema
 - `continuum_tool.py` — Conversation and segment operations (search, navigation) against the CNS continuum
-- `domaindoc_tool.py` — Domain knowledge document management; always-active essential tool; `anthropic_schema` is a `@property` that builds a live catalog from SQLite at schema-read time; `request_create`/`request_delete` return UI guidance only (noops). Supports shared domaindocs via `utils.domaindoc_shares` — collaborators can edit sections, version history records actor info
+- `domaindoc_tool.py` — Domain knowledge document management; always-active essential tool; `tool_schema` is a `@property` that builds a live catalog from SQLite at schema-read time; `request_create`/`request_delete` return UI guidance only (noops). Supports shared domaindocs via `utils.domaindoc_shares` — collaborators can edit sections, version history records actor info
 - `email_tool.py` — Email send/read via user-configured provider credential; `reasoning` param required on all mutating ops (send, reply, delete, move, mark, draft), logged to `email_action_audit` SQLite table with `encrypted__` fields for Stage 2 autonomy analysis
 - `homeassistant_tool.py` — Home Assistant smart home control via REST API; local SQLite entity registry for fuzzy name resolution; toggle states and query device data
 - `forage_tool.py` — Speculative background context gathering; fire-and-forget trigger that dispatches `ForageAgent` via `agents/implementations/forage_agent.py`; two params (`query` + `context`) to launch, `dismiss_task_id` to clear results; publishes to `ForageTrinket`
@@ -31,7 +31,7 @@ Every `anthropic_schema` parameter description is an LLM caller contract. Use ex
 - `maps_tool.py` — Google Maps geocoding, places, and distance; lazy client init
 - `memory_tool.py` — LT_Memory search, pin, touch, and manual create; `create_memory` queues to Valkey for deferred processing at segment collapse (no spaCy at init time)
 - `pager_tool.py` — Lattice federation messaging
-- `phoneafriend_tool.py` — Synchronous outside-model consultation; tool choices `claude`/`gemini` map to dedicated `internal_llm` keys `phoneafriend_claude`/`phoneafriend_gemini`; stores user-bound, segment-scoped subagent transcripts in Valkey under `phoneafriend:{user_id}:{segment_id}:{thread_id}` with TTL cleanup
+- `phoneafriend_tool.py` — Synchronous outside-model consultation; tool choices `claude`/`gemini` map to dedicated `internal_llm` keys `phoneafriend_claude`/`phoneafriend_gemini`; disables provider stall fallback so the requested outside voice cannot silently swap to `claude-high`; stores user-bound, segment-scoped subagent transcripts in Valkey under `phoneafriend:{user_id}:{segment_id}:{thread_id}` with TTL cleanup
 - `punchclock_tool.py` — Time tracking
 - `reminder_tool.py` — Reminder scheduling and management
 - `square_tool.py` — Square payment and POS integration

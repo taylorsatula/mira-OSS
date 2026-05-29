@@ -29,7 +29,6 @@ from utils.timezone_utils import (
 )
 from clients.sqlite_client import get_sqlite_client
 from clients.llm_provider import LLMProvider
-from utils.user_context import get_internal_llm
 
 # Define configuration class for PagerTool
 class PagerToolConfig(BaseModel):
@@ -56,7 +55,7 @@ class PagerTool(Tool):
 
     name = "pager_tool"
     
-    anthropic_schema = {
+    tool_schema = {
         "name": "pager_tool",
         "description": "Send and receive short messages between virtual pager devices.",
         "input_schema": {
@@ -259,8 +258,7 @@ class PagerTool(Tool):
     def __init__(self):
         """Initialize the pager tool with database access and LLM provider."""
         super().__init__()
-        tidyup_llm = get_internal_llm('tidyup')
-        self.llm = LLMProvider(model=tidyup_llm.model)
+        self.llm = LLMProvider()
         
         # Initialize logger
         self.logger = logging.getLogger(__name__)
@@ -1349,6 +1347,7 @@ Provide ONLY the distilled message, no explanations or meta-text."""
         try:
             response = self.llm.generate_response(
                 messages=[{"role": "user", "content": prompt}],
+                internal_llm='tidyup',
                 max_tokens=200
             )
 

@@ -50,10 +50,11 @@
   }
   #compose, #compose:focus-within { filter: none; }
   #send { filter: none; }
-  .msg-assistant .msg-content p { text-shadow: none; }
+  .msg-assistant .msg-content p { text-shadow: -1px 1px 7px #959595c7; }
   .modal-content, #auth-form { background: #fff; }
   #auth-overlay { background: var(--bg); }
   .domain-item.enabled { background: rgba(139,128,0,0.05); }
+  .msg-user, .msg-assistant { background: rgba(0, 0, 0, 0.3); }
 }
 
 /* ═══════════════════════════════════════════════
@@ -80,6 +81,8 @@ header {
   padding: 10px 20px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+  position: relative;
+  z-index: 2;
 }
 header h1 {
   flex: 1;
@@ -261,6 +264,8 @@ header h1 {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  position: relative;
+  z-index: 2;
   -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 2%, black 98%, transparent 100%);
   mask-image: linear-gradient(to bottom, transparent 0%, black 2%, black 98%, transparent 100%);
 }
@@ -293,10 +298,14 @@ header h1 {
 .msg-user {
   border-left: 3px solid transparent;
   padding-left: 15px;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 4px;
 }
 .msg-assistant {
   border-left: 3px solid var(--lime);
   padding-left: 15px;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 4px;
 }
 .msg-role {
   font-size: 11px;
@@ -348,7 +357,7 @@ header h1 {
 /* ═══════════════════════════════════════════════
    ASSISTANT MESSAGE — MARKDOWN
    ═══════════════════════════════════════════════ */
-.msg-assistant .msg-content p { margin: 0.6em 0; text-shadow: 1px 0px 7px #95959570; }
+.msg-assistant .msg-content p { margin: 0.6em 0; text-shadow: -1px 1px 7px #959595c7; }
 .msg-assistant .msg-content h1,
 .msg-assistant .msg-content h2,
 .msg-assistant .msg-content h3,
@@ -393,26 +402,50 @@ header h1 {
 .msg-assistant .msg-content th { background: var(--surface); font-weight: 600; }
 
 /* ═══════════════════════════════════════════════
-   LOADING INDICATOR
+   LOADING SCREEN — BRAINWAVE ANIMATION
    ═══════════════════════════════════════════════ */
-#loading {
-  display: none;
-  padding: 8px 20px;
-  max-width: min(80ch, calc(100vw - 32px));
-  margin: 0 auto;
-  flex-shrink: 0;
-}
-#loading.active { display: block; }
-.dots {
-  color: var(--cyan);
+#loading-screen {
+  position: fixed;
+  inset: 0;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   font-family: 'IBM Plex Mono', monospace;
-  font-size: 20px;
-  letter-spacing: 3px;
+  font-size: 16px;
+  line-height: 1;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+  z-index: -1;
 }
-.dots span { animation: blink 1.4s infinite; }
-.dots span:nth-child(2) { animation-delay: 0.2s; }
-.dots span:nth-child(3) { animation-delay: 0.4s; }
-@keyframes blink { 50% { opacity: 0.15; } }
+#loading-screen.active {
+  opacity: 1;
+  z-index: 1;
+  filter: blur(4px);
+}
+.ascii-container {
+  width: 100%;
+  text-align: center;
+  color: rgba(193, 209, 214, 0.8);
+  font-family: 'IBM Plex Mono', monospace;
+  letter-spacing: 0.02em;
+  line-height: 1.75;
+  padding-block: 28px;
+  white-space: nowrap;
+  overflow: visible;
+}
+.ascii-char {
+  display: inline-block;
+  min-width: 0.72em;
+  opacity: 0;
+  transition: opacity 0.05s ease;
+  vertical-align: middle;
+  will-change: transform, opacity;
+}
+.ascii-char.visible {
+  opacity: 1;
+}
 
 /* ═══════════════════════════════════════════════
    COMPOSE BAR
@@ -421,6 +454,8 @@ header h1 {
   flex-shrink: 0;
   padding: 12px 16px;
   padding-bottom: max(12px, env(safe-area-inset-bottom));
+  position: relative;
+  z-index: 2;
 }
 #compose {
   position: relative;
@@ -758,7 +793,9 @@ header h1 {
   <div id="msg-spacer"></div>
   <div id="load-more" style="display:none"><button onclick="loadMore()">Load older messages</button></div>
 </div>
-<div id="loading"><span class="dots"><span>.</span><span>.</span><span>.</span></span></div>
+<div id="loading-screen">
+    <div class="ascii-container" id="ascii-container"></div>
+</div>
 
 <div id="compose-area">
   <div id="attach-preview" class="hidden"></div>
@@ -1060,6 +1097,189 @@ async function loadHistory(offset = 0) {
 
 function loadMore() { if (nextOffset != null) loadHistory(nextOffset); }
 
+
+const waveChars = [
+	'∿', '∾', '~', '∫', 'λ', 'ψ', 'ω',
+	'/', '\\', '|', '·', '◦', '◘', 'v', '^',
+	'a', 'e', 'i', 'o', 'u', 'm', 'n', 's', 'r', 'h',
+	'A', 'E', 'I', 'O', 'U',
+	'0', '3', '8'
+];
+const WAVE_GAP_CHAR = '\u00A0';
+const WAVE_VISIBLE_SLOT_RATIO = 0.2;
+const WAVE_ENTRY_DURATION_MS = 300;
+const WAVE_AMPLITUDE_PX = 12;
+const WAVE_SPEED = 'slow';
+const WAVE_PHASE_SPEED_SCALE = 0.12;
+const asciiContainer = document.getElementById('ascii-container');
+const loadingScreen = document.getElementById('loading-screen');
+
+function computeWaveFrequency() {
+	const norm = (Math.random() + Math.random() + Math.random()) / 3;
+	return 10 + norm * 40;
+}
+
+function phaseDeltaForElapsedSeconds(hz, elapsedSeconds, speedMultiplier = 1) {
+	return hz * speedMultiplier * WAVE_PHASE_SPEED_SCALE * Math.PI * 2 * elapsedSeconds;
+}
+
+function pickWaveChar() {
+	return waveChars[Math.floor(Math.random() * waveChars.length)];
+}
+
+function cancelLoadingAnimationFrame() {
+	if (loadingScreen._animFrame) {
+		cancelAnimationFrame(loadingScreen._animFrame);
+		delete loadingScreen._animFrame;
+	}
+}
+
+function showLoadingScreen() {
+	if (loadingScreen._stopLoading) {
+		loadingScreen._stopLoading({ immediate: true });
+	}
+	cancelLoadingAnimationFrame();
+
+	const waveState = prepareWaveChars();
+	const runId = Symbol('loading-wave');
+	loadingScreen._loadingRunId = runId;
+	loadingScreen.classList.add('active');
+
+	const fallbackTimeout = setTimeout(() => {
+		cancelLoadingAnimationFrame();
+		asciiContainer.innerHTML =
+			'<p style="color: var(--text-dim, #aaa); font-size: 0.9rem; text-align: center; padding: 2rem; line-height: 1.6;">' +
+			'Mira is running slow or generating a super long response. ' +
+			'The request has <em>not</em> timed out yet. If it doesn&#39;t show up in a moment ' +
+			'please try refreshing the page.</p>';
+	}, 45000);
+
+	initWaveAnimation(waveState);
+
+	loadingScreen._stopLoading = ({ immediate = false } = {}) => {
+		clearTimeout(fallbackTimeout);
+		cancelLoadingAnimationFrame();
+		despawnWaveChars(waveState.slots);
+
+		const finish = () => {
+			if (loadingScreen._loadingRunId !== runId) return;
+			loadingScreen.classList.remove('active');
+			asciiContainer.innerHTML = '';
+			delete loadingScreen._loadingRunId;
+			delete loadingScreen._stopLoading;
+		};
+
+		if (immediate) {
+			finish();
+		} else {
+			setTimeout(finish, 500);
+		}
+	};
+}
+
+function stopLoadingAnimation() {
+	if (loadingScreen._stopLoading) {
+		loadingScreen._stopLoading();
+	}
+}
+
+function prepareWaveChars() {
+	asciiContainer.innerHTML = '';
+	const slotCount = Math.max(24, Math.min(Math.floor(window.innerWidth / 12), 96));
+	const slots = [];
+	const visibleSlots = [];
+
+	for (let i = 0; i < slotCount; i++) {
+		const span = document.createElement('span');
+		span.className = 'ascii-char';
+		span.style.opacity = '0';
+
+		const isVisibleSlot = i === 0 || i === slotCount - 1 || Math.random() < WAVE_VISIBLE_SLOT_RATIO;
+		if (isVisibleSlot) {
+			span.textContent = pickWaveChar();
+			span.dataset.waveSlot = 'visible';
+			span.dataset.visibleIndex = String(visibleSlots.length);
+			visibleSlots.push(span);
+		} else {
+			span.textContent = WAVE_GAP_CHAR;
+			span.dataset.waveSlot = 'gap';
+		}
+
+		asciiContainer.appendChild(span);
+		slots.push(span);
+	}
+
+	return {
+		slots,
+		visibleSlots,
+		phase: 0,
+		hz: computeWaveFrequency(),
+		speedMultiplier: WAVE_SPEED === 'fast' ? 0.7 : 0.25
+	};
+}
+
+function initWaveAnimation(waveState) {
+	let startTime = null;
+	let lastTime = null;
+	const slotCount = waveState.slots.length;
+	const visibleCount = waveState.visibleSlots.length;
+	const horizontalCycles = 1 + ((waveState.hz - 10) / 40) * 2.5;
+
+	function animate(now) {
+		if (startTime === null) {
+			startTime = now;
+			lastTime = now;
+		}
+		const elapsed = now - startTime;
+		const elapsedSeconds = (now - lastTime) / 1000;
+		lastTime = now;
+		const entryProgress = Math.min(1, elapsed / WAVE_ENTRY_DURATION_MS);
+		if (entryProgress >= 1) {
+			waveState.phase += phaseDeltaForElapsedSeconds(waveState.hz, elapsedSeconds, waveState.speedMultiplier);
+		}
+
+		for (let i = 0; i < slotCount; i++) {
+			const char = waveState.slots[i];
+			if (char.dataset.waveSlot !== 'visible') {
+				char.style.transform = 'none';
+				char.style.opacity = '0';
+				continue;
+			}
+
+			const x = slotCount > 1 ? i / (slotCount - 1) : 0;
+			const y1 = Math.sin(waveState.phase + x * Math.PI * 2 * horizontalCycles) * WAVE_AMPLITUDE_PX;
+			const y2 = Math.sin(waveState.phase * 0.65 + x * Math.PI * 2 * horizontalCycles * 1.8) * WAVE_AMPLITUDE_PX * 0.25;
+			const offset = y1 + y2;
+
+			const visibleIndex = Number(char.dataset.visibleIndex);
+			const revealDelay = visibleCount > 1
+				? (visibleIndex / (visibleCount - 1)) * WAVE_ENTRY_DURATION_MS * 0.65
+				: 0;
+			const revealDuration = WAVE_ENTRY_DURATION_MS * 0.35;
+			const revealProgress = Math.max(0, Math.min(1, (elapsed - revealDelay) / revealDuration));
+			const crestStrength = Math.min(1, Math.abs(y1) / WAVE_AMPLITUDE_PX);
+
+			char.style.transform = `translateY(${offset.toFixed(2)}px)`;
+			char.style.opacity = (revealProgress * (0.55 + crestStrength * 0.45)).toFixed(3);
+
+			if (entryProgress >= 1 && crestStrength > 0.92 && Math.random() < 0.025) {
+				char.textContent = pickWaveChar();
+			}
+		}
+		loadingScreen._animFrame = requestAnimationFrame(animate);
+	}
+
+	loadingScreen._animFrame = requestAnimationFrame(animate);
+}
+
+function despawnWaveChars(slots) {
+	slots.forEach(char => {
+		char.style.transition = 'opacity 0.5s ease, transform 0.5s ease';
+		char.style.opacity = '0';
+		char.style.transform = 'translateY(0)';
+	});
+}
+
 // ─── Send Message ───────────────────────────────
 async function send() {
   const input = document.getElementById('input');
@@ -1077,7 +1297,7 @@ async function send() {
   container.appendChild(createMsgEl('user', text, new Date().toISOString()));
   scrollToBottom();
 
-  document.getElementById('loading').classList.add('active');
+  showLoadingScreen();
 
   try {
     const body = { message: text };
@@ -1115,7 +1335,7 @@ async function send() {
     scrollToBottom();
   } finally {
     sending = false;
-    document.getElementById('loading').classList.remove('active');
+    stopLoadingAnimation();
     document.getElementById('send').disabled = false;
     input.focus();
   }

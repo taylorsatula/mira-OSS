@@ -47,7 +47,7 @@ check_env_vars() {
         print_info ""
         print_info "Required environment variables for non-interactive setup:"
         print_info "  MIRA_ANTHROPIC_KEY    - Your Anthropic API key (sk-ant-...)"
-        print_info "  MIRA_PROVIDER_KEY     - Generic provider API key (e.g., Groq)"
+        print_info "  MIRA_PROVIDER_KEY     - OpenAI-compatible provider API key (e.g., Groq)"
         print_info ""
         print_info "Optional environment variables:"
         print_info "  MIRA_ANTHROPIC_BATCH_KEY  - Separate batch API key (defaults to main key)"
@@ -220,7 +220,7 @@ init_vault() {
     vault kv put secret/mira/api_keys \
         anthropic_key="$CONFIG_ANTHROPIC_KEY" \
         anthropic_batch_key="$CONFIG_ANTHROPIC_BATCH_KEY" \
-        openaicompat_key="$CONFIG_PROVIDER_KEY" \
+        provider_key="$CONFIG_PROVIDER_KEY" \
         kagi_api_key="$CONFIG_KAGI_KEY"
 
     vault kv put secret/mira/database \

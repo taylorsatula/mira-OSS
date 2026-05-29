@@ -54,7 +54,7 @@ class ReminderTool(Tool):
 
     simple_description = "Create and manage scheduled reminders. Link reminders to contacts. Query by date (today, tomorrow, upcoming, overdue). Supports both user-facing and internal (MIRA's own) reminders."
 
-    anthropic_schema = {
+    tool_schema = {
         "name": "reminder_tool",
         "description": "Create and manage scheduled reminders with contact linking.",
         "input_schema": {

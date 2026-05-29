@@ -50,7 +50,7 @@ class WhileTheCatsAwayTool(Tool):
     waiting for the answer right now.
     """
 
-    anthropic_schema = {
+    tool_schema = {
         "name": "whilethecatsaway_tool",
         "description": (
             "Dispatch a background agent to explore a topic at leisure. "

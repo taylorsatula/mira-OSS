@@ -18,7 +18,7 @@ Agents are spawned in background threads with `contextvars.copy_context()`. Two 
 
 ### Batch Mode (Opt-In)
 
-Set `use_batch = True` on a `SidebarAgent` subclass to route LLM calls through the Anthropic Batch API (50% cost reduction). Each `batch_generate_response()` call submits a single-request batch, polls until completion, and returns `anthropic.types.Message` — the loop can't tell the difference from the sync path.
+Set `use_batch = True` on a `SidebarAgent` subclass to route LLM calls through the Anthropic Batch API (50% cost reduction). Each `batch_generate_response()` call submits a single-request batch, polls until completion, and returns the same neutral `Result` type as the sync path.
 
 **Class attributes**: `use_batch: bool`, `batch_timeout_seconds: int` (default 3600). **Timeout coupling**: subclasses must also set `timeout_seconds >= batch_timeout_seconds * max_iterations`, since the per-iteration timeout gate still applies.
 
@@ -26,7 +26,7 @@ Set `use_batch = True` on a `SidebarAgent` subclass to route LLM calls through t
 
 **Restart behavior**: If the app restarts mid-poll, the in-flight batch work is orphaned. The trigger rediscovers the item on the next poll cycle and a new run starts fresh. Acceptable for non-urgent background work.
 
-**Transport module**: `agents/batch.py` — lazy Anthropic client using `anthropic_batch_key` from Vault, builds request via `build_batch_params()` from `clients/llm_provider.py`.
+**Transport module**: `agents/batch.py` — lazy Anthropic client using `anthropic_batch_key` from Vault, builds an Anthropic batch request from the pre-resolved `InternalLLMConfig`, and normalizes the batch message to `Result`.
 
 ### Overwatch (Opt-In)
 
@@ -48,7 +48,7 @@ Old `sidebar_activity` records and their scratchpad notes are cleaned up after 3
 
 ## Files
 
-- `batch.py` — Batch transport for sidebar agents. `batch_generate_response()` submits a single LLM call to the Anthropic Batch API, polls for completion, returns `anthropic.types.Message`. Lazy thread-safe Anthropic client using `anthropic_batch_key` from Vault; accepts pre-resolved `InternalLLMConfig` directly (no re-resolution). Deep-copies last tool schema before adding `cache_control`.
+- `batch.py` — Batch transport for sidebar agents. `batch_generate_response()` submits a single LLM call to the Anthropic Batch API, polls for completion, returns `clients.llm.types.Result`. Lazy thread-safe Anthropic client using `anthropic_batch_key` from Vault; accepts pre-resolved `InternalLLMConfig` directly (no re-resolution). Deep-copies last tool schema before adding `cache_control`.
 - `base.py` — `SidebarAgent` ABC. Shared loop mechanics, sentry gate (opt-in cheap pre-filter via `sentry_llm_key`), overwatch (opt-in passive iteration observer via `overwatch_llm_key`), `sanitize_untrusted_input` flag for pre-loop injection defense, `ACTIVITY_TABLE_DDL` (with `run_count` column), `ensure_activity_schema()` (creates table + runs migrations), trace TypedDicts (`ToolCallTrace`, `IterationTrace`, `AgentTrace`). The system prompt is rebuilt every iteration; override `_iteration_status(iteration)` to append a per-turn addendum (e.g. progress bar). Exports `load_agent_prompt()` for loading prompts from `config/prompts/agents/`.
 - `sidebar.py` — `WorkItem` model, `SidebarTrigger` protocol (`on_dispatched` for side effects, not dedup), `SidebarDispatcher` (APScheduler poll loop with SQLite-backed dedup, in-flight tracking, retry support, cleanup).
 - `implementations/forage_agent.py` — `ForageAgent`: background research with 20-iteration cap. Uses `_get_completion_trinket()` / `_build_completion_context()` overrides to publish to `ForageTrinket`. Uses overwatch (`overwatch_llm_key = "overwatch"`) for per-iteration progress summaries. Overrides `_iteration_status()` to inject a Unicode block-character progress bar into the system prompt each turn. Tools: `continuum_tool`, `memory_tool`, `web_tool`.

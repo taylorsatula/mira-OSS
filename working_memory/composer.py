@@ -29,7 +29,9 @@ SECTION_LAYOUT: Dict[str, List[str]] = {
         'location_context',
         'conversation_manifest',
     ],
-    PLACEMENT_CONVERSATION_PREFIX: [],
+    PLACEMENT_CONVERSATION_PREFIX: [
+        'context_compaction',
+    ],
     PLACEMENT_POST_HISTORY: [
         'domaindoc',
     ],

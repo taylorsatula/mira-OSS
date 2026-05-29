@@ -93,7 +93,7 @@ class SquareTool(Tool):
 
     simple_description = "Manage Square customers and appointments. Search, create, update customers. Book, reschedule, cancel appointments. Query analytics like inactive customers."
 
-    anthropic_schema = {
+    tool_schema = {
         "name": "square_tool",
         "description": """Square business management: customers, appointments, and scheduling.
 

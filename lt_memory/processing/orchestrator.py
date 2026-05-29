@@ -20,7 +20,8 @@ from lt_memory.models import ProcessingChunk, MemoryContextSnapshot
 from lt_memory.processing.extraction_engine import ExtractionEngine
 from lt_memory.processing.execution_strategy import ExecutionStrategy, ImmediateExecutionStrategy
 from lt_memory.db_access import LTMemoryDB
-from utils.user_context import set_current_user_id, get_current_user_id, clear_user_context, get_internal_llm
+from lt_memory.llm_routing import uses_anthropic_batch_adapter
+from utils.user_context import set_current_user_id, get_current_user_id, clear_user_context
 
 if TYPE_CHECKING:
     from cns.core.continuum_repository import ContinuumRepository
@@ -147,7 +148,7 @@ class ExtractionOrchestrator:
         )
         chunk.memory_context_snapshot = self._build_memory_context(messages, user_id)
 
-        # Step 4: Submit via execution strategy (immediate when forced or non-Anthropic endpoint)
+        # Step 4: Submit via execution strategy (immediate when forced or batch adapter unavailable)
         strategy = self.execution_strategy
         if force_immediate and self.immediate_strategy is not None:
             strategy = self.immediate_strategy
@@ -155,14 +156,11 @@ class ExtractionOrchestrator:
                 f"Using immediate extraction for segment {segment_id} "
                 f"(manual collapse — skipping batch)"
             )
-        # FROM TAYLOR: this fix was made during a time when Claude Code had heavy
-        # degradation. something about the fix doesn't sit right with me and I can't
-        # trust claude's answer fully. If something is fucked up later thats why.
-        elif self.immediate_strategy is not None and "api.anthropic.com" not in get_internal_llm('extraction').endpoint_url:
+        elif self.immediate_strategy is not None and not uses_anthropic_batch_adapter("extraction"):
             strategy = self.immediate_strategy
             logger.info(
                 f"Using immediate extraction for segment {segment_id} "
-                f"(non-Anthropic endpoint — skipping batch)"
+                f"(batch adapter unavailable — skipping batch)"
             )
         batch_id = strategy.execute_extraction(user_id, [chunk])
 

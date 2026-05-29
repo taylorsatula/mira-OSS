@@ -40,7 +40,7 @@ class SidebarAgentsTool(Tool):
 
     name = "sidebaragents_tool"
 
-    anthropic_schema = {
+    tool_schema = {
         "name": "sidebaragents_tool",
         "description": (
             "Review and manage activity from sidebar agents (email, etc.).\n\n"

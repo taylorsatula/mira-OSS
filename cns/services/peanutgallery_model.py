@@ -128,9 +128,8 @@ class PeanutGalleryModel:
 
         response = self.llm_provider.generate_response(
             messages=[{"role": "user", "content": user_prompt}],
-            stream=False,
             internal_llm='tidyup',
-            system_override=self._system_prompt
+            system_prompt=self._system_prompt
         )
 
         response_text = self.llm_provider.extract_text_content(response).strip()
@@ -264,7 +263,7 @@ class PeanutGalleryModel:
                     )
                 tool_activity.extend(self._extract_tool_uses(msg))
             elif msg.role == "tool":
-                tool_call_id = msg.metadata.get("tool_call_id", "unknown")
+                tool_call_id = msg.tool_call_id or "unknown"
                 result_text = self._render_message_content(msg)
                 if len(result_text) > 180:
                     result_text = result_text[:180] + "..."
@@ -332,7 +331,7 @@ class PeanutGalleryModel:
         tool_activity: list[str] = []
         if isinstance(message.content, list):
             for block in message.content:
-                if isinstance(block, dict) and block.get("type") == "tool_use":
+                if isinstance(block, dict) and block.get("type") == "tool_call":
                     tool_name = block.get("name", "unknown")
                     tool_input = block.get("input")
                     if tool_input:

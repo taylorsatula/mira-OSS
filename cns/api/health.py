@@ -139,6 +139,13 @@ def thread_health_endpoint(_: None = Depends(_require_diagnostics_token)):
 
         # Get scheduled job stats
         job_stats = ScheduledTaskMonitor.get_job_stats()
+        from utils.scheduler_service import scheduler_service
+        scheduler_jobs = scheduler_service.scheduler.get_jobs() if scheduler_service._running else []
+        scheduler_state = {
+            "running": scheduler_service._running,
+            "registered_jobs": sorted(scheduler_service._registered_jobs.keys()),
+            "apscheduler_jobs": sorted(job.id for job in scheduler_jobs),
+        }
 
         # Determine health status
         status = "healthy"
@@ -164,6 +171,7 @@ def thread_health_endpoint(_: None = Depends(_require_diagnostics_token)):
                 "stuck_operations": stuck_ops
             },
             "scheduled_jobs": job_stats,
+            "scheduler": scheduler_state,
             "timestamp": format_utc_iso(utc_now())
         }
 

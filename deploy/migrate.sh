@@ -189,7 +189,7 @@ CONFIG_DB_PASSWORD="${CONFIG_DB_PASSWORD:-changethisifdeployingpwd}"
 if [ -f "${BACKUP_DIR}/vault_api_keys.json" ]; then
     CONFIG_ANTHROPIC_KEY=$(jq -r '.anthropic_key // empty' "${BACKUP_DIR}/vault_api_keys.json" 2>/dev/null || echo "")
     CONFIG_ANTHROPIC_BATCH_KEY=$(jq -r '.anthropic_batch_key // empty' "${BACKUP_DIR}/vault_api_keys.json" 2>/dev/null || echo "")
-    CONFIG_PROVIDER_KEY=$(jq -r '.openaicompat_key // .provider_key // empty' "${BACKUP_DIR}/vault_api_keys.json" 2>/dev/null || echo "")
+    CONFIG_PROVIDER_KEY=$(jq -r '.provider_key // .openaicompat_key // empty' "${BACKUP_DIR}/vault_api_keys.json" 2>/dev/null || echo "")
     CONFIG_KAGI_KEY=$(jq -r '.kagi_api_key // empty' "${BACKUP_DIR}/vault_api_keys.json" 2>/dev/null || echo "")
 fi
 

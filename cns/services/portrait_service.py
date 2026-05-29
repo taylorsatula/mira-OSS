@@ -78,7 +78,7 @@ def _load_prompts() -> None:
 def _get_llm_provider() -> LLMProvider:
     global _llm_provider
     if _llm_provider is None:
-        _llm_provider = LLMProvider(enable_prompt_caching=False)
+        _llm_provider = LLMProvider()
     return _llm_provider
 
 
@@ -180,7 +180,7 @@ def _call_llm(summaries: list[str]) -> str:
     llm = _get_llm_provider()
     response = llm.generate_response(
         messages=[{"role": "user", "content": user_message}],
-        system_override=_system_prompt,
+        system_prompt=_system_prompt,
         internal_llm="portrait",
         allow_negative=True,  # Background system task — not user-initiated
     )

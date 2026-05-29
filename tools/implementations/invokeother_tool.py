@@ -3,7 +3,7 @@ Dynamic tool loading meta-tool for MIRA.
 
 Allows the LLM to load tools on demand via constrained enum parameters.
 Two loading modes: ephemeral (current turn only) and pinned (rest of session).
-The tool catalog is encoded directly in the anthropic_schema for prompt cache
+The tool catalog is encoded directly in the tool_schema for prompt cache
 stability — no dynamic working memory content needed.
 """
 
@@ -23,7 +23,7 @@ class InvokeOtherTool(Tool):
     Meta-tool for on-demand tool loading with dual lifetime modes.
 
     The tool catalog (available tools + descriptions) is baked into the
-    anthropic_schema at construction time, giving the LLM constrained
+    tool_schema at construction time, giving the LLM constrained
     enum choices and stable prompt caching.
 
     Two parameters serve as operations:
@@ -45,7 +45,7 @@ class InvokeOtherTool(Tool):
 
         # Build schema with tool catalog baked into description + enum
         catalog = self._build_catalog()
-        self.anthropic_schema = self._build_schema(catalog)
+        self.tool_schema = self._build_schema(catalog)
 
     def _build_catalog(self) -> Dict[str, str]:
         """Build tool name -> description catalog for non-essential, non-gated tools."""
@@ -75,7 +75,7 @@ class InvokeOtherTool(Tool):
         return catalog
 
     def _build_schema(self, catalog: Dict[str, str]) -> Dict[str, Any]:
-        """Build anthropic_schema with dual load parameters and tool enum."""
+        """Build tool_schema with dual load parameters and tool enum."""
         tool_names = sorted(catalog.keys())
 
         # Build description with inline catalog

@@ -642,7 +642,7 @@ DB_STRUCTURAL_TABLES=(
     "api_tokens:id:id,user_id,name,token_hash"
     "domain_knowledge_blocks:id:id,user_id,domain_label,domain_name,enabled"
     "entities:id:id,user_id,name,entity_type"
-    "conversation_llm:name:name,model,provider,endpoint_url,api_key_name"
+    "conversation_llm:name:name,model,adapter_name,endpoint_url,api_key_name"
     "internal_llm:name:name,model,endpoint_url,api_key_name"
 )
 
@@ -1520,10 +1520,12 @@ migrate_vault_api_keys() {
     fi
 
     # Define key migrations: old_name -> new_name
-    # Add new mappings here as schema evolves
+    # Canonical names are purpose-named: subcortical_key (subcortical analysis layer)
+    # and provider_key (user-facing chat provider). Older installs may have vendor-named
+    # (groq_key) or protocol-named (openaicompat_key) keys; rename them to canonical.
     local -a KEY_MIGRATIONS=(
         "groq_key:subcortical_key"
-        "provider_key:openaicompat_key"
+        "openaicompat_key:provider_key"
     )
 
     for mapping in "${KEY_MIGRATIONS[@]}"; do

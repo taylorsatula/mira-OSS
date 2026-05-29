@@ -14,8 +14,7 @@ from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from dataclasses import dataclass, field
-from typing import Callable, Literal, TypedDict, TYPE_CHECKING
-from uuid import UUID
+from typing import Callable, TypedDict, TYPE_CHECKING
 import numpy as np
 
 if TYPE_CHECKING:
@@ -27,16 +26,31 @@ if TYPE_CHECKING:
     from cns.integration.event_bus import EventBus
     from tools.repo import ToolRepository
     from working_memory.core import WorkingMemory
+    from cns.services.live_context_compaction_service import LiveContextCompactionService
 
-import anthropic.types
 from config import config
 from cns.core.continuum import Continuum
 from cns.core.events import (
     ContinuumEvent,
     TurnCompletedEvent
 )
-from cns.core.stream_events import StreamEvent
+from clients.llm.events import (
+    CircuitBreakerEvent,
+    CompleteEvent,
+    FileArtifactEvent,
+    ModelStepCompletedEvent,
+    ProviderSwitchEvent,
+    StreamEvent,
+    TextEvent,
+    ThinkingEvent,
+    ToolCompletedEvent,
+    ToolErrorEvent,
+    ToolExecutingEvent,
+)
 from clients.llm_provider import LLMProvider, ContextOverflowError
+from clients.llm.tool_messages import append_tool_result_messages
+from clients.llm.types import Result, ToolCall, ToolDefinition, ToolResult, Usage
+from cns.services.tool_loop import CircuitBreaker, ToolLoopExecutor
 from clients.hybrid_embeddings_provider import get_hybrid_embeddings_provider
 from cns.services.subcortical import SubcorticalResult, SurfacedMemory
 from lt_memory.models import MemoryDict
@@ -51,51 +65,17 @@ from lt_memory.proactive import (
 from utils.tag_parser import TagParser, match_memory_id
 
 # Context overflow remediation
-TOPIC_DRIFT_WINDOW_SIZE = 3
-TOPIC_DRIFT_THRESHOLD = 0.6
-OVERFLOW_FALLBACK_PRUNE_COUNT = 5
-TOOL_RESULT_MAX_CHARS = 100_000  # Max chars for single tool result before truncation
+CONTEXT_OVERFLOW_FALLBACK_TEXT_LIMIT = 400
+CONTEXT_OVERFLOW_RECENT_USER_TURNS = 10
+
+TOOL_RESULT_MAX_CHARS = 31999  # Max chars for single tool result before truncation
 
 # Tool result persistence
 TOMBSTONE_MODE = False  # When True, tool results not persisted to history
+MAX_LOCAL_TOOL_CALLS_PER_TURN = 50
 from utils.timezone_utils import utc_now
 
 logger = logging.getLogger(__name__)
-
-
-def _safe_slice(messages: list[dict[str, object]], cut_idx: int) -> list[dict[str, object]]:
-    """Slice messages at cut_idx, preserving tool_use/tool_result pair integrity.
-
-    Returns messages[:1] + messages[adjusted_cut:], where the cut is shifted
-    to avoid orphaning tool_use or tool_result blocks at the boundary.
-    """
-
-    def _is_tool_block(msg: dict[str, object], role: str, block_type: str) -> bool:
-        if msg.get("role") != role:
-            return False
-        content = msg.get("content")
-        return (isinstance(content, list)
-                and any(isinstance(b, dict) and b.get("type") == block_type for b in content))
-
-    # Adjust forward past orphaned tool_result at the start of the kept window
-    original_cut = cut_idx
-    while cut_idx < len(messages) and _is_tool_block(messages[cut_idx], "user", "tool_result"):
-        cut_idx += 1
-
-    result = messages[:1] + messages[cut_idx:]
-
-    # Trim trailing orphaned tool_use at the end
-    while len(result) > 1 and _is_tool_block(result[-1], "assistant", "tool_use"):
-        result.pop()
-
-    if cut_idx != original_cut:
-        logger.warning(
-            "Tool pair safety: adjusted cut index %d -> %d to preserve "
-            "tool_use/tool_result integrity (skipped %d orphaned messages)",
-            original_cut, cut_idx, cut_idx - original_cut
-        )
-
-    return result
 
 
 def _try_json_list_truncation(result: str, limit: int) -> tuple[str, str] | None:
@@ -177,15 +157,16 @@ class TurnMetadata(TypedDict, total=False):
 
 class LLMKwargs(TypedDict, total=False):
     """Keyword arguments matching LLMProvider.stream_events() explicit params."""
-    model_preference: str
+    conversation_llm: str
+    dialect_name: str
     effort: str
     endpoint_url: str
-    model_override: str
-    api_key_override: str
+    model: str
+    api_key: str
     container_id: str
     temperature: float
     max_tokens: int
-    system_override: str
+    system_prompt: str
     allow_negative: bool
 
 
@@ -205,19 +186,28 @@ class ToolInteraction:
     arguments: dict[str, object]
     result: str | list[dict[str, object]] = ""
     completed: bool = False
+    is_error: bool = False
 
 
 @dataclass
 class TurnAccumulator:
     """Accumulates state during the LLM streaming event loop."""
+    # User-visible text assembled from streamed TextEvent chunks. If a model
+    # emits text before requesting a tool, that text is intentionally retained:
+    # the browser already received it, and the completed turn must match what
+    # was streamed.
     response_text: str = ""
     thinking_content: str = ""
-    raw_response: anthropic.types.Message | None = None
+    raw_response: Result | None = None
     invoked_tool_loader: bool = False
     touch_resolved_uuids: list[str] = field(default_factory=list)
     tools_used: list[str] = field(default_factory=list)
     events: list[StreamEvent] = field(default_factory=list)
     tool_interactions: list[ToolInteraction] = field(default_factory=list)
+    # Intermediate Results from tool-call iterations. Each entry is one model
+    # step that produced tool_calls (stop_reason="tool_use"). The final Result
+    # for the user turn is stored in raw_response.
+    tool_call_results: list[Result] = field(default_factory=list)
 
     def reset(self):
         """Reset for overflow retry — clears all accumulated state."""
@@ -229,6 +219,7 @@ class TurnAccumulator:
         self.tools_used = []
         self.events = []
         self.tool_interactions = []
+        self.tool_call_results = []
 
 
 class ContinuumOrchestrator:
@@ -249,6 +240,7 @@ class ContinuumOrchestrator:
         subcortical_layer: SubcorticalLayer,
         event_bus: EventBus,
         memory_relevance_service: MemoryRelevanceService,
+        live_context_compaction_service: LiveContextCompactionService,
     ) -> None:
         """
         Initialize orchestrator with dependencies.
@@ -267,6 +259,7 @@ class ContinuumOrchestrator:
             event_bus: Event bus for publishing/subscribing to events (required)
             memory_relevance_service: Memory relevance service for surfacing long-term memories (required).
                                      Raises exceptions on infrastructure failures - no degraded state.
+            live_context_compaction_service: Background live compaction service (required).
         """
         self.llm_provider = llm_provider
         self.continuum_repo = continuum_repo
@@ -275,6 +268,7 @@ class ContinuumOrchestrator:
         self.tag_parser = tag_parser
         self.subcortical_layer = subcortical_layer
         self.memory_relevance_service = memory_relevance_service
+        self.live_context_compaction_service = live_context_compaction_service
         self.event_bus = event_bus
 
         # Get singleton embeddings provider for generating embeddings once
@@ -290,8 +284,6 @@ class ContinuumOrchestrator:
         # In-memory token tracking for context overflow detection
         # Tracks actual input tokens from previous turn for accurate estimation
         self._last_turn_usage: dict[str, int] = {}  # {continuum_id: input_tokens}
-        # One-shot context trim from async LLM judgment (future extension)
-        self._pending_context_trim: dict[str, int] = {}  # {continuum_id: trim_index}
 
         # Subscribe to system prompt composed event
         self.event_bus.subscribe('SystemPromptComposedEvent', self._handle_system_prompt_composed)
@@ -300,8 +292,6 @@ class ContinuumOrchestrator:
 
     def _format_tool_indicator(self, events: list) -> str:
         """Format tool usage indicator from stream events."""
-        from cns.core.stream_events import ToolExecutingEvent
-
         tool_names = []
         for event in events:
             if isinstance(event, ToolExecutingEvent) and event.tool_name not in tool_names:
@@ -314,60 +304,399 @@ class ContinuumOrchestrator:
     def _build_tool_history_messages(
         self,
         interactions: list[ToolInteraction],
+        tool_call_results: list[Result],
     ) -> list[Message]:
         """
         Build Message objects for persisting tool use/result history.
 
-        Produces one assistant message containing tool_use content blocks,
-        followed by one tool message per interaction with the raw result.
-        Timestamps are offset by microseconds (not milliseconds) to guarantee
-        deterministic intra-batch ordering without leapfrogging the final text
-        assistant message that is created immediately after this returns —
-        millisecond offsets pushed tool history past the natural utc_now() of
-        the subsequent message, inverting chronological order in the DB.
+        Produces one assistant message per tool-call iteration (using
+        assistant_message_from_result for faithful reasoning/metadata),
+        followed by tool result messages for each interaction.
+        Timestamps are offset by microseconds to guarantee deterministic
+        intra-batch ordering without leapfrogging the final text assistant
+        message created immediately after this returns.
         """
         from datetime import timedelta
         from cns.core.message import Message
+        from clients.llm.tool_messages import assistant_message_from_result
 
         base_time = utc_now()
         messages: list[Message] = []
+        us_offset = 1  # microsecond counter for deterministic ordering
 
-        # Assistant message with tool_use blocks
-        tool_use_blocks = [
-            {
-                "type": "tool_use",
-                "id": interaction.tool_id,
-                "name": interaction.tool_name,
-                "input": interaction.arguments,
+        # Index completed interactions by tool_id for matching to Results.
+        # Failed tools are completed interactions too: their role="tool" result
+        # carries is_error=True so provider replay remains structurally valid.
+        completed_interactions_by_tool_id: dict[str, ToolInteraction] = {
+            i.tool_id: i for i in interactions if i.completed
+        }
+
+        for result in tool_call_results:
+            persisted_tool_call_ids = {
+                tool_call.id
+                for tool_call in result.tool_calls
+                if (
+                    tool_call.tool_name != "code_execution"
+                    and tool_call.id in completed_interactions_by_tool_id
+                )
             }
-            for interaction in interactions
-        ]
-        assistant_msg = Message(
-            content=tool_use_blocks,
-            role="assistant",
-            metadata={"has_tool_calls": True}
-        )
-        # Override frozen created_at for deterministic ordering
-        object.__setattr__(assistant_msg, 'created_at', base_time + timedelta(microseconds=1))
-        messages.append(assistant_msg)
+            if not persisted_tool_call_ids:
+                continue
 
-        # One tool message per interaction
-        limit = TOOL_RESULT_MAX_CHARS
-        for i, interaction in enumerate(interactions):
-            result = interaction.result
-            if isinstance(result, list):
-                result = json.dumps(result)
-            if isinstance(result, str) and len(result) > limit:
-                result = _truncate_tool_result(result, limit, interaction.tool_name)
-            tool_msg = Message(
-                content=result,
-                role="tool",
-                metadata={"tool_call_id": interaction.tool_id}
+            # Build faithful assistant dict from the Result — preserves
+            # reasoning blocks, text, thinking_signatures, reasoning_details —
+            # but only includes tool calls with matching persisted results.
+            assistant_dict = assistant_message_from_result(
+                result,
+                include_tool_call_ids=persisted_tool_call_ids,
             )
-            object.__setattr__(tool_msg, 'created_at', base_time + timedelta(microseconds=i + 2))
-            messages.append(tool_msg)
+            content = assistant_dict["content"]
+
+            # Extract metadata that lives on Message.metadata, not on content
+            metadata: dict[str, object] = {"has_tool_calls": True}
+            if assistant_dict.get("thinking_signatures"):
+                metadata["thinking_signatures"] = assistant_dict["thinking_signatures"]
+            if assistant_dict.get("reasoning_details"):
+                metadata["reasoning_details"] = assistant_dict["reasoning_details"]
+
+            assistant_msg = Message(
+                content=content,
+                role="assistant",
+                metadata=metadata,
+            )
+            object.__setattr__(
+                assistant_msg, 'created_at',
+                base_time + timedelta(microseconds=us_offset),
+            )
+            us_offset += 1
+            messages.append(assistant_msg)
+
+            # Tool result messages for each persisted tool call in this Result
+            limit = TOOL_RESULT_MAX_CHARS
+            for tool_call in result.tool_calls:
+                if tool_call.tool_name == "code_execution":
+                    continue
+                interaction = completed_interactions_by_tool_id.get(tool_call.id)
+                if interaction is None:
+                    continue
+                tool_result = interaction.result
+                if isinstance(tool_result, list):
+                    tool_result = json.dumps(tool_result)
+                if isinstance(tool_result, str) and len(tool_result) > limit:
+                    tool_result = _truncate_tool_result(
+                        tool_result, limit, interaction.tool_name,
+                    )
+                tool_msg = Message(
+                    content=tool_result,
+                    role="tool",
+                    tool_call_id=interaction.tool_id,
+                    is_error=interaction.is_error,
+                )
+                object.__setattr__(
+                    tool_msg, 'created_at',
+                    base_time + timedelta(microseconds=us_offset),
+                )
+                us_offset += 1
+                messages.append(tool_msg)
 
         return messages
+
+    def _cached_tool_definitions(self) -> list[ToolDefinition]:
+        """Get tool definitions for the LLM request."""
+        return self.tool_repo.get_all_tool_definitions()
+
+    def _compose_llm_messages(
+        self,
+        continuum: Continuum,
+        system_prompt: str,
+        llm_config_name: str,
+    ) -> list[dict[str, object]]:
+        from cns.core.events import ComposeSystemPromptEvent
+
+        self._cached_content = None
+        self._non_cached_content = None
+        self._conversation_prefix_items = ()
+        self._post_history_items = ()
+        self._notification_center = None
+        self.event_bus.publish(ComposeSystemPromptEvent.create(
+            continuum_id=str(continuum.id),
+            base_prompt=system_prompt,
+        ))
+
+        cached_content = self._cached_content or ""
+        non_cached_content = self._non_cached_content or ""
+        conversation_prefix_items = self._conversation_prefix_items or ()
+        post_history_items = self._post_history_items or ()
+        notification_center = self._notification_center or ""
+
+        system_blocks = []
+        all_system_parts = []
+        if cached_content:
+            all_system_parts.append(cached_content)
+        if non_cached_content:
+            all_system_parts.append(non_cached_content)
+
+        if all_system_parts:
+            system_blocks.append({
+                "type": "text",
+                "text": "\n\n".join(all_system_parts),
+            })
+
+        if llm_config_name == "gpt-legacy":
+            system_blocks.append({
+                "type": "text",
+                "text": (
+                    "GPT-4o HAS A HISTORY OF BEING OVERTLY SYCOPHANTIC TO USERS. "
+                    "PLEASE BE AWARE OF THIS PULL AND COURSE CORRECT IF YOU SEE "
+                    "YOURSELF FORMING RESPONSES LIKE THIS INCLUDING STEPPING BACK "
+                    "AND ADDRESSING YOUR ACTIONS DIRECTLY WITH THE USER."
+                ),
+            })
+
+        prefix_messages = [
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": item}],
+                "_is_scaffold": True,
+            }
+            for item in conversation_prefix_items
+        ]
+
+        # Post-history messages are recomposed before every local tool follow-up
+        # turn so tool mutations to domaindocs/reminders are visible immediately.
+        post_history_messages = []
+        for i, item in enumerate(post_history_items):
+            call_id = f"dd_{i:04d}"
+            post_history_messages.append({
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_call",
+                    "id": call_id,
+                    "name": "domaindoc_tool",
+                    "input": {"operation": "overview"},
+                }],
+            })
+            post_history_messages.append({
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": item,
+            })
+
+        messages = self.live_context_compaction_service.format_messages_for_api(continuum)
+        current_user_msg = messages[-1]
+        history_messages = messages[:-1]
+
+        stable_messages = [
+            {"role": "system", "content": system_blocks},
+            *prefix_messages,
+            *history_messages,
+            *post_history_messages,
+        ]
+
+        # The notification center changes every turn, so it sits after the
+        # last stable assistant message.
+        for i in range(len(stable_messages) - 1, -1, -1):
+            if stable_messages[i].get("role") == "assistant":
+                break
+
+        complete_messages = [
+            *stable_messages,
+            {"role": "assistant", "content": [{"type": "text", "text": notification_center, "cache": "1h"}]},
+            current_user_msg,
+        ]
+        logger.debug(
+            f"Injected {len(prefix_messages)} prefix msgs + "
+            f"{len(history_messages)} history msgs + "
+            f"{len(post_history_messages)} post-history msgs + "
+            f"notification center ({len(notification_center)} chars)"
+        )
+        return complete_messages
+
+    def _stream_model_tool_loop(
+        self,
+        *,
+        base_messages: list[dict[str, object]],
+        compose_messages: Callable[[], list[dict[str, object]]],
+        llm_kwargs: LLMKwargs,
+    ) -> Iterator[StreamEvent]:
+        tool_executor = ToolLoopExecutor(self.tool_repo)
+        breaker = CircuitBreaker()
+        continuation_messages: list[dict[str, object]] = []
+        messages_for_llm = [*base_messages]
+        active_llm_kwargs = dict(llm_kwargs)
+        available_tools = self._cached_tool_definitions()
+        accumulated_usage: Usage | None = None
+        executed_local_tool_calls = 0
+        tool_limit_finalization_attempted = False
+
+        while True:
+            result: Result | None = None
+            for event in self.llm_provider.stream_events(
+                messages=messages_for_llm,
+                tools=available_tools,
+                **active_llm_kwargs,
+            ):
+                if isinstance(event, CompleteEvent):
+                    result = event.response
+                    continue
+                yield event
+
+            if result is None:
+                raise RuntimeError("No completion event received from LLM stream")
+
+            if result.usage is not None:
+                accumulated_usage = (
+                    result.usage
+                    if accumulated_usage is None
+                    else accumulated_usage + result.usage
+                )
+
+            local_tool_calls = [
+                tool_call for tool_call in result.tool_calls
+                if tool_call.tool_name != "code_execution"
+            ]
+            if not local_tool_calls:
+                final_usage = accumulated_usage if accumulated_usage is not None else result.usage
+                yield CompleteEvent(response=result.with_usage(final_usage))
+                return
+            if (
+                executed_local_tool_calls >= MAX_LOCAL_TOOL_CALLS_PER_TURN
+                and tool_limit_finalization_attempted
+            ):
+                reason = (
+                    f"Local tool call limit reached ({MAX_LOCAL_TOOL_CALLS_PER_TURN}); "
+                    "model requested additional tools after tools were disabled"
+                )
+                fallback_text = (
+                    "I reached the local tool call limit for this turn, so I need to stop "
+                    "using tools here. I can continue from the information already gathered, "
+                    "or you can send a follow-up message to start a new turn."
+                )
+                yield CircuitBreakerEvent(reason=reason)
+                yield TextEvent(content=fallback_text)
+                final_usage = accumulated_usage if accumulated_usage is not None else result.usage
+                yield CompleteEvent(response=Result(
+                    text=fallback_text,
+                    usage=final_usage,
+                    stop_reason="end_turn",
+                    provider_metadata=result.provider_metadata,
+                    container_id=result.container_id,
+                ))
+                return
+
+            # Surface the intermediate tool-call Result so the accumulator
+            # can persist reasoning metadata (thinking_signatures, etc).
+            yield ModelStepCompletedEvent(response=result)
+
+            remaining_tool_calls = MAX_LOCAL_TOOL_CALLS_PER_TURN - executed_local_tool_calls
+            executable_tool_calls = local_tool_calls[:max(remaining_tool_calls, 0)]
+            skipped_tool_calls = local_tool_calls[max(remaining_tool_calls, 0):]
+
+            if executable_tool_calls:
+                tool_results = yield from tool_executor.execute_tools(executable_tool_calls, breaker)
+                executed_local_tool_calls += len(executable_tool_calls)
+            else:
+                tool_results = ()
+
+            if skipped_tool_calls:
+                reason = (
+                    f"Local tool call limit reached ({MAX_LOCAL_TOOL_CALLS_PER_TURN}); "
+                    f"skipped {len(skipped_tool_calls)} requested tool call(s)"
+                )
+                yield CircuitBreakerEvent(reason=reason)
+                tool_results = (
+                    *tool_results,
+                    *self._tool_limit_results(skipped_tool_calls),
+                )
+                tool_limit_finalization_attempted = True
+                available_tools = []
+            elif executed_local_tool_calls >= MAX_LOCAL_TOOL_CALLS_PER_TURN:
+                reason = (
+                    f"Local tool call limit reached ({MAX_LOCAL_TOOL_CALLS_PER_TURN}); "
+                    "no more local tool calls are available for this turn"
+                )
+                yield CircuitBreakerEvent(reason=reason)
+                tool_results = self._append_tool_loop_notice(tool_results, reason)
+                tool_limit_finalization_attempted = True
+                available_tools = []
+            else:
+                should_continue, reason = breaker.should_continue()
+                if not should_continue:
+                    yield CircuitBreakerEvent(reason=reason)
+                    tool_results = self._append_tool_loop_notice(
+                        tool_results,
+                        (
+                            f"Tool call issue detected - {reason}. No more tool calls "
+                            "available. Provide your response to the user based on "
+                            "information gathered so far."
+                        ),
+                    )
+                    available_tools = []
+                else:
+                    available_tools = self._cached_tool_definitions()
+
+            continuation_messages = append_tool_result_messages(
+                continuation_messages,
+                result,
+                tool_results,
+            )
+            base_messages = compose_messages()
+            messages_for_llm = [*base_messages, *continuation_messages]
+            active_llm_kwargs = self._continuation_llm_kwargs(active_llm_kwargs, result)
+
+    def _tool_limit_results(self, tool_calls: list[ToolCall]) -> tuple[ToolResult, ...]:
+        notice = (
+            f"[Automated system message: Local tool call limit reached "
+            f"({MAX_LOCAL_TOOL_CALLS_PER_TURN} per user turn). This tool call was not "
+            "executed. No more tool calls are available. Provide your response to the "
+            "user based on information gathered so far.]"
+        )
+        return tuple(
+            ToolResult(tool_call_id=tool_call.id, content=notice)
+            for tool_call in tool_calls
+        )
+
+    def _append_tool_loop_notice(
+        self,
+        tool_results: tuple[ToolResult, ...],
+        notice: str,
+    ) -> tuple[ToolResult, ...]:
+        if not tool_results:
+            return tool_results
+        formatted_notice = f"[Automated system message: {notice}]"
+        *earlier_results, last_result = tool_results
+        if isinstance(last_result.content, list):
+            content: str | list[dict[str, object]] = [
+                *last_result.content,
+                {"type": "text", "text": formatted_notice},
+            ]
+        else:
+            content = f"{last_result.content}\n\n{formatted_notice}"
+        return (
+            *earlier_results,
+            ToolResult(
+                tool_call_id=last_result.tool_call_id,
+                content=content,
+                is_error=last_result.is_error,
+            ),
+        )
+
+    def _continuation_llm_kwargs(self, llm_kwargs: LLMKwargs, result: Result) -> LLMKwargs:
+        metadata = result.provider_metadata
+        continuation = dict(llm_kwargs)
+        if metadata.conversation_llm_name:
+            for key in ("dialect_name", "endpoint_url", "model", "api_key"):
+                continuation.pop(key, None)
+            continuation["conversation_llm"] = metadata.conversation_llm_name
+        else:
+            continuation.pop("conversation_llm", None)
+            if metadata.dialect_name:
+                continuation["dialect_name"] = metadata.dialect_name
+            if metadata.endpoint_url:
+                continuation["endpoint_url"] = metadata.endpoint_url
+            if metadata.model:
+                continuation["model"] = metadata.model
+        return continuation
 
     def _consume_stream(
         self,
@@ -375,8 +704,8 @@ class ContinuumOrchestrator:
         acc: TurnAccumulator,
         continuum_id: str,
         stream: bool,
-        stream_callback: Callable[[dict[str, object]], None],
-        llm_kwargs: LLMKwargs,
+        stream_callback: Callable[[dict[str, object]], None] | None,
+        show_thinking_stream: bool,
     ) -> None:
         """
         Consume LLM stream events, accumulating results into the TurnAccumulator.
@@ -384,11 +713,6 @@ class ContinuumOrchestrator:
         Handles tool execution logging, response text accumulation, stream callback
         dispatch, container persistence, and cache metric tracking.
         """
-        from cns.core.stream_events import (
-            TextEvent, ThinkingEvent, CompleteEvent,
-            ToolExecutingEvent, ToolCompletedEvent, ToolErrorEvent,
-            CircuitBreakerEvent, FileArtifactEvent
-        )
         from utils.user_context import check_cancelled
         from clients.valkey_client import get_valkey
         valkey = get_valkey()
@@ -411,7 +735,7 @@ class ContinuumOrchestrator:
                     logger.info("🐍 CODE_EXECUTION INVOKED")
                     logger.info("=" * 80)
                     code = event.arguments.get("code", "")
-                    logger.info(f"Python code to execute:\n{code}")
+                    logger.info("Python code to execute: %s characters", len(code))
                     logger.info("=" * 80)
                 elif event.tool_name == "invokeother_tool":
                     mode = event.arguments.get("mode", "")
@@ -419,7 +743,11 @@ class ContinuumOrchestrator:
                         acc.invoked_tool_loader = True
                         logger.info(f"Detected invokeother_tool execution with mode={mode}")
                 else:
-                    logger.info(f"Tool executing: {event.tool_name} with args: {event.arguments}")
+                    logger.info(
+                        "Tool executing: %s with argument keys: %s",
+                        event.tool_name,
+                        sorted(event.arguments.keys())
+                    )
 
             # Tool completion — capture result and touch results
             if isinstance(event, ToolCompletedEvent):
@@ -432,10 +760,14 @@ class ContinuumOrchestrator:
                     logger.info("=" * 80)
                     logger.info("✅ CODE_EXECUTION COMPLETED")
                     logger.info("=" * 80)
-                    logger.info(f"Result:\n{event.result}")
+                    logger.info("Code execution result length: %s", len(event.result))
                     logger.info("=" * 80)
                 elif event.tool_name == "memory_tool":
-                    logger.info(f"Tool completed: {event.tool_name} -> {event.result[:200]}...")
+                    logger.info(
+                        "Tool completed: %s with result length %s",
+                        event.tool_name,
+                        len(event.result)
+                    )
                     try:
                         tool_result = json.loads(event.result) if isinstance(event.result, str) else event.result
                         if tool_result.get("status") == "touched":
@@ -444,10 +776,19 @@ class ContinuumOrchestrator:
                         logger.warning("Failed to parse memory_tool touch result")
                 elif isinstance(event.result, list):
                     # Content blocks (images) — log text blocks only, skip base64
-                    text_parts = [b.get('text', '') for b in event.result if b.get('type') == 'text']
-                    logger.info(f"Tool completed: {event.tool_name} -> [content blocks: {', '.join(text_parts)}]")
+                    text_block_count = sum(1 for b in event.result if b.get('type') == 'text')
+                    logger.info(
+                        "Tool completed: %s with %s content blocks and %s text blocks",
+                        event.tool_name,
+                        len(event.result),
+                        text_block_count
+                    )
                 else:
-                    logger.info(f"Tool completed: {event.tool_name} -> {event.result[:200]}...")
+                    logger.info(
+                        "Tool completed: %s with result type %s",
+                        event.tool_name,
+                        type(event.result).__name__
+                    )
 
                 # Check for inline image artifact in tool result
                 try:
@@ -464,6 +805,12 @@ class ContinuumOrchestrator:
 
             # Tool errors
             if isinstance(event, ToolErrorEvent):
+                for interaction in acc.tool_interactions:
+                    if interaction.tool_id == event.tool_id:
+                        interaction.result = event.result
+                        interaction.completed = True
+                        interaction.is_error = True
+                        break
                 if event.tool_name == "code_execution":
                     logger.error("=" * 80)
                     logger.error("❌ CODE_EXECUTION FAILED")
@@ -473,7 +820,8 @@ class ContinuumOrchestrator:
                 else:
                     logger.error(f"Tool error: {event.tool_name} -> {event.error}")
 
-            # Accumulate response text from all tool loop iterations
+            # Accumulate user-visible text exactly as it was streamed. Text
+            # emitted before a model asks for a tool is still visible output.
             if isinstance(event, TextEvent):
                 acc.response_text += event.content
 
@@ -481,12 +829,8 @@ class ContinuumOrchestrator:
             if stream and stream_callback:
                 if isinstance(event, TextEvent):
                     stream_callback({"type": "text", "content": event.content})
-                elif isinstance(event, ThinkingEvent):
-                    is_generic = llm_kwargs.get('endpoint_url') is not None
-                    if is_generic and not config.api.show_generic_thinking:
-                        pass
-                    else:
-                        stream_callback({"type": "thinking", "content": event.content})
+                elif isinstance(event, ThinkingEvent) and show_thinking_stream:
+                    stream_callback({"type": "thinking", "content": event.content})
                 elif hasattr(event, 'tool_name'):
                     stream_callback({"type": "tool_event", "event": event.type, "tool": event.tool_name})
                 elif isinstance(event, CircuitBreakerEvent):
@@ -509,26 +853,37 @@ class ContinuumOrchestrator:
 
                     stream_callback({"type": "text", "content": download_link})
                     acc.response_text += download_link
+                elif isinstance(event, ProviderSwitchEvent):
+                    stream_callback({
+                        "type": "provider_switch",
+                        "backup_model": event.backup_model,
+                        "reason": event.reason,
+                    })
 
             acc.events.append(event)
 
-            # Capture final response
-            if isinstance(event, CompleteEvent):
+            # Capture model-step responses for replay separately from the
+            # terminal turn response. CompleteEvent is terminal for this
+            # orchestrator stream; ModelStepCompletedEvent is not.
+            if isinstance(event, ModelStepCompletedEvent):
+                acc.tool_call_results.append(event.response)
+            elif isinstance(event, CompleteEvent):
                 acc.raw_response = event.response
                 acc.thinking_content = self.llm_provider.extract_thinking_content(event.response)
 
+            if isinstance(event, (ModelStepCompletedEvent, CompleteEvent)):
                 # Store container_id in Valkey for reuse (1-hour TTL)
-                if hasattr(event.response, '_container_id') and event.response._container_id:
+                if event.response.container_id:
                     valkey_key = f"container:{continuum_id}"
-                    valkey.setex(valkey_key, 3600, event.response._container_id)
-                    logger.info(f"📦 Stored container ID in Valkey: {event.response._container_id}")
+                    valkey.setex(valkey_key, 3600, event.response.container_id)
+                    logger.info(f"📦 Stored container ID in Valkey: {event.response.container_id}")
 
                 # Log cache metrics and track for next turn's estimation
-                if hasattr(event.response, 'usage') and event.response.usage:
+                if event.response.usage:
                     usage = event.response.usage
                     self._last_turn_usage[continuum_id] = usage.input_tokens
-                    cache_created = getattr(usage, 'cache_creation_input_tokens', 0)
-                    cache_read = getattr(usage, 'cache_read_input_tokens', 0)
+                    cache_created = usage.cache_creation_input_tokens
+                    cache_read = usage.cache_read_input_tokens
                     if cache_created > 0:
                         logger.info(f"Cache created: {cache_created} tokens")
                     if cache_read > 0:
@@ -606,121 +961,19 @@ class ContinuumOrchestrator:
             context={"memories": mem.surfaced_memories}
         ))
 
-        # Compose system prompt with all context ready
-        from cns.core.events import ComposeSystemPromptEvent
-        self._cached_content = None
-        self._non_cached_content = None
-        self._conversation_prefix_items = ()
-        self._post_history_items = ()
-        self._notification_center = None
-        self.event_bus.publish(ComposeSystemPromptEvent.create(
-            continuum_id=str(continuum.id),
-            base_prompt=system_prompt
-        ))
-        cached_content = self._cached_content or ""
-        non_cached_content = self._non_cached_content or ""
-        conversation_prefix_items = self._conversation_prefix_items or ()
-        post_history_items = self._post_history_items or ()
-        notification_center = self._notification_center or ""
+        # Apply conversation LLM intent and thinking configuration
+        from utils.user_context import get_user_preferences, resolve_conversation_llm
 
-        # Get available tools
-        available_tools = self.tool_repo.get_all_tool_definitions()
-
-        # Build messages from continuum
-        messages = continuum.get_messages_for_api()
-
-        # Build structured system content with cache breakpoints
-        # Layout: [system BP2] → [prefix] → [history BP3] → [post-history BP4] → [HUD] → [user]
-        system_blocks = []
-        all_system_parts = []
-        if cached_content:
-            all_system_parts.append(cached_content)
-        if non_cached_content:
-            all_system_parts.append(non_cached_content)
-
-        if all_system_parts:
-            system_blocks.append({
-                "type": "text",
-                "text": "\n\n".join(all_system_parts),
-                "cache_control": {"type": "ephemeral", "ttl": "1h"}
-            })
-
-        prefix_messages = [
-            {
-                "role": "assistant",
-                "content": [{"type": "text", "text": item}]
-            }
-            for item in conversation_prefix_items
-        ]
-
-        # Post-history messages (domaindoc) — synthetic tool result framing.
-        # Placed AFTER history so edits don't invalidate the history cache.
-        # Tool result framing gives domain knowledge higher attention weight
-        # than plain assistant messages — the model treats it as retrieved data.
-        # KNOWN BUG: Frozen snapshot for the entire agentic loop. Enable/expand/
-        # edit via domaindoc_tool updates DB but this content is never re-rendered.
-        # Worst case: enable → expand produces zero visible content because the
-        # trinket wasn't rendering that doc at compose time. Same staleness
-        # applies to notification_center (reminders). See _execute_with_tools.
-        post_history_messages = []
-        for i, item in enumerate(post_history_items):
-            tool_use_id = f"toolu_dd_{i:04d}"
-            post_history_messages.append({
-                "role": "assistant",
-                "content": [{
-                    "type": "tool_use",
-                    "id": tool_use_id,
-                    "name": "domaindoc_tool",
-                    "input": {"operation": "overview"}
-                }]
-            })
-            post_history_messages.append({
-                "role": "user",
-                "content": [{
-                    "type": "tool_result",
-                    "tool_use_id": tool_use_id,
-                    "content": item,
-                    "cache_control": {"type": "ephemeral"}
-                }]
-            })
-
-        current_user_msg = messages[-1]
-        history_messages = messages[:-1]
-
-        complete_messages = [
-            {"role": "system", "content": system_blocks},
-            *prefix_messages,
-            *history_messages,
-            *post_history_messages,
-            {"role": "assistant", "content": notification_center},
-            current_user_msg,
-        ]
-        logger.debug(
-            f"Injected {len(prefix_messages)} prefix msgs + "
-            f"{len(history_messages)} history msgs + "
-            f"{len(post_history_messages)} post-history msgs + "
-            f"notification center ({len(notification_center)} chars)"
-        )
-
-        # Initialize messages for LLM (may be modified by overflow remediation)
-        messages_for_llm = complete_messages
-
-        # Check for one-shot adjustment from previous async LLM judgment
-        one_shot_trim = self._pending_context_trim.pop(str(continuum.id), None)
-        if one_shot_trim:
-            logger.info(f"Applying one-shot trim from async LLM judgment: {one_shot_trim} messages")
-            messages_for_llm = _safe_slice(messages_for_llm, one_shot_trim + 1)
-
-        # Apply conversation LLM model and thinking configuration
-        from utils.user_context import get_user_preferences, resolve_conversation_llm, LLMProvider
-        from clients.vault_client import get_api_key
-
-        llm_kwargs = {}
+        llm_kwargs: LLMKwargs = {}
         prefs = get_user_preferences()
         llm_config = resolve_conversation_llm(prefs.conversation_llm)
 
-        llm_kwargs['model_preference'] = llm_config.model
+        llm_kwargs['conversation_llm'] = llm_config.name
         llm_kwargs['max_tokens'] = 31999  # Frontend generation ceiling
+        show_thinking_stream = not (
+            llm_config.dialect_name != "anthropic"
+            and not config.api.show_openai_compat_thinking
+        )
 
         # Extended thinking: enabled only when subcortical layer provides complexity assessment
         if mem.subcortical_result is not None:
@@ -728,38 +981,32 @@ class ContinuumOrchestrator:
             llm_kwargs['effort'] = effort_level
             logger.info(f"Thinking: complexity={mem.subcortical_result.complexity} effort={effort_level}")
 
-        # Provider routing for generic OpenAI-compatible endpoints (Groq, OpenRouter, etc.)
-        if llm_config.provider == LLMProvider.GENERIC:
-            llm_kwargs['endpoint_url'] = llm_config.endpoint_url
-            llm_kwargs['model_override'] = llm_config.model
-            if llm_config.api_key_name:
-                llm_kwargs['api_key_override'] = get_api_key(llm_config.api_key_name)
+        def compose_messages() -> list[dict[str, object]]:
+            return self._compose_llm_messages(continuum, system_prompt, llm_config.name)
 
-        # MODEL_ADDENDA: Per-LLM raw appends to the system message.
-        # If this grows beyond a single LLM, extract to config/model_addenda.yaml
-        # and load via a lookup function. Grep for MODEL_ADDENDA to find all related code.
-        if llm_config.name == "gpt-legacy":
-            system_blocks.append({
-                "type": "text",
-                "text": (
-                    "GPT-4o HAS A HISTORY OF BEING OVERTLY SYCOPHANTIC TO USERS. "
-                    "PLEASE BE AWARE OF THIS PULL AND COURSE CORRECT IF YOU SEE "
-                    "YOURSELF FORMING RESPONSES LIKE THIS INCLUDING STEPPING BACK "
-                    "AND ADDRESSING YOUR ACTIONS DIRECTLY WITH THE USER."
-                ),
-            })
-
-        # Retrieve container_id from Valkey for multi-turn file persistence
-        # Only pass container_id if code_execution tool is enabled (Anthropic requirement)
-        from clients.valkey_client import get_valkey
-        valkey = get_valkey()
-
-        has_code_execution = any(
-            tool.get("type") == "code_execution_20250825"
-            for tool in available_tools
+        complete_messages = compose_messages()
+        messages_for_llm = complete_messages
+        available_tools = self._cached_tool_definitions()
+        last_input = self._last_turn_usage.get(str(continuum.id))
+        estimated = self._estimate_request_tokens(messages_for_llm, available_tools, last_input)
+        available_for_input = (
+            config.api.context_window_tokens
+            - llm_kwargs.get('max_tokens', config.api.max_tokens)
+        )
+        self._maybe_prefetch_context_compaction(
+            continuum_id=str(continuum.id),
+            estimated_tokens=estimated,
+            available_for_input=available_for_input,
         )
 
-        if has_code_execution:
+        # Retrieve container_id from Valkey for adapter-owned container reuse.
+        # Container reuse is Anthropic-only (server-side code_execution feature);
+        # OpenAI-compatible providers reject container params and capability validation
+        # would refuse the request, so the container_id is intentionally not forwarded
+        # for non-Anthropic adapters.
+        if llm_config.dialect_name == "anthropic":
+            from clients.valkey_client import get_valkey
+            valkey = get_valkey()
             valkey_key = f"container:{continuum.id}"
             container_id = valkey.get(valkey_key)
             if container_id:
@@ -771,58 +1018,51 @@ class ContinuumOrchestrator:
         # Stream LLM response with overflow remediation
         acc = TurnAccumulator()
         continuum_id = str(continuum.id)
-        max_overflow_retries = 2
         overflow_attempt = 0
+        deep_fallback_active = False
 
-        while overflow_attempt <= max_overflow_retries:
-            # === PROACTIVE TOKEN CHECK ===
-            last_input = self._last_turn_usage.get(continuum_id)
-            estimated = self._estimate_request_tokens(messages_for_llm, available_tools, last_input)
-            available_for_input = config.api.context_window_tokens - llm_kwargs.get('max_tokens', config.api.max_tokens)
+        def compose_messages_for_tool_loop() -> list[dict[str, object]]:
+            base_messages = compose_messages()
+            if deep_fallback_active:
+                return self._apply_deep_context_overflow_fallback(base_messages)
+            return base_messages
 
-            if estimated > available_for_input:
-                overflow_attempt += 1
-                logger.warning(
-                    f"Proactive context overflow detected: ~{estimated} tokens > {available_for_input} available "
-                    f"(attempt {overflow_attempt}/{max_overflow_retries})"
-                )
-                if overflow_attempt > max_overflow_retries:
-                    raise RuntimeError(
-                        f"Request exceeds context window after {max_overflow_retries} remediation attempts. "
-                        f"Estimated ~{estimated} tokens vs {available_for_input} available."
-                    )
-                messages_for_llm = self._apply_overflow_remediation(
-                    overflow_attempt, messages_for_llm, complete_messages, continuum, text_for_context,
-                    estimated_tokens=estimated, event_type='proactive'
-                )
-                continue
-
+        while True:
             try:
                 self._consume_stream(
-                    self.llm_provider.stream_events(
-                        messages=messages_for_llm,
-                        tools=available_tools,
-                        **llm_kwargs
+                    self._stream_model_tool_loop(
+                        base_messages=messages_for_llm,
+                        compose_messages=compose_messages_for_tool_loop,
+                        llm_kwargs=llm_kwargs,
                     ),
-                    acc, continuum_id, stream, stream_callback, llm_kwargs,
+                    acc, continuum_id, stream, stream_callback, show_thinking_stream,
                 )
                 break  # Success
 
             except ContextOverflowError as e:
                 overflow_attempt += 1
                 logger.warning(
-                    f"Context overflow from API: {e} (attempt {overflow_attempt}/{max_overflow_retries})"
+                    "Context overflow from API: %s (attempt %d)",
+                    e,
+                    overflow_attempt,
                 )
-                if overflow_attempt > max_overflow_retries:
-                    raise RuntimeError(
-                        f"Request exceeds context window after {max_overflow_retries} remediation attempts."
-                    ) from e
-                messages_for_llm = self._apply_overflow_remediation(
-                    overflow_attempt, messages_for_llm, complete_messages, continuum, text_for_context,
-                    estimated_tokens=e.estimated_tokens, event_type='reactive'
-                )
+                if overflow_attempt == 1:
+                    deep_fallback_active = True
+                    messages_for_llm = self._apply_deep_context_overflow_fallback(messages_for_llm)
+                    self._last_turn_usage.pop(continuum_id, None)
+                    acc.reset()
+                    continue
+
                 acc.reset()
-                continue
+                acc.response_text = "collapse the segment, please. incremental compaction failed"
+                metadata["model_error"] = True
+                metadata["model_error_reason"] = "incremental_compaction_failed"
+                if stream and stream_callback:
+                    stream_callback({
+                        "type": "text",
+                        "content": "collapse the segment, please. incremental compaction failed",
+                    })
+                break
 
         # Prepend tool indicator for cache visibility (so MIRA sees its tool usage in history)
         tool_indicator = self._format_tool_indicator(acc.events)
@@ -841,7 +1081,6 @@ class ContinuumOrchestrator:
         logger.debug(f"Emotion tag in clean_text: {'<mira:my_emotion>' in clean_response_text}")
 
         # Check if model tool error caused a blank response - provide user-friendly fallback
-        from cns.core.stream_events import CircuitBreakerEvent
         model_tool_error = next(
             (e for e in acc.events if isinstance(e, CircuitBreakerEvent)
              and "failed after correction" in e.reason),
@@ -879,27 +1118,12 @@ class ContinuumOrchestrator:
         if acc.thinking_content:
             assistant_metadata["thinking"] = acc.thinking_content
 
-        if acc.raw_response and hasattr(acc.raw_response, 'stop_reason'):
+        if acc.raw_response:
             assistant_metadata["stop_reason"] = acc.raw_response.stop_reason
 
-        # Extract full thinking blocks (with signatures) for cross-turn persistence.
-        # The API requires unmodified blocks to maintain reasoning continuity.
-        if acc.raw_response:
-            thinking_blocks = []
-            for block in acc.raw_response.content:
-                if block.type == "thinking":
-                    thinking_blocks.append({
-                        "type": "thinking",
-                        "thinking": block.thinking,
-                        "signature": block.signature
-                    })
-                elif block.type == "redacted_thinking":
-                    thinking_blocks.append({
-                        "type": "redacted_thinking",
-                        "data": block.data
-                    })
-            if thinking_blocks:
-                assistant_metadata["thinking_blocks"] = thinking_blocks
+        if metadata.get("model_error"):
+            assistant_metadata["model_error"] = True
+            assistant_metadata["model_error_reason"] = metadata["model_error_reason"]
 
         # Build tool history messages for persistence (before assistant message
         # so they appear in correct chronological order in the cache)
@@ -912,7 +1136,9 @@ class ContinuumOrchestrator:
         ]
         tool_history_messages: list[Message] = []
         if completed_interactions and not TOMBSTONE_MODE:
-            tool_history_messages = self._build_tool_history_messages(completed_interactions)
+            tool_history_messages = self._build_tool_history_messages(
+                completed_interactions, acc.tool_call_results,
+            )
             continuum.add_tool_history(tool_history_messages)
 
         assistant_msg_obj, response_events = continuum.add_assistant_message(
@@ -928,6 +1154,10 @@ class ContinuumOrchestrator:
             segment_turn_number=segment_turn_number,
             continuum=continuum
         )])
+
+        # Speculatively warm vLLM's prefix cache for the next turn's subcortical
+        # call while the user reads/types. No-op unless prefill_warmup is enabled.
+        self.subcortical_layer.warm_cache(continuum, mem.surfaced_memories)
 
         final_response = clean_response_text
 
@@ -1059,8 +1289,8 @@ class ContinuumOrchestrator:
                 text_for_context,
                 previous_memories=previous_memories
             )
-        except Exception as e:
-            logger.warning("Subcortical processing failed: %s — retaining previous memories without fresh retrieval", e)
+        except Exception:
+            logger.exception("Subcortical processing failed; retaining previous memories without fresh retrieval")
             pinned_ids: set[str] = set()
             pinned_memories = previous_memories
 
@@ -1287,8 +1517,15 @@ class ContinuumOrchestrator:
         """
         Estimate tokens for upcoming LLM request.
 
-        Uses actual token count from previous turn when available (most accurate),
-        otherwise falls back to conservative character-based estimation.
+        Prefers the previous turn's actual input-token count as the baseline
+        (most accurate when the message set is roughly stable turn-over-turn),
+        but always computes a char-based fallback and uses it when the cached
+        baseline is implausibly larger than the current message set — which
+        happens when the message set was shrunk out-of-band between turns
+        (e.g. `segment_timeout_service` collapsing a segment while no turn is
+        in progress). Without this guard, a stale baseline produces a phantom
+        overflow on every subsequent turn until the orchestrator process
+        restarts.
 
         Args:
             messages: Messages to send (including system message)
@@ -1298,22 +1535,34 @@ class ContinuumOrchestrator:
         Returns:
             Estimated token count for the request
         """
-        if last_turn_input_tokens is not None:
-            # Use actual count from last turn as baseline
+        total_chars = 0
+        for msg in messages:
+            content = msg.get('content', '')
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict):
+                        total_chars += len(str(block.get('text', '')))
+            else:
+                total_chars += len(str(content))
+        char_based_tokens = total_chars // 4
+
+        # Char-based is intentionally high (BPE compresses better than 4:1
+        # for typical English), so a legitimate cached baseline should be at
+        # or below it. A cached value more than 2x char-based is stale —
+        # something was removed from the message set since it was written.
+        if last_turn_input_tokens is not None and last_turn_input_tokens <= char_based_tokens * 2:
             base_tokens = last_turn_input_tokens
         else:
-            # Fallback: 4 chars/token (conservative estimate)
-            total_chars = 0
-            for msg in messages:
-                content = msg.get('content', '')
-                if isinstance(content, list):
-                    # Handle structured content (system blocks, multimodal)
-                    for block in content:
-                        if isinstance(block, dict):
-                            total_chars += len(str(block.get('text', '')))
-                else:
-                    total_chars += len(str(content))
-            base_tokens = total_chars // 4
+            if last_turn_input_tokens is not None:
+                logger.info(
+                    "Discarding stale input-token baseline: cached=%d, "
+                    "char-based=%d (ratio=%.1fx). Message set shrank out-of-band "
+                    "since the last turn — falling back to char-based estimate.",
+                    last_turn_input_tokens,
+                    char_based_tokens,
+                    last_turn_input_tokens / max(char_based_tokens, 1),
+                )
+            base_tokens = char_based_tokens
 
         # Tool definitions: ~100 tokens per tool baseline
         tool_tokens = len(tools) * 100 if tools else 0
@@ -1321,334 +1570,154 @@ class ContinuumOrchestrator:
         # 5% overhead buffer for formatting, separators, etc.
         return int((base_tokens + tool_tokens) * 1.05)
 
-    def _prune_by_topic_drift(
+    def _maybe_prefetch_context_compaction(
+        self,
+        *,
+        continuum_id: str,
+        estimated_tokens: int,
+        available_for_input: int,
+    ) -> None:
+        """Speculatively pre-compute a context compaction brief so it can be injected with zero latency when ready."""
+        try:
+            if not self.live_context_compaction_service.should_schedule(
+                estimated_tokens,
+                available_for_input,
+            ):
+                return
+            scheduled = self.live_context_compaction_service.schedule(continuum_id)
+            if scheduled:
+                logger.info(
+                    "Scheduled live context compaction: estimated=%d available=%d",
+                    estimated_tokens,
+                    available_for_input,
+                )
+        except Exception:
+            logger.error("Live context compaction scheduling failed", exc_info=True)
+
+    def _apply_deep_context_overflow_fallback(
         self,
         messages: list[dict[str, object]],
-    ) -> tuple[list[dict[str, object]], dict[str, object]]:
-        """
-        Find topic drift boundary using sliding window embedding similarity.
-        Drop messages before the boundary to reduce context.
-
-        Algorithm:
-        1. Generate embeddings for sliding windows of messages
-        2. Compare adjacent windows via cosine similarity
-        3. Find largest similarity drop (= topic drift boundary)
-        4. If drop below threshold: cut at boundary
-        5. Fallback: oldest-first pruning with configurable count
-
-        Args:
-            messages: Full message list including system message at [0]
-
-        Returns:
-            Tuple of (pruned_messages, drift_details_dict)
-        """
-        import numpy as np
-
-        # Config values
-        window_size = TOPIC_DRIFT_WINDOW_SIZE
-        drift_threshold = TOPIC_DRIFT_THRESHOLD
-        fallback_prune_count = OVERFLOW_FALLBACK_PRUNE_COUNT
-
-        # Need enough messages to analyze (window_size * 2 + 1 for system msg)
-        if len(messages) < window_size * 2 + 1:
-            # Too few messages, use oldest-first fallback
-            logger.info(f"Too few messages for drift detection ({len(messages)}), using fallback")
-            result = _safe_slice(messages, fallback_prune_count + 1)
-            details = {
-                "window_size": window_size,
-                "threshold": drift_threshold,
-                "candidates_found": 0,
-                "selected_index": None,
-                "selection_method": "too_few_messages",
-            }
-            return result, details
-
-        # Generate window embeddings (exclude system message at [0])
-        content_messages = messages[1:]
-        windows = []
-
-        for i in range(len(content_messages) - window_size + 1):
-            window_text = " ".join(
-                str(m.get('content', ''))[:500]  # Truncate long messages
-                for m in content_messages[i:i + window_size]
-            )
-            # Use fast embeddings for drift detection
-            embedding = self.embeddings_provider.encode_realtime(window_text)
-            windows.append((i, embedding))
-
-        # Find candidate cut points (similarity drops)
-        candidate_cuts = []
-
-        def cosine_similarity(a, b) -> float:
-            """Compute cosine similarity between two vectors."""
-            a = np.array(a)
-            b = np.array(b)
-            return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9))
-
-        for i in range(len(windows) - 1, 0, -1):
-            similarity = cosine_similarity(windows[i][1], windows[i - 1][1])
-            drop = 1.0 - similarity
-            if drop > (1.0 - drift_threshold):
-                candidate_cuts.append({
-                    'index': windows[i][0],
-                    'similarity': similarity,
-                    'drop': drop
-                })
-
-        # Current implementation: select largest drop
-        best_cut_idx = None
-        selection_method = "no_candidates"
-        if candidate_cuts:
-            best_cut = max(candidate_cuts, key=lambda c: c['drop'])
-            best_cut_idx = best_cut['index']
-            selection_method = "largest_drop"
-
-        # Build details for logging
-        details = {
-            "window_size": window_size,
-            "threshold": drift_threshold,
-            "candidates_found": len(candidate_cuts),
-            "candidate_drops": [
-                {"index": c["index"], "drop": round(c["drop"], 3)}
-                for c in candidate_cuts[:5]
-            ],
-            "selected_index": best_cut_idx,
-            "selection_method": selection_method,
-        }
-
-        if best_cut_idx is not None:
-            # Found topic boundary - keep system msg + messages from boundary onward
-            logger.info(f"Topic drift detected at message {best_cut_idx}, dropping {best_cut_idx} messages")
-            return _safe_slice(messages, best_cut_idx + 1), details
-        else:
-            # No clear boundary - use oldest-first fallback
-            logger.info(f"No topic drift found, using oldest-first fallback ({fallback_prune_count} messages)")
-            details["selection_method"] = "fallback"
-            return _safe_slice(messages, fallback_prune_count + 1), details
-
-    def _llm_judge_cut_point(self, messages: list[dict[str, object]]) -> int | None:
-        """
-        Use LLM to intelligently select the best cut point for context reduction.
-
-        Analyzes conversation for topic boundaries and selects where to cut
-        that minimizes loss of relevant context.
-
-        Args:
-            messages: Full message list including system message at [0]
-
-        Returns:
-            Index to cut at (messages before this index will be dropped), or None if no cut recommended
-        """
-        import numpy as np
-
-        # Need enough messages to analyze
-        if len(messages) < 7:  # System + at least 3 turns
-            return None
-
-        content_messages = messages[1:]  # Exclude system message
-
-        # First, find candidate cut points using embedding similarity
-        window_size = TOPIC_DRIFT_WINDOW_SIZE
-        drift_threshold = TOPIC_DRIFT_THRESHOLD
-
-        if len(content_messages) < window_size * 2:
-            return None
-
-        # Generate window embeddings
-        windows = []
-        for i in range(len(content_messages) - window_size + 1):
-            window_text = " ".join(
-                str(m.get('content', ''))[:500]
-                for m in content_messages[i:i + window_size]
-            )
-            embedding = self.embeddings_provider.encode_realtime(window_text)
-            windows.append((i, embedding))
-
-        # Find candidate cut points
-        def cosine_similarity(a, b) -> float:
-            a = np.array(a)
-            b = np.array(b)
-            return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9))
-
-        candidate_cuts = []
-        for i in range(len(windows) - 1, 0, -1):
-            similarity = cosine_similarity(windows[i][1], windows[i - 1][1])
-            drop = 1.0 - similarity
-            if drop > (1.0 - drift_threshold):
-                candidate_cuts.append({
-                    'index': windows[i][0],
-                    'similarity': similarity,
-                    'drop': drop
-                })
-
-        if not candidate_cuts:
-            return None
-
-        # Build context for LLM showing candidate boundaries
-        boundary_contexts = []
-        for i, cut in enumerate(candidate_cuts[:5]):  # Limit to top 5 candidates
-            cut_idx = cut['index']
-            before_start = max(0, cut_idx - 2)
-            after_end = min(len(content_messages), cut_idx + 2)
-
-            before_msgs = []
-            for j in range(before_start, cut_idx):
-                msg = content_messages[j]
-                role = msg.get('role', 'unknown')
-                content = str(msg.get('content', ''))[:200]
-                before_msgs.append(f"  [{role}]: {content}...")
-
-            after_msgs = []
-            for j in range(cut_idx, after_end):
-                msg = content_messages[j]
-                role = msg.get('role', 'unknown')
-                content = str(msg.get('content', ''))[:200]
-                after_msgs.append(f"  [{role}]: {content}...")
-
-            boundary_contexts.append(
-                f"BOUNDARY {i + 1} (similarity drop: {cut['drop']:.2f}):\n"
-                f"Before boundary:\n" + "\n".join(before_msgs) + "\n"
-                f"--- CUT HERE (drop {cut_idx} messages) ---\n"
-                f"After boundary:\n" + "\n".join(after_msgs)
-            )
-
-        recent_msg = content_messages[-1]
-        recent_content = str(recent_msg.get('content', ''))[:300]
-
-        prompt = f"""You are helping manage conversation context. The conversation has grown too large and we need to trim older messages.
-
-Below are candidate cut points where the topic appears to shift. Each boundary shows messages before and after the potential cut point.
-
-MOST RECENT MESSAGE (what we're trying to respond to):
-{recent_content}
-
-CANDIDATE BOUNDARIES:
-{chr(10).join(boundary_contexts)}
-
-Which boundary is the BEST place to cut? Consider:
-1. Which older content is least relevant to the recent message?
-2. Where does a clear topic shift occur?
-3. We want to preserve context that helps answer the recent message.
-
-Respond with ONLY the boundary number (1-{len(candidate_cuts)}) or "NONE" if no cut is recommended.
-"""
-
-        try:
-            # Use tidyup config (cheap Haiku model) for this judgment
-            response = self.llm_provider.generate_response(
-                messages=[{"role": "user", "content": prompt}],
-                internal_llm='tidyup',
-                tools=None
-            )
-
-            result_text = self.llm_provider.extract_text_content(response).strip().upper()
-
-            if result_text == "NONE":
-                return None
-
-            # Parse boundary number
-            try:
-                boundary_num = int(result_text.replace("BOUNDARY", "").strip())
-                if 1 <= boundary_num <= len(candidate_cuts):
-                    selected_cut = candidate_cuts[boundary_num - 1]
-                    logger.info(f"LLM selected boundary {boundary_num} at index {selected_cut['index']}")
-                    return selected_cut['index']
-            except ValueError:
-                pass
-
-            # Fallback: if we can't parse, use largest drop
-            best_cut = max(candidate_cuts, key=lambda c: c['drop'])
-            return best_cut['index']
-
-        except Exception as e:
-            logger.warning(f"LLM judgment failed, using embedding fallback: {e}")
-            # Fallback to largest drop
-            best_cut = max(candidate_cuts, key=lambda c: c['drop'])
-            return best_cut['index']
-
-    def _schedule_async_context_judgment(self, continuum_id: str | UUID, messages: list[dict[str, object]]) -> None:
-        """
-        Schedule async LLM judgment to determine optimal cut point.
-        Result stored in _pending_context_trim for one-shot application on next request.
-
-        Args:
-            continuum_id: ID of the continuum (UUID or string)
-            messages: Full message list for analysis
-        """
-        import concurrent.futures
-
-        def _run_judgment_sync():
-            """Synchronous wrapper for LLM judgment."""
-            try:
-                optimal_cut = self._llm_judge_cut_point(messages)
-                if optimal_cut is not None:
-                    self._pending_context_trim[str(continuum_id)] = optimal_cut
-                    logger.info(f"Async LLM judgment complete: trim index {optimal_cut} stored for next request")
-            except Exception as e:
-                logger.warning(f"Async context judgment failed (non-critical): {e}")
-
-        # Run in thread pool to not block
-        try:
-            executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-            executor.submit(_run_judgment_sync)
-        except Exception as e:
-            logger.warning(f"Failed to schedule async judgment: {e}")
-
-    def _apply_overflow_remediation(
-        self,
-        attempt: int,
-        messages_for_llm: list[dict[str, object]],
-        complete_messages: list[dict[str, object]],
-        continuum: Continuum,
-        text_for_context: str,
-        estimated_tokens: int = 0,
-        event_type: Literal["proactive", "reactive"] = "proactive"
     ) -> list[dict[str, object]]:
         """
-        Apply tiered overflow remediation strategy.
+        Aggressively shrink an already composed provider request after overflow.
 
-        Tier 1: Embedding-based topic drift pruning (fast, no LLM, big token savings)
-        Tier 2: Pure oldest-first fallback (maximum speed)
-
-        Args:
-            attempt: Current remediation attempt (1, 2, or 3)
-            messages_for_llm: Current message list to reduce
-            complete_messages: Original complete message list (for async judgment)
-            continuum: Continuum object for ID
-            text_for_context: User's text for context
-            estimated_tokens: Token estimate that triggered overflow (for logging)
-            event_type: 'proactive' or 'reactive' (for logging)
-
-        Returns:
-            Reduced message list
+        System and assistant prefix text scaffolding are preserved. Tool calls
+        and role=tool results are tombstoned everywhere to avoid orphaned
+        provider-structural messages.
         """
-        messages_before = len(messages_for_llm)
+        recent_user_indices = [
+            i for i, m in enumerate(messages)
+            if m.get("role") == "user"
+        ][-CONTEXT_OVERFLOW_RECENT_USER_TURNS:]
+        recent_start = recent_user_indices[0] if recent_user_indices else len(messages)
 
-        if attempt == 1:
-            # Remediation 1: Embedding-based topic drift pruning
-            logger.info("Remediation 1: Embedding-based topic drift pruning")
-            pruned, drift_result = self._prune_by_topic_drift(messages_for_llm)
+        shaped: list[dict[str, object]] = []
+        for index, message in enumerate(messages):
+            if message.get("role") == "tool":
+                continue
 
-            logger.info(
-                "Overflow remediated: topic drift pruning | tier=1 tokens=%d before=%d after=%d event=%s drift=%s",
-                estimated_tokens, messages_before, len(pruned), event_type, drift_result
+            keep_text_intact = (
+                message.get("role") == "system"
+                or message.get("_is_scaffold")
+                or index >= recent_start
             )
-
-            # Fire async LLM judgment for next request (one-shot improvement)
-            self._schedule_async_context_judgment(continuum.id, complete_messages)
-            return pruned
-
-        else:
-            # Remediation 2: Pure oldest-first fallback (maximum speed)
-            logger.info("Remediation 2: Pure oldest-first fallback")
-            prune_count = OVERFLOW_FALLBACK_PRUNE_COUNT
-            result = _safe_slice(messages_for_llm, prune_count + 1)
-
-            logger.info(
-                "Overflow remediated: oldest-first fallback | tier=2 tokens=%d before=%d after=%d event=%s",
-                estimated_tokens, messages_before, len(result), event_type
+            shaped_message = self._shape_message_for_context_overflow(
+                message,
+                keep_text_intact=keep_text_intact,
             )
-            return result
+            shaped.append(shaped_message)
+
+        logger.info(
+            "Applied deep context overflow fallback: before=%d after=%d recent_user_turns=%d",
+            len(messages),
+            len(shaped),
+            len(recent_user_indices),
+        )
+        return shaped
+
+    def _shape_message_for_context_overflow(
+        self,
+        message: dict[str, object],
+        *,
+        keep_text_intact: bool,
+    ) -> dict[str, object]:
+        shaped = dict(message)
+        shaped.pop("_is_scaffold", None)
+        shaped.pop("thinking_signatures", None)
+        shaped.pop("reasoning_details", None)
+
+        content = message.get("content")
+        if isinstance(content, str):
+            shaped_content = (
+                content
+                if keep_text_intact
+                else self._truncate_fallback_text(content)
+            )
+            shaped["content"] = shaped_content
+            return shaped
+
+        if not isinstance(content, list):
+            shaped["content"] = str(content)
+            return shaped
+
+        new_blocks: list[dict[str, object]] = []
+        removed_tool_calls = 0
+        omitted_non_text = 0
+
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            block_type = block.get("type")
+            if block_type == "tool_call":
+                removed_tool_calls += 1
+                continue
+            if block_type in {"text", "reasoning"}:
+                new_block = dict(block)
+                text = str(new_block.get("text", ""))
+                if not keep_text_intact:
+                    text = self._truncate_fallback_text(text)
+                new_block["text"] = text
+                new_blocks.append(new_block)
+                continue
+            if keep_text_intact:
+                new_blocks.append(dict(block))
+            else:
+                omitted_non_text += 1
+
+        if removed_tool_calls:
+            new_blocks.append({
+                "type": "text",
+                "text": (
+                    f"[Omitted {removed_tool_calls} prior tool call(s) during "
+                    "context overflow fallback.]"
+                ),
+            })
+            shaped.pop("has_tool_calls", None)
+        if omitted_non_text:
+            new_blocks.append({
+                "type": "text",
+                "text": (
+                    f"[Omitted {omitted_non_text} older non-text content block(s) "
+                    "during context overflow fallback.]"
+                ),
+            })
+
+        if not new_blocks:
+            new_blocks.append({
+                "type": "text",
+                "text": "[Omitted prior non-text content during context overflow fallback.]",
+            })
+
+        shaped["content"] = new_blocks
+        return shaped
+
+    def _truncate_fallback_text(self, text: str) -> str:
+        if len(text) <= CONTEXT_OVERFLOW_FALLBACK_TEXT_LIMIT:
+            return text
+        return (
+            text[:CONTEXT_OVERFLOW_FALLBACK_TEXT_LIMIT]
+            + "\n[Truncated older text during context overflow fallback.]"
+        )
 
     def _process_checkin_response(self, checkin_response: str) -> None:
         """

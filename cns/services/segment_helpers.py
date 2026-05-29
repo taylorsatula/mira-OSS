@@ -6,7 +6,7 @@ metadata.is_segment_boundary = True, following the same pattern as session bound
 """
 import logging
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 from cns.core.message import Message
@@ -17,7 +17,8 @@ logger = logging.getLogger(__name__)
 
 def create_segment_boundary_sentinel(
     first_message_time: datetime,
-    continuum_id: str
+    continuum_id: str,
+    segment_id: str | None = None,
 ) -> Message:
     """
     Create segment boundary sentinel message.
@@ -28,14 +29,19 @@ def create_segment_boundary_sentinel(
     Args:
         first_message_time: Timestamp of first message in segment
         continuum_id: Continuum UUID (for reference)
+        segment_id: Pre-allocated segment ID. When provided (via
+            set_current_segment_id contextvar), the persisted sentinel uses
+            the same ID tools saw this turn. When None, a fresh uuid4 is
+            allocated.
 
     Returns:
         Message object with segment boundary metadata
     """
+    allocated_id = segment_id or str(uuid4())
     metadata = {
         'is_segment_boundary': True,
         'status': 'active',
-        'segment_id': str(uuid4()),  # Unique segment identifier
+        'segment_id': allocated_id,
         'segment_start_time': first_message_time.isoformat(),
         'segment_end_time': first_message_time.isoformat(),  # Will update as messages arrive
         'segment_turn_count': 1,  # Initialized to 1 since creation happens on first turn
@@ -45,11 +51,17 @@ def create_segment_boundary_sentinel(
         'domain_blocks_updated': False
     }
 
+    # Sentinel created_at precedes the first real message by 1µs so that
+    # chronological queries place the boundary marker before the messages it
+    # brackets, without relying on insertion order.
+    sentinel_time = first_message_time - timedelta(microseconds=1)
+
     # Content is placeholder until collapse generates summary
     sentinel = Message(
         content="[Segment in progress]",
         role="assistant",
-        metadata=metadata
+        metadata=metadata,
+        created_at=sentinel_time,
     )
 
     logger.info(

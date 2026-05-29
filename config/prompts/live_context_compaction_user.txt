@@ -1,0 +1,6 @@
+<begin_new_history>
+{new_history}
+----------------------------
+</end_new_history>
+
+Please output the new brief using the exact format laid out in the system prompt.

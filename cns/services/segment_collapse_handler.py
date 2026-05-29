@@ -381,8 +381,8 @@ class SegmentCollapseHandler:
             SELECT * FROM messages
             WHERE continuum_id = %s
                 AND created_at > %s
-                AND (metadata->>'is_segment_boundary' IS NULL OR metadata->>'is_segment_boundary' != 'true')
-                AND (metadata->>'system_notification' IS NULL OR metadata->>'system_notification' != 'true')
+                AND COALESCE(metadata->>'is_segment_boundary', 'false') != 'true'
+                AND COALESCE(metadata->>'system_notification', 'false') != 'true'
             ORDER BY created_at ASC
         """
 
@@ -457,7 +457,10 @@ class SegmentCollapseHandler:
         except Exception as e:
             # Re-raise to fail the entire collapse operation
             # Segment will remain active and retry on next timeout check
-            logger.error(f"Segment summary generation failed - segment {sentinel.metadata.get('segment_id')} will remain active and retry")
+            logger.exception(
+                "Segment summary generation failed; segment %s will remain active and retry",
+                sentinel.metadata.get('segment_id')
+            )
             raise RuntimeError(f"Segment collapse failed: summary generation error") from e
 
     def _trigger_downstream_processing(
@@ -565,8 +568,8 @@ class SegmentCollapseHandler:
                 try:
                     pending = PendingManualMemory.from_json(json_str)
                     all_pending.append(pending)
-                except Exception as e:
-                    logger.warning(f"Failed to parse pending memory: {e}")
+                except Exception:
+                    logger.warning("Failed to parse pending memory", exc_info=True)
 
             # Delete queue after fetching
             if pending_json_list:
@@ -635,9 +638,9 @@ class SegmentCollapseHandler:
                     f"(pending_id: {mem.pending_id})"
                 )
 
-            except Exception as e:
+            except Exception:
                 # Log but don't fail segment collapse on individual memory failures
-                logger.error(f"Failed to process pending memory {mem.pending_id}: {e}")
+                logger.exception("Failed to process pending memory %s", mem.pending_id)
 
     def _find_memory_by_short_id(self, short_id: str, db: LTMemoryDB) -> Memory | None:
         """
@@ -673,7 +676,7 @@ class SegmentCollapseHandler:
 
     def _extract_tools_from_messages(self, messages: List[Message]) -> List[str]:
         """
-        Extract unique tools used by parsing message content for tool_use blocks.
+        Extract unique tools used by parsing message content for tool_call blocks.
 
         Args:
             messages: Messages in segment
@@ -691,8 +694,8 @@ class SegmentCollapseHandler:
             # Check if content is structured (list of blocks)
             if isinstance(msg.content, list):
                 for block in msg.content:
-                    # Extract tool name from tool_use blocks
-                    if isinstance(block, dict) and block.get('type') == 'tool_use':
+                    # Extract tool name from tool_call blocks
+                    if isinstance(block, dict) and block.get('type') == 'tool_call':
                         tool_name = block.get('name')
                         if tool_name:
                             tools_used.add(tool_name)
@@ -710,17 +713,20 @@ class SegmentCollapseHandler:
             segment_id: Segment UUID to cleanup files for
         """
         try:
-            from clients.files_manager import FilesManager
             from cns.services.orchestrator import get_orchestrator
 
             orchestrator = get_orchestrator()
-            files_manager = FilesManager(orchestrator.llm_provider.anthropic_client)
+            files_manager = orchestrator.llm_provider.create_files_manager()
             files_manager.cleanup_segment_files(segment_id)
 
             logger.debug(f"Cleaned up Files API uploads for segment {segment_id}")
-        except Exception as e:
+        except Exception:
             # Log but don't fail segment collapse on cleanup errors
-            logger.warning(f"Failed to cleanup Files API uploads for segment {segment_id}: {e}")
+            logger.warning(
+                "Failed to cleanup Files API uploads for segment %s",
+                segment_id,
+                exc_info=True
+            )
 
     def _count_user_segments(self) -> int:
         """

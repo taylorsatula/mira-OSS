@@ -29,7 +29,7 @@ from utils.document_processing import process_document, ProcessedDocument, SUPPO
 from utils.image_compression import compress_image, CompressedImage
 from utils.text_sanitizer import sanitize_message_content
 from utils.timezone_utils import utc_now, format_utc_iso
-from utils.user_context import set_current_segment_id
+
 from .base import BaseHandler, SuccessResponse, ErrorResponse, ValidationError, create_success_response
 from cns.services.orchestrator import get_orchestrator
 from cns.infrastructure.continuum_pool import get_continuum_pool
@@ -170,27 +170,19 @@ class ChatEndpoint(BaseHandler):
             continuum = continuum_pool.get_or_create()
 
             # Increment segment turn counter at API boundary (before any internal processing)
-            # This ensures only real user messages increment the counter, not synthetic messages
-            segment_turn_number = continuum_pool.repository.increment_segment_turn(
+            # This ensures only real user messages increment the counter, not synthetic messages.
+            # increment_segment_turn also sets current_segment_id contextvar and
+            # (for new segments) defers sentinel persistence to commit-time.
+            result = continuum_pool.repository.increment_segment_turn(
                 continuum.id, user_id
             )
-
-            # Get segment ID for file lifecycle tracking
-            active_sentinel = continuum_pool.repository.find_active_segment(continuum.id, user_id)
-            if not active_sentinel:
-                raise ValidationError("No active segment found")
-            segment_id = active_sentinel.metadata.get('segment_id')
-            if not segment_id:
-                raise ValidationError("Active segment missing segment_id")
-
-            # Set segment_id in context for tools (e.g., memory_tool.create_memory)
-            set_current_segment_id(segment_id)
+            segment_turn_number = result.turn_number
+            segment_id = result.segment_id
 
             # Process document with Files API support
             processed_doc: ProcessedDocument | None = None
             if document_bytes:
-                # Initialize FilesManager with Anthropic client
-                files_manager = FilesManager(orchestrator.llm_provider.anthropic_client)
+                files_manager = orchestrator.llm_provider.create_files_manager()
 
                 try:
                     processed_doc = process_document(
@@ -215,11 +207,8 @@ class ChatEndpoint(BaseHandler):
                     {"type": "text", "text": msg},
                     {
                         "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": compressed.inference_media_type,
-                            "data": compressed.inference_base64,
-                        }
+                        "media_type": compressed.inference_media_type,
+                        "data": compressed.inference_base64,
                     }
                 ]
                 # Storage tier (512px WebP) for persistence and multi-turn context
@@ -227,11 +216,8 @@ class ChatEndpoint(BaseHandler):
                     {"type": "text", "text": msg},
                     {
                         "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": compressed.storage_media_type,
-                            "data": compressed.storage_base64,
-                        }
+                        "media_type": compressed.storage_media_type,
+                        "data": compressed.storage_base64,
                     }
                 ]
             elif processed_doc:
@@ -239,18 +225,15 @@ class ChatEndpoint(BaseHandler):
                 if processed_doc.content_type == "container_upload":
                     # Structured data: Files API with file_id (CSV, XLSX, JSON for code execution)
                     doc_block: ContentBlock = {
-                        "type": "container_upload",
-                        "file_id": processed_doc.data  # file_id from Files API (no source wrapper!)
+                        "type": "file_ref",
+                        "file_id": processed_doc.data  # file_id from Files API
                     }
                 elif processed_doc.content_type == "document":
                     # PDF: Base64 document block
                     doc_block = {
                         "type": "document",
-                        "source": {
-                            "type": "base64",
-                            "media_type": processed_doc.media_type,
-                            "data": processed_doc.data,
-                        }
+                        "media_type": processed_doc.media_type,
+                        "data": processed_doc.data,
                     }
                 else:
                     # DOCX/plain text: Extracted text
@@ -393,4 +376,3 @@ def chat_endpoint(
                 }
             }
         )
-

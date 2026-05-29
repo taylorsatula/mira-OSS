@@ -54,7 +54,7 @@ class ContactsTool(Tool):
     name = "contacts_tool"
     
     simple_description = "Store and retrieve contact information (name, email, phone). Search by name or view all contacts. Link reminders to a specific person's UUID."
-    anthropic_schema = {
+    tool_schema = {
         "name": "contacts_tool",
         "description": "Manages personal contacts with basic CRUD operations. Each contact has a unique UUID for linking to other tools.",
         "input_schema": {

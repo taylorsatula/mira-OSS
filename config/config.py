@@ -13,11 +13,12 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class ApiConfig(BaseModel):
-    """Anthropic API and LLM provider configuration."""
+    """LLM API and provider adapter configuration."""
 
     # Feature flags
     analysis_enabled: bool = Field(default=True, description="Enable subcortical layer for retrieval")
-    show_generic_thinking: bool = Field(default=True, description="Show thinking blocks from generic providers to end user")
+    subcortical_prefill_warmup: bool = Field(default=False, description="Pre-warm subcortical KV cache after each turn (vLLM prefix-cache deployments only — wastes billed tokens on cloud providers)")
+    show_openai_compat_thinking: bool = Field(default=True, description="Show thinking blocks from OpenAI-compatible adapters to end user")
     emergency_fallback_enabled: bool = Field(default=True, description="Enable automatic failover to emergency provider on Anthropic errors")
 
     # Infrastructure coordinates
@@ -33,9 +34,11 @@ class ApiConfig(BaseModel):
 
     # Generation settings
     model: str = Field(default="claude-sonnet-4-6", description="Default model when no tier/override is specified")
-    max_tokens: int = Field(default=10000, description="Maximum tokens to generate in responses")
+    max_tokens: int = Field(default=31999, description="Maximum tokens to generate in responses")
     context_window_tokens: int = Field(default=200000, description="Total context window size in tokens")
     temperature: float = Field(default=1.0, description="Temperature for response generation (Anthropic default: 1.0)")
+    compaction_trigger_buffer_tokens: int = Field(default=4000, description="Tokens buffer before provider limit to trigger live context compaction speculatively.")
+    compaction_raw_user_turns_to_preserve: int = Field(default=10, description="Number of recent user turns to preserve in raw format without compaction.")
 
 
 class ApiServerConfig(BaseModel):
@@ -162,5 +165,3 @@ class InboxToolConfig(BaseModel):
         if not path.is_absolute():
             raise ValueError("inbox_path must be an absolute path")
         return str(path)
-
-

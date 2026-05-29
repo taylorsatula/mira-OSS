@@ -92,7 +92,7 @@ When calling code misuses an interface, fix the caller — never adapt the inter
 ## 🧭 Codebase Patterns
 
 ### User ID Resolution
-All user-scoped code resolves `user_id` via contextvar: `from utils.user_context import get_current_user_id`. It is set once at the API boundary (`cns/api/chat.py`) and flows automatically through the entire request. Never pass `user_id` through event context dicts, function parameters, or instance fields as a substitute for the contextvar — redundant channels cause inconsistent resolution patterns. Downstream services that take `user_id` as an explicit parameter (e.g., `ManifestQueryService.get_segments(user_id)`) are acceptable; the caller sources it from the contextvar. For scheduled jobs and batch operations outside HTTP context, explicitly call `set_current_user_id(user_id)`.
+All user-scoped code resolves `user_id` via contextvar: `from utils.user_context import get_current_user_id`. It is set once at the API boundary (`cns/api/chat.py`, `websocket_chat.py`) and flows automatically through the entire request. Never pass `user_id` through event context dicts, function parameters, or instance fields as a substitute for the contextvar — redundant channels cause inconsistent resolution patterns. Downstream services that take `user_id` as an explicit parameter (e.g., `ManifestQueryService.get_segments(user_id)`) are acceptable; the caller sources it from the contextvar. For scheduled jobs and batch operations outside HTTP context, explicitly call `set_current_user_id(user_id)`.
 
 ### Activity Days & Use-Day Scheduling
 MIRA uses **use-day scheduling** — periodic jobs fire based on user activity days, not calendar time. A user who logs in Monday, skips Tuesday, returns Wednesday has their counter tick on Monday and Wednesday only. This prevents wasted work on inactive users and ensures jobs run at consistent engagement intervals.
@@ -115,14 +115,17 @@ MIRA uses **use-day scheduling** — periodic jobs fire based on user activity d
 To get the current user's activity day count inline: `from utils.user_context import get_user_cumulative_activity_days`.
 
 ### Provider Stall Detection & Fallback
-All LLM transports (Anthropic SDK and generic OpenAI-compatible providers) share `LLMProvider._run_with_response_timeout()` with `config.api.provider_response_timeout` (default 15s). It kills providers that accept the connection but produce no output:
+All live LLM transports run through `clients.llm.lifecycle.LLMLifecycle`, which wraps provider operations with `config.api.provider_response_timeout` (default 60s). It kills providers that accept the connection but produce no output:
 
-- **Non-streaming**: `LLMProvider` wraps the provider call and raises `ProviderStallError` if the call produces no completed response within the timeout.
-- **Streaming**: `LLMProvider` wraps each `next()` on the provider stream iterator and raises `ProviderStallError` if no chunk/event arrives within the timeout.
+- **Non-streaming**: `LLMLifecycle` wraps the adapter `complete()` call and raises `ProviderStallError` if the call produces no completed response within the timeout.
+- **Streaming**: `LLMLifecycle` wraps each `next()` on the adapter stream iterator and raises `ProviderStallError` if no chunk/event arrives within the timeout.
 
-**Fallback**: Both `stream_events()` and `_generate_non_streaming()` catch `ProviderStallError` and retry with `claude-high` (resolved from the `internal_llm` schema via `get_internal_llm("claude-high")`). In the streaming path, a `ProviderSwitchEvent` is yielded to the frontend (type=`provider_switch`) so it can clear partial output and display a persistent "generation hung, retrying…" alert. If the backup also stalls, the timeout fires normally — no double-failover.
+**Fallback**: `LLMLifecycle` catches `ProviderStallError` and retryable provider errors and retries once with `claude-high` selected by `ModelResolver`. In the streaming path, a `ProviderSwitchEvent` is yielded to the frontend (type=`provider_switch`) so it can clear partial output and display a persistent "generation hung, retrying…" alert. If the backup also stalls, the timeout fires normally — no double-failover.
 
-When adding new provider call sites, wrap blocking provider operations with `_run_with_response_timeout()` in `LLMProvider` instead of implementing provider-specific watchdogs.
+When adding new provider transports, implement an adapter under `clients/llm/adapters/` and let `LLMLifecycle` own timeout, fallback, tool execution, and explicit `clients.llm.accounting.UsageAccountingPolicy` finalization. Hosted billing failures are required lifecycle failures; only builds without the billing package disable billing policy.
+
+### Power-On Self-Test
+MIRA uses a two-phase POST in `utils/power_on_self_test.py`: `main.py` runs the pre-server gate before Hypercorn binds, and `scripts/post_server_post.py` verifies the already-bound live service through HTTP diagnostics plus direct provider probes. `scripts/__init__.py` exists so operational scripts can run with `python -m scripts.<name>`. POST checks must exercise real infrastructure and must not use mocks.
 
 ## ⚡ Performance & Tool Usage
 - **Synchronous Over Async**: Prefer synchronous unless genuine concurrency benefit exists. Only use `async/await` for truly asynchronous operations (network I/O, parallelizable file I/O, external APIs). Async overhead (context switching, event loop, complex calls) hurts performance without actual I/O concurrency. Sync is easier to debug, test, reason about.

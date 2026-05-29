@@ -213,7 +213,7 @@ class EmailTool(Tool):
     
     description = simple_description + implementation_details
 
-    anthropic_schema = {
+    tool_schema = {
         "name": "email_tool",
         "description": "Email management tool that provides access to email accounts via IMAP/SMTP protocols. Use this tool to read, search, send, and manage emails.",
         "input_schema": {

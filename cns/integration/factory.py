@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from cns.services.memory_relevance_service import MemoryRelevanceService
     from cns.services.subcortical import SubcorticalLayer
     from cns.services.peanutgallery_service import PeanutGalleryService
+    from cns.services.live_context_compaction_service import LiveContextCompactionService
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,7 @@ class CNSIntegrationFactory:
         self._inbox_poller: object | None = None
         self._valkey_cache: ValkeyMessageCache | None = None
         self._memory_relevance_service: MemoryRelevanceService | None = None
+        self._live_context_compaction_service: LiveContextCompactionService | None = None
         
     def create_orchestrator(self) -> ContinuumOrchestrator:
         """
@@ -88,13 +90,17 @@ class CNSIntegrationFactory:
         event_bus.subscribe('TurnCompletedEvent',
             lambda e: tool_repo.cleanup_ephemeral_tools(essential_set))
 
-        llm_provider = self._get_llm_provider(tool_repo)
+        llm_provider = self._get_llm_provider()
         tag_parser = self._get_tag_parser()
 
         # Create CNS services - first create repo without cache manager
         from ..infrastructure.continuum_repository import get_continuum_repository
         continuum_repo = get_continuum_repository()  # Use singleton
-        
+
+        live_context_compaction_service = self._get_live_context_compaction_service(
+            continuum_repo,
+            llm_provider,
+        )
 
         # Create memory relevance service for surfacing memories
         memory_relevance_service = self._get_memory_relevance_service()
@@ -134,6 +140,7 @@ class CNSIntegrationFactory:
             subcortical_layer=subcortical_layer,
             memory_relevance_service=memory_relevance_service,
             event_bus=event_bus,
+            live_context_compaction_service=live_context_compaction_service,
         )
 
         logger.info("CNS orchestrator initialized successfully with full integration")
@@ -148,15 +155,12 @@ class CNSIntegrationFactory:
             logger.info("Hybrid embedding provider initialized")
         return self._embedding_model
         
-    def _get_llm_provider(self, tool_repo: ToolRepository | None = None) -> LLMProvider:
+    def _get_llm_provider(self) -> LLMProvider:
         """Get or create LLM provider instance."""
         if self._llm_provider is None:
             logger.info("Initializing LLM provider")
-            self._llm_provider = LLMProvider(tool_repo=tool_repo)
-            if tool_repo:
-                logger.info("LLM provider initialized with tool execution capability")
-            else:
-                logger.info("LLM provider initialized without tool execution")
+            self._llm_provider = LLMProvider()
+            logger.info("LLM provider initialized")
         return self._llm_provider
         
     def _get_working_memory(self, event_bus: 'EventBus') -> WorkingMemory:
@@ -178,10 +182,16 @@ class CNSIntegrationFactory:
             from working_memory.trinkets.lora_trinket import LoraTrinket
             from working_memory.trinkets.location_trinket import LocationTrinket
             from working_memory.trinkets.asyncactivity_trinket import AsyncActivityTrinket
+            from working_memory.trinkets.live_context_compaction_trinket import LiveContextCompactionTrinket
 
+            # @CODEX: I feel like we could do away with these manual registrations if they're all going to do identical asks for ```event_bus, self._working_memory```. Thoughts?
             # Trinkets self-register with working memory
             TimeManager(event_bus, self._working_memory)
             ReminderManager(event_bus, self._working_memory)
+            LiveContextCompactionTrinket(
+                event_bus,
+                self._working_memory,
+            )
             ManifestTrinket(event_bus, self._working_memory)
             ProactiveMemoryTrinket(event_bus, self._working_memory)
             DomaindocTrinket(event_bus, self._working_memory)
@@ -290,10 +300,29 @@ class CNSIntegrationFactory:
             from ..services.subcortical import SubcorticalLayer
             self._subcortical_layer = SubcorticalLayer(
                 analysis_enabled=self.config.api.analysis_enabled,
-                llm_provider=llm_provider
+                llm_provider=llm_provider,
+                prefill_warmup_enabled=self.config.api.subcortical_prefill_warmup,
             )
             logger.info("SubcorticalLayer initialized")
         return self._subcortical_layer
+
+    def _get_live_context_compaction_service(
+        self,
+        continuum_repo: object,
+        llm_provider: LLMProvider,
+    ) -> LiveContextCompactionService:
+        """Get or create the background live context compaction service."""
+        if self._live_context_compaction_service is None:
+            from cns.services.live_context_compaction_service import (
+                LiveContextCompactionService,
+                LiveContextCompactionStore,
+            )
+            self._live_context_compaction_service = LiveContextCompactionService(
+                continuum_repo=continuum_repo,
+                store=LiveContextCompactionStore(),
+                llm_provider=llm_provider,
+            )
+        return self._live_context_compaction_service
 
     def _initialize_domain_knowledge_service(self, event_bus: EventBus) -> None:
         """

@@ -10,7 +10,7 @@ from typing import Set
 import anthropic
 from anthropic import APIStatusError
 
-from tools.repo import FILES_API_BETA_FLAG
+from clients.llm.dialects.anthropic import FILES_API_BETA_FLAG
 from utils.timezone_utils import format_utc_iso, utc_now
 
 

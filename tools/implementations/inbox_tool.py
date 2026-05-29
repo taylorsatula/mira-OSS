@@ -84,7 +84,7 @@ class InboxTool(Tool):
         "List, read, and archive files the user has placed in their local MIRA dropbox folder."
     )
 
-    anthropic_schema = {
+    tool_schema = {
         "name": "inbox_tool",
         "description": (
             "Operate on files the user has placed in their local MIRA dropbox folder "

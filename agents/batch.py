@@ -1,10 +1,8 @@
 """Batch transport for sidebar agents.
 
 Submits a single LLM call to the Anthropic Batch API, polls for the
-result, and returns anthropic.types.Message — same type as the sync
-path. The agent loop can't tell the difference.
+result, and returns the same neutral Result type as the sync path.
 """
-import copy
 import logging
 import threading
 import time
@@ -12,6 +10,8 @@ from typing import Any
 from uuid import uuid4
 
 import anthropic
+from clients.llm.dialects.anthropic import anthropic_thinking_params, normalize_anthropic_message
+from clients.llm.types import Result, ThinkingConfig, coerce_effort
 
 logger = logging.getLogger(__name__)
 
@@ -48,19 +48,18 @@ def batch_generate_response(
     system_prompt: str,
     llm_cfg: Any,
     timeout_seconds: int,
-) -> anthropic.types.Message:
+) -> Result:
     """Submit a single LLM call as a batch request. Blocks until result.
 
     Args:
         messages: Anthropic-format message list (accumulated by the agent loop).
-        tool_schemas: Tool schemas from tool_repo. NOT mutated — a copy is
-            made before adding cache_control to the last schema.
+        tool_schemas: Tool schemas from tool_repo.
         system_prompt: Agent system prompt.
         llm_cfg: Resolved InternalLLMConfig (from get_internal_llm()).
         timeout_seconds: Max seconds to wait for batch completion.
 
     Returns:
-        anthropic.types.Message — identical type to LLMProvider.generate_response().
+        Result — identical type to LLMProvider.generate_response().
 
     Raises:
         TimeoutError: Batch did not complete within timeout_seconds.
@@ -68,28 +67,32 @@ def batch_generate_response(
     """
     client = _get_client()
 
-    cache_control: dict[str, str] = {"type": "ephemeral", "ttl": "1h"}
     params: dict[str, Any] = {
         "model": llm_cfg.model,
         "max_tokens": llm_cfg.max_tokens,
         "system": [
-            {"type": "text", "text": system_prompt, "cache_control": cache_control}
+            {"type": "text", "text": system_prompt}
         ],
         "messages": messages,
     }
     if llm_cfg.effort:
-        from clients.llm_provider import EFFORT_BUDGET_MAP, _uses_adaptive_thinking
-        if _uses_adaptive_thinking(llm_cfg.model):
-            params["thinking"] = {"type": "adaptive", "display": "summarized"}
-            params["output_config"] = {"effort": llm_cfg.effort}
-        else:
-            budget = EFFORT_BUDGET_MAP[llm_cfg.effort]
-            params["thinking"] = {"type": "enabled", "budget_tokens": budget}
+        thinking_params, _ = anthropic_thinking_params(
+            model=llm_cfg.model,
+            thinking=ThinkingConfig(effort=coerce_effort(llm_cfg.effort)),
+        )
+        params.update(thinking_params)
 
     if tool_schemas:
-        tools = list(tool_schemas)
-        tools[-1] = copy.deepcopy(tools[-1])
-        tools[-1]["cache_control"] = {"type": "ephemeral", "ttl": "1h"}
+        tools = []
+        for schema in tool_schemas:
+            if hasattr(schema, "to_dict"):
+                tool_dict = schema.to_dict()
+            else:
+                tool_dict = dict(schema)
+            # Translate cache hint to Anthropic cache_control
+            if "cache" in tool_dict:
+                tool_dict["cache_control"] = {"type": "ephemeral", "ttl": tool_dict.pop("cache")}
+            tools.append(tool_dict)
         params["tools"] = tools
 
     custom_id = uuid4().hex
@@ -115,14 +118,14 @@ def _extract_result(
     client: anthropic.Anthropic,
     batch_id: str,
     custom_id: str,
-) -> anthropic.types.Message:
+) -> Result:
     """Stream batch results and return the Message for our custom_id."""
     for result in client.beta.messages.batches.results(batch_id):
         if result.custom_id != custom_id:
             continue
 
         if result.result.type == "succeeded":
-            return result.result.message
+            return normalize_anthropic_message(result.result.message)
 
         if result.result.type == "errored":
             error = result.result.error

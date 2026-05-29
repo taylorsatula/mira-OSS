@@ -66,7 +66,7 @@ class SummaryGenerator:
         self.repository = repository
 
         # Use provided LLM or create default (routing via internal_llm= per-call)
-        self.llm_provider = llm_provider or LLMProvider(enable_prompt_caching=False)
+        self.llm_provider = llm_provider or LLMProvider()
         self.tag_parser = TagParser()
         self._load_prompts()
 

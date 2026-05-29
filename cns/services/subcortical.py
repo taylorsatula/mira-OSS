@@ -11,9 +11,11 @@ query augmentation for personal memory search.
 Also handles memory retention decisions - evaluating which previously
 surfaced memories should remain in context based on conversation trajectory.
 """
+import contextvars
 import json
 import logging
 import re
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Literal, Set, Optional, TypedDict, TYPE_CHECKING
@@ -77,13 +79,22 @@ class SubcorticalLayer:
     specifics that match stored memory vocabulary for better embedding similarity.
     """
 
-    def __init__(self, analysis_enabled: bool, llm_provider: 'LLMProvider'):
+    def __init__(
+        self,
+        analysis_enabled: bool,
+        llm_provider: 'LLMProvider',
+        prefill_warmup_enabled: bool = False,
+    ):
         """
         Initialize subcortical layer.
 
         Args:
             analysis_enabled: Whether subcortical processing is enabled
             llm_provider: LLM provider for subcortical processing calls
+            prefill_warmup_enabled: When True, warm_cache() fires a background
+                max_tokens=1 request after each turn so vLLM's prefix cache is
+                populated before the next user message arrives. Wastes billed
+                tokens on cloud providers; only enable for local vLLM.
 
         Raises:
             FileNotFoundError: If prompt files not found
@@ -91,6 +102,7 @@ class SubcorticalLayer:
             RuntimeError: If subcortical processing is disabled
         """
         self.llm_provider = llm_provider
+        self.prefill_warmup_enabled = prefill_warmup_enabled
 
         if not analysis_enabled:
             raise RuntimeError(
@@ -147,46 +159,13 @@ class SubcorticalLayer:
         Raises:
             RuntimeError: On empty response or parse failure.
         """
-        # Under memory pressure, narrow the conversation window so the model
-        # scopes retention decisions to the most recent exchange — makes it
-        # easier to identify and drop memories irrelevant to the immediate context
-        from lt_memory.proactive import MAX_PINNED_MEMORIES
-        max_pinned = MAX_PINNED_MEMORIES
-        under_pressure = (
-            previous_memories is not None
-            and len(previous_memories) >= max_pinned
-        )
-        pairs = CONTEXT_PAIRS - 1 if under_pressure else CONTEXT_PAIRS
-
-        conversation_turns = self._format_recent_turns(
-            continuum,
-            current_user_message,
-            max_pairs=pairs
+        user_message, conversation_turns = self._build_user_prompt(
+            continuum, current_user_message, previous_memories
         )
 
         # Piggyback: extract memory IDs mentioned in conversation (regex on already-built string)
         conversation_pinned_ids = set(
             m.lower() for m in TagParser.MEMORY_ID_PATTERN.findall(conversation_turns)
-        )
-
-        # Format previous memories for prompt (unfiltered - LLM needs full context)
-        # When under pressure, _format_previous_memories injects a pruning alert
-        memories_block = self._format_previous_memories(previous_memories)
-
-        # Collapse newlines — template is single-line by design, so injected
-        # content must not reintroduce them.
-        def _collapse(text: str) -> str:
-            return " ".join(text.split())
-
-        user_message = self.user_prompt_template.replace(
-            "{conversation_turns}",
-            _collapse(conversation_turns)
-        ).replace(
-            "{user_message}",
-            _collapse(current_user_message)
-        ).replace(
-            "{previous_memories}",
-            _collapse(memories_block)
         )
 
         logger.debug(f"Generating query expansion for: {current_user_message[:100]}...")
@@ -195,9 +174,8 @@ class SubcorticalLayer:
 
         response = self.llm_provider.generate_response(
             messages=[{"role": "user", "content": user_message}],
-            stream=False,
             internal_llm='analysis',
-            system_override=self.system_prompt,
+            system_prompt=self.system_prompt,
         )
 
         response_text = self.llm_provider.extract_text_content(response).strip()
@@ -232,32 +210,125 @@ class SubcorticalLayer:
         if result.entities:
             logger.info(f"Extracted {len(result.entities)} entities for hub discovery")
 
-        # Persist subcortical output for prompt improvement
+        # Persist full prompt/response for fine-tuning curation
         self._save_output(
-            user_message=current_user_message,
-            query_expansion=result.query_expansion,
-            pinned_ids=result.pinned_memory_ids,
-            entities=result.entities,
-            complexity=result.complexity,
-            previous_memory_count=len(previous_memories) if previous_memories else 0
+            prompt=user_message,
+            raw_response=response_text,
         )
 
         return result
 
-    def _save_output(
+    def warm_cache(
         self,
-        user_message: str,
-        query_expansion: str,
-        pinned_ids: Set[str],
-        entities: List[str],
-        complexity: str,
-        previous_memory_count: int
+        continuum: Continuum,
+        previous_memories: list[SurfacedMemory] | None = None,
     ) -> None:
         """
-        Persist subcortical output to user's data directory for prompt improvement.
+        Speculatively warm the subcortical KV cache for the next turn.
 
-        Saves to data/users/{user_id}/subcortical_outputs.jsonl with full context
-        needed to evaluate and improve subcortical expansion prompts.
+        Fires a fire-and-forget max_tokens=1 request with the prefix that's
+        already known at end-of-turn (system prompt + conversation_turns +
+        previous_memories) so vLLM's prefix cache populates those blocks while
+        the user is reading and typing. The next real subcortical call only
+        prefills the new user-message tokens, removing prefill from the
+        user-perceived critical path.
+
+        No-op when prefill_warmup_enabled is False. Failures are logged at
+        warning and swallowed — warmup is an optimization, not required
+        infrastructure, so it must not break the response path.
+
+        Only worthwhile against a vLLM (or other prefix-cache-aware) backend.
+        On cloud providers without prefix caching, the call burns a billed
+        token per turn for no benefit.
+        """
+        if not self.prefill_warmup_enabled:
+            return
+        ctx = contextvars.copy_context()
+        threading.Thread(
+            target=ctx.run,
+            args=(self._do_warmup, continuum, previous_memories),
+            daemon=True,
+        ).start()
+
+    def _do_warmup(
+        self,
+        continuum: Continuum,
+        previous_memories: list[SurfacedMemory] | None,
+    ) -> None:
+        try:
+            user_message, _ = self._build_user_prompt(
+                continuum, "", previous_memories
+            )
+            self.llm_provider.generate_response(
+                messages=[{"role": "user", "content": user_message}],
+                internal_llm='analysis',
+                system_prompt=self.system_prompt,
+                max_tokens=1,
+            )
+            logger.debug("Subcortical KV cache warmed")
+        except Exception as e:
+            logger.warning("Subcortical prefill warmup failed: %s", e)
+
+    def _build_user_prompt(
+        self,
+        continuum: Continuum,
+        current_user_message: str,
+        previous_memories: list[SurfacedMemory] | None,
+    ) -> tuple[str, str]:
+        """
+        Build the subcortical user prompt; returns (prompt, conversation_turns).
+
+        Single source of truth shared by generate() and warm_cache(). Producing
+        byte-exact-same tokens here for warmup and real calls is what makes the
+        vLLM prefix cache hit — any divergence breaks the optimization silently.
+        """
+        # Under memory pressure, narrow the conversation window so the model
+        # scopes retention decisions to the most recent exchange — makes it
+        # easier to identify and drop memories irrelevant to the immediate context
+        from lt_memory.proactive import MAX_PINNED_MEMORIES
+        under_pressure = (
+            previous_memories is not None
+            and len(previous_memories) >= MAX_PINNED_MEMORIES
+        )
+        pairs = CONTEXT_PAIRS - 1 if under_pressure else CONTEXT_PAIRS
+
+        conversation_turns = self._format_recent_turns(
+            continuum,
+            current_user_message,
+            max_pairs=pairs,
+        )
+
+        # Format previous memories for prompt (unfiltered - LLM needs full context)
+        # When under pressure, _format_previous_memories injects a pruning alert
+        memories_block = self._format_previous_memories(previous_memories)
+
+        # Collapse newlines — template is single-line by design, so injected
+        # content must not reintroduce them.
+        def _collapse(text: str) -> str:
+            return " ".join(text.split())
+
+        user_prompt = self.user_prompt_template.replace(
+            "{conversation_turns}",
+            _collapse(conversation_turns)
+        ).replace(
+            "{user_message}",
+            _collapse(current_user_message)
+        ).replace(
+            "{previous_memories}",
+            _collapse(memories_block)
+        )
+        return user_prompt, conversation_turns
+
+    def _save_output(
+        self,
+        prompt: str,
+        raw_response: str,
+    ) -> None:
+        """
+        Persist raw prompt/response pairs for fine-tuning curation.
+
+        Saves to data/users/{user_id}/subcortical_debuglogs/{YYYY-MM-DD}.jsonl
+        with '------------------' delimiters between invocations.
         """
         try:
             from utils.user_context import get_current_user_id
@@ -268,22 +339,25 @@ class SubcorticalLayer:
 
             output_dir = Path("data/users") / str(user_id)
             output_dir.mkdir(parents=True, exist_ok=True)
-            output_file = output_dir / "subcortical_outputs.jsonl"
 
-            record = {
+            debug_dir = output_dir / "subcortical_debuglogs"
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            date = utc_now().strftime("%Y-%m-%d")
+            debug_file = debug_dir / f"{date}.jsonl"
+            file_has_content = debug_file.exists() and debug_file.stat().st_size > 0
+
+            debug_record = {
                 "timestamp": utc_now().isoformat(),
-                "user_message": user_message,
-                "query_expansion": query_expansion,
-                "pinned_ids": list(pinned_ids),
-                "entities": entities,
-                "complexity": complexity,
-                "previous_memory_count": previous_memory_count
+                "prompt": prompt,
+                "response": raw_response,
             }
 
-            with open(output_file, "a") as f:
-                f.write(json.dumps(record) + "\n")
+            with open(debug_file, "a") as f:
+                if file_has_content:
+                    f.write("\n------------------\n")
+                f.write(json.dumps(debug_record))
 
-            logger.debug(f"Saved subcortical output to {output_file}")
+            logger.debug(f"Saved subcortical debug log to {debug_file}")
 
         except Exception as e:
             # Don't let persistence failures break the subcortical pipeline

@@ -111,7 +111,7 @@ class MemoryTool(Tool):
         "link related memories, add annotations, touch referenced memories."
     )
 
-    anthropic_schema = {
+    tool_schema = {
         "name": "memory_tool",
         "description": "Search and manage long-term memories.",
         "input_schema": {

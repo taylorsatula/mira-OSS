@@ -16,8 +16,8 @@ from uuid import UUID, uuid4
 from json_repair import repair_json
 
 from clients.llm_provider import LLMProvider, build_batch_params
-from utils.user_context import get_internal_llm
 from lt_memory.db_access import LTMemoryDB
+from lt_memory.llm_routing import uses_anthropic_batch_adapter
 from lt_memory.models import PostProcessingBatch, ConsolidationCluster
 from lt_memory.processing.batch_coordinator import BatchCoordinator, BATCH_EXPIRY_HOURS
 from lt_memory.processing.consolidation_handler import ConsolidationHandler
@@ -32,7 +32,7 @@ class PostProcessingOrchestrator:
     Orchestrate consolidation batch submission.
 
     Single Responsibility: Submit consolidation work via batch API
-    or execute immediately when Anthropic failover is active.
+    or execute immediately when the selected adapter cannot use Anthropic batch.
 
     Parallel to ExtractionOrchestrator (which handles extraction submission).
     """
@@ -55,8 +55,8 @@ class PostProcessingOrchestrator:
         """
         Identify consolidation clusters and submit for processing.
 
-        In normal mode: builds batch requests and submits to Anthropic Batch API.
-        In failover mode: executes consolidation immediately via LLM + ConsolidationHandler.
+        In batch mode: builds requests and submits to Anthropic Batch API.
+        In immediate mode: executes consolidation via LLM + ConsolidationHandler.
 
         Args:
             user_id: User ID
@@ -73,8 +73,7 @@ class PostProcessingOrchestrator:
             logger.info(f"No consolidation clusters found for user {user_id}")
             return None
 
-        # Immediate mode: Anthropic failover active or non-Anthropic endpoint
-        if self.llm_provider._is_failover_active() or "api.anthropic.com" not in get_internal_llm('consolidation').endpoint_url:
+        if not uses_anthropic_batch_adapter("consolidation"):
             logger.warning(
                 f"Bypassing consolidation batch for user {user_id} - "
                 f"executing {len(clusters)} clusters immediately"
@@ -165,7 +164,7 @@ class PostProcessingOrchestrator:
             # Call LLM directly
             response = self.llm_provider.generate_response(
                 messages=[{"role": "user", "content": payload["user_prompt"]}],
-                system_override=payload["system_prompt"],
+                system_prompt=payload["system_prompt"],
                 internal_llm='consolidation',
                 allow_negative=True
             )

@@ -60,7 +60,7 @@ class ForageTool(Tool):
     Forage early: an empty search is cheap, but context you never looked for can't help you.
     """
 
-    anthropic_schema = {
+    tool_schema = {
         "name": "forage_tool",
         "description": (
             "Dispatch a background Agent to forage for context across conversations, "

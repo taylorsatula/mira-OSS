@@ -1,0 +1,5 @@
+USER_MESSAGE: {user_message}
+
+AI_RESPONSE: {ai_response}
+
+MATCHED_TELLS: {matched_tells}

@@ -213,7 +213,7 @@ else
         echo -e "${DIM}      anthropic_key=\"sk-ant-your-key\" \\${RESET}"
         echo -e "${DIM}      anthropic_batch_key=\"sk-ant-your-key\" \\${RESET}"
         echo -e "${DIM}      subcortical_key=\"gsk_your-groq-key\" \\${RESET}"
-        echo -e "${DIM}      openaicompat_key=\"your-chat-provider-key\" \\${RESET}"
+        echo -e "${DIM}      provider_key=\"your-chat-provider-key\" \\${RESET}"
         echo -e "${DIM}      kagi_api_key=\"your-kagi-key\"${RESET}"
     fi
 fi

@@ -71,7 +71,7 @@ class UserModelSynthesizer:
         llm_provider: Optional[LLMProvider] = None
     ):
         self.feedback_repo = feedback_repo
-        self.llm_provider = llm_provider or LLMProvider(enable_prompt_caching=False)
+        self.llm_provider = llm_provider or LLMProvider()
         self._load_prompts()
 
         # Pre-compute section list for critic context

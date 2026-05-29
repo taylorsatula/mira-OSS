@@ -29,7 +29,7 @@ Every tool needs these core patterns:
 | Pattern | Where to Find | What It Shows |
 |---------|---------------|---------------|
 | **Tool Base Class** | tools/repo.py:40-143 | Base Tool class, properties, abstract methods |
-| **Tool Metadata** | reminder_tool.py:38-112 | name, simple_description, anthropic_schema |
+| **Tool Metadata** | reminder_tool.py:38-112 | name, simple_description, tool_schema |
 | **Configuration** | reminder_tool.py:29-35 | Pydantic config with registry.register() |
 | | contacts_tool.py:28-41 | Config with Field descriptions |
 | **Deferred Initialization** | reminder_tool.py:114-145 | has_user_context() check, table creation |
@@ -591,7 +591,7 @@ logging setup
 configuration class (if needed)
 tool class with:
     - metadata (name, descriptions)
-    - anthropic_schema
+    - tool_schema
     - __init__
     - run() method
     - operation handlers (_add_item, _get_items, etc.)
@@ -625,9 +625,9 @@ If you don't register a config, a default one with just `enabled: bool = True` i
 
 Two required fields:
 - `simple_description`: Ultra-concise action phrase (used by invokeother_tool for discovery)
-- `anthropic_schema`: Full schema with `name`, `description`, and `input_schema`
+- `tool_schema`: Full schema with `name`, `description`, and `input_schema`
 
-### Anthropic Schema
+### Tool Schema
 
 **See reminder_tool.py:51-112** for complete schema with operations.
 
@@ -639,7 +639,7 @@ Two required fields:
 
 ## Writing the Top-Level Tool Description
 
-The `description` field in `anthropic_schema` is a tool-selection label. Its only job: the LLM glances at it and knows whether to pick up this tool. It is not an operation manifest, not defensive documentation, not a place for parameter guards or disambiguation infrastructure.
+The `description` field in `tool_schema` is a tool-selection label. Its only job: the LLM glances at it and knows whether to pick up this tool. It is not an operation manifest, not defensive documentation, not a place for parameter guards or disambiguation infrastructure.
 
 ### What it is
 
@@ -674,9 +674,9 @@ If you can describe what the tool does in under 15 words, do that. If you need m
 
 ---
 
-## Writing anthropic_schema Parameter Descriptions
+## Writing tool_schema Parameter Descriptions
 
-Parameter descriptions in `anthropic_schema` are interface contracts, not documentation. The reader is a language model that will infer behavior from your word choices — imprecise language causes real tool-call failures downstream. Every description must constrain behavior, not merely describe it.
+Parameter descriptions in `tool_schema` are interface contracts, not documentation. The reader is a language model that will infer behavior from your word choices — imprecise language causes real tool-call failures downstream. Every description must constrain behavior, not merely describe it.
 
 ### The Standard
 
@@ -835,7 +835,7 @@ class MyTool(Tool):
     # def is_call_parallel_safe(cls, tool_input):
     #     return tool_input.get("operation") in cls._parallel_safe_operations
 
-    anthropic_schema = {
+    tool_schema = {
         "name": "my_tool",
         "description": "What this tool does and when to use it",
         "input_schema": {
@@ -970,7 +970,7 @@ class MyAPITool(Tool):
     name = "my_api_tool"
     simple_description = "fetches data from external API"
 
-    anthropic_schema = {
+    tool_schema = {
         "name": "my_api_tool",
         "description": "Fetch data from ExampleAPI. Requires 'example_api' credential to be stored in Settings > API Credentials.",
         "input_schema": {

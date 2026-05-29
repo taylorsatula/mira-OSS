@@ -21,10 +21,10 @@ from lt_memory.processing.memory_processor import MemoryProcessor
 from lt_memory.vector_ops import VectorOps
 from lt_memory.db_access import LTMemoryDB
 from lt_memory.linking import LinkingService
+from lt_memory.llm_routing import uses_anthropic_batch_adapter
 from clients.llm_provider import LLMProvider, build_batch_params
 from lt_memory.processing.batch_coordinator import BATCH_EXPIRY_HOURS
 from utils.timezone_utils import utc_now
-from utils.user_context import get_internal_llm
 
 logger = logging.getLogger(__name__)
 
@@ -263,7 +263,6 @@ class BatchExecutionStrategy(ExecutionStrategy):
                 'extraction',
                 system_prompt=payload.system_prompt,
                 messages=payload.messages,
-                cache_ttl="1h",
             )
 
             request = {
@@ -314,9 +313,9 @@ class BatchExecutionStrategy(ExecutionStrategy):
 
 class ImmediateExecutionStrategy(ExecutionStrategy):
     """
-    Execute extraction immediately via OpenAI fallback.
+    Execute extraction immediately via the live LLM provider.
 
-    Used when Anthropic Batch API is unavailable (failover mode).
+    Used when Anthropic Batch API is unavailable for the resolved adapter.
     Executes synchronously and stores results immediately, including
     entity persistence and relationship classification.
     """
@@ -372,7 +371,7 @@ class ImmediateExecutionStrategy(ExecutionStrategy):
             # Call LLM directly using extraction internal LLM config
             response = self.llm_provider.generate_response(
                 messages=[{"role": "user", "content": payload.user_prompt}],
-                system_override=payload.system_prompt,
+                system_prompt=payload.system_prompt,
                 internal_llm='extraction',
                 allow_negative=True,  # System task — segment already paid for
             )
@@ -418,8 +417,8 @@ class ImmediateExecutionStrategy(ExecutionStrategy):
         """
         Execute relationship classification immediately for new memories.
 
-        Since ImmediateExecutionStrategy runs during failover mode,
-        classifications are executed synchronously via the LLM provider.
+        ImmediateExecutionStrategy executes classifications synchronously via
+        the LLM provider.
         """
         if not memory_ids:
             return
@@ -466,7 +465,7 @@ class ImmediateExecutionStrategy(ExecutionStrategy):
         if not all_pairs:
             return
 
-        # Execute classifications immediately (we're in failover mode)
+        # Execute classifications immediately.
         # Circuit breaker: if the model returns garbage N times in a row,
         # stop wasting LLM calls — the endpoint is broken.
         MAX_CONSECUTIVE_FAILURES = 5
@@ -485,7 +484,7 @@ class ImmediateExecutionStrategy(ExecutionStrategy):
                 # Call LLM directly using relationship internal LLM config
                 response = self.llm_provider.generate_response(
                     messages=[{"role": "user", "content": payload["user_prompt"]}],
-                    system_override=payload["system_prompt"],
+                    system_prompt=payload["system_prompt"],
                     internal_llm='relationship',
                     allow_negative=True,  # System task — segment already paid for
                 )
@@ -553,7 +552,7 @@ def create_execution_strategy(
     """
     Factory function to create appropriate execution strategy.
 
-    Automatically selects batch or immediate based on failover status.
+    Automatically selects batch or immediate based on the resolved adapter.
 
     Args:
         extraction_engine: Extraction engine instance
@@ -567,17 +566,13 @@ def create_execution_strategy(
     Returns:
         Appropriate ExecutionStrategy (Batch or Immediate)
     """
-    # Check if failover mode active or non-Anthropic endpoint
-    # FROM TAYLOR: this fix was made during a time when Claude Code had heavy
-    # degradation. something about the fix doesn't sit right with me and I can't
-    # trust claude's answer fully. If something is fucked up later thats why.
-    if llm_provider._is_failover_active() or batch_coordinator is None or "api.anthropic.com" not in get_internal_llm('extraction').endpoint_url:
+    if batch_coordinator is None or not uses_anthropic_batch_adapter("extraction"):
         if linking_service is None:
             raise ValueError(
                 "ImmediateExecutionStrategy requires linking_service "
                 "for relationship classification"
             )
-        logger.warning("Creating ImmediateExecutionStrategy (failover mode active)")
+        logger.warning("Creating ImmediateExecutionStrategy (batch adapter unavailable)")
         return ImmediateExecutionStrategy(
             extraction_engine,
             memory_processor,

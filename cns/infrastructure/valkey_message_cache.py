@@ -10,7 +10,6 @@ import logging
 
 from cns.core.message import Message
 from utils.user_context import get_current_user_id
-from utils.timezone_utils import parse_utc_time_string
 
 logger = logging.getLogger(__name__)
 
@@ -50,18 +49,7 @@ class ValkeyMessageCache:
         Returns:
             JSON string representation
         """
-        serialized = []
-        for msg in messages:
-            msg_dict = {
-                'id': str(msg.id),
-                'content': msg.content,
-                'role': msg.role,
-                'created_at': msg.created_at.isoformat(),
-                'metadata': msg.metadata
-            }
-            serialized.append(msg_dict)
-
-        return json.dumps(serialized)
+        return json.dumps([msg.to_dict() for msg in messages])
 
     def _deserialize_messages(self, data: str) -> list[Message]:
         """
@@ -77,14 +65,7 @@ class ValkeyMessageCache:
         serialized = json.loads(data)
 
         for msg_dict in serialized:
-            message = Message(
-                id=msg_dict['id'],
-                content=msg_dict['content'],
-                role=msg_dict['role'],
-                created_at=parse_utc_time_string(msg_dict['created_at']),
-                metadata=msg_dict.get('metadata', {})
-            )
-            messages.append(message)
+            messages.append(Message.from_dict(msg_dict))
 
         return messages
     

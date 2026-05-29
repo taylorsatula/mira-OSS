@@ -467,7 +467,7 @@ class WeatherTool(Tool):
 
     simple_description = "Get weather forecasts and heat stress analysis for any location."
 
-    anthropic_schema = {
+    tool_schema = {
         "name": "weather_tool",
         "description": "Retrieves weather forecast data and calculates heat stress indices for specified locations. Use this tool to get weather forecasts, heat stress information, and related data for planning field work activities based on expected weather conditions.",
         "input_schema": {
@@ -603,7 +603,7 @@ class WeatherTool(Tool):
                 self.logger.error("googlemaps library not installed for weather_tool geocoding")
                 raise ValueError("googlemaps library not installed. Run: pip install googlemaps")
             except Exception as e:
-                self.logger.error(f"Failed to initialize Google Maps client for weather_tool: {e}")
+                self.logger.exception("Failed to initialize Google Maps client for weather_tool")
                 raise ValueError(f"Failed to initialize Google Maps client: {e}")
         return self._maps_client
     
@@ -656,7 +656,7 @@ class WeatherTool(Tool):
             if isinstance(e, ValueError) and "Location" in str(e):
                 # Re-raise our custom ValueError messages
                 raise
-            self.logger.error(f"Failed to geocode location '{location}': {e}")
+            self.logger.exception("Failed to geocode location")
             raise ValueError(f"Failed to geocode location '{location}': {str(e)}")
     
     def _resolve_coordinates(
@@ -766,8 +766,8 @@ class WeatherTool(Tool):
                 **result
             }
         
-        except Exception as e:
-            self.logger.error(f"Weather tool execution failed: {e}")
+        except Exception:
+            self.logger.exception("Weather tool execution failed")
             raise
     
     def _get_weather_data(
@@ -861,7 +861,7 @@ class WeatherTool(Tool):
             params["end_date"] = date
         
         # Make API request
-        self.logger.info(f"Requesting weather data from OpenMeteo API: {url} with params: {params}")
+        self.logger.debug("Requesting weather data from OpenMeteo API")
         
         try:
             response = http_client.get(url, params=params, timeout=30)

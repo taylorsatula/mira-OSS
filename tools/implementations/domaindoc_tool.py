@@ -36,7 +36,7 @@ class DomaindocTool(Tool):
     name = "domaindoc_tool"
 
     # Operations without ordering dependencies — safe for concurrent execution.
-    # KNOWN BUG: _execute_with_tools runs sequential tools BEFORE parallel ones.
+    # KNOWN BUG: LLMLifecycle runs sequential tools BEFORE parallel ones.
     # If the model issues expand (parallel) + append (sequential) in the same
     # response, append runs first. Doesn't cause data corruption (writes don't
     # check collapsed state) but is semantically inverted from model intent.
@@ -73,7 +73,7 @@ class DomaindocTool(Tool):
         return sorted(set(labels))
 
     def _build_schema(self, labels: List[str]) -> Dict[str, Any]:
-        """Construct the full Anthropic schema with live domaindoc catalog."""
+        """Construct the full tool schema with live domaindoc catalog."""
         if labels:
             catalog_lines = "\n".join(f"- {lbl}" for lbl in labels)
             description = (
@@ -182,7 +182,7 @@ class DomaindocTool(Tool):
         }
 
     @property
-    def anthropic_schema(self) -> Dict[str, Any]:
+    def tool_schema(self) -> Dict[str, Any]:
         """Dynamic schema with live domaindoc catalog.
 
         Catalog changes only on domaindoc create/delete/archive (rare lifecycle events).

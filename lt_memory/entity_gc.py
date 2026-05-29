@@ -9,7 +9,7 @@ Two-phase flow:
   1. submit_entity_gc_batch(): pairs → groups → batch requests → Anthropic Batch API
   2. EntityGCBatchResultHandler: poll → parse XML → execute merge/delete/keep
 
-Synchronous fallback (run_entity_gc_for_user) when Anthropic failover is active.
+Synchronous fallback (run_entity_gc_for_user) when batch transport is unavailable.
 """
 import logging
 import xml.etree.ElementTree as ET
@@ -20,10 +20,11 @@ from typing import Any, List, Dict, NamedTuple, Optional, TypedDict
 from uuid import UUID
 
 from lt_memory.db_access import LTMemoryDB
+from lt_memory.llm_routing import uses_anthropic_batch_adapter
 from lt_memory.models import PostProcessingBatch, EntityPairRow, GCStats
 from lt_memory.processing.batch_coordinator import BatchCoordinator, BATCH_EXPIRY_HOURS
 from clients.llm_provider import LLMProvider, build_batch_params
-from utils.user_context import get_current_user_id, get_internal_llm
+from utils.user_context import get_current_user_id
 from utils.timezone_utils import utc_now
 
 logger = logging.getLogger(__name__)
@@ -238,8 +239,8 @@ class EntityGCService:
 
         try:
             root = ET.fromstring(xml_text)
-        except ET.ParseError as e:
-            logger.error(f"Failed to parse GC XML response: {e}")
+        except ET.ParseError:
+            logger.exception("Failed to parse GC XML response")
             return []
 
         parsed_groups: List[List[Dict[str, Any]]] = []
@@ -396,11 +397,11 @@ class EntityGCService:
         """
         Find similar entity pairs, group them, and submit to Anthropic Batch API.
 
-        In normal mode: builds batch requests and submits to Anthropic Batch API.
-        In failover mode: executes synchronously via run_entity_gc_for_user().
+        In batch mode: builds requests and submits to Anthropic Batch API.
+        In immediate mode: executes synchronously via run_entity_gc_for_user().
 
         Returns:
-            Batch ID if submitted, None if no pairs found or failover executed.
+            Batch ID if submitted, None if no pairs found or immediate mode executed.
         """
         user_id = get_current_user_id()
 
@@ -421,11 +422,7 @@ class EntityGCService:
             f"for user {user_id}"
         )
 
-        # 3. Failover or non-Anthropic endpoint: execute synchronously
-        # FROM TAYLOR: this fix was made during a time when Claude Code had heavy
-        # degradation. something about the fix doesn't sit right with me and I can't
-        # trust claude's answer fully. If something is fucked up later thats why.
-        if self.llm_provider._is_failover_active() or "api.anthropic.com" not in get_internal_llm('entity_gc').endpoint_url:
+        if not uses_anthropic_batch_adapter("entity_gc"):
             logger.warning(
                 f"Bypassing entity GC batch for user {user_id} — "
                 f"executing {len(groups)} groups synchronously"
@@ -509,7 +506,7 @@ class EntityGCService:
 
             response = self.llm_provider.generate_response(
                 messages=[{"role": "user", "content": user_prompt}],
-                system_override=self.gc_system_prompt,
+                system_prompt=self.gc_system_prompt,
                 internal_llm='entity_gc',
                 allow_negative=True,
             )
@@ -575,7 +572,7 @@ class EntityGCService:
 
             response = self.llm_provider.generate_response(
                 messages=[{"role": "user", "content": user_prompt}],
-                system_override=self.gc_system_prompt,
+                system_prompt=self.gc_system_prompt,
                 internal_llm='entity_gc',
                 allow_negative=True,
             )

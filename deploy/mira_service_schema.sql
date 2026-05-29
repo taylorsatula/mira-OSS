@@ -105,13 +105,13 @@ CREATE TABLE IF NOT EXISTS conversation_llm (
     thinking_budget INT NOT NULL DEFAULT 0,
     description TEXT,
     display_order INT NOT NULL DEFAULT 0,
-    provider VARCHAR(20) NOT NULL DEFAULT 'anthropic' CHECK (provider IN ('anthropic', 'generic')),
+    dialect_name VARCHAR(20) NOT NULL CHECK (dialect_name IN ('anthropic', 'openai', 'openrouter', 'groq')),
     endpoint_url TEXT DEFAULT NULL,
     api_key_name VARCHAR(50) DEFAULT NULL,
     hidden BOOLEAN NOT NULL DEFAULT FALSE
 );
 
-INSERT INTO conversation_llm (name, model, thinking_budget, description, display_order, provider, endpoint_url, api_key_name, hidden) VALUES
+INSERT INTO conversation_llm (name, model, thinking_budget, description, display_order, adapter_name, endpoint_url, api_key_name, hidden) VALUES
     ('primary', 'claude-sonnet-4-6', 0, 'Primary', 1, 'anthropic', NULL, NULL, FALSE)
 ON CONFLICT (name) DO NOTHING;
 
@@ -127,30 +127,33 @@ CREATE TABLE IF NOT EXISTS internal_llm (
     api_key_name VARCHAR(50),
     description TEXT,
     max_tokens INT NOT NULL,
-    effort VARCHAR(10) CHECK (effort IN ('low', 'medium', 'high', 'max')),
+    effort VARCHAR(10) CHECK (effort IN ('low', 'medium', 'high', 'xhigh', 'max')),
+    dialect_name VARCHAR(20) NOT NULL CHECK (dialect_name IN ('anthropic', 'openai', 'openrouter', 'groq')),
     PRIMARY KEY (name, tier)
 );
 
-INSERT INTO internal_llm (name, tier, model, endpoint_url, api_key_name, description, max_tokens, effort) VALUES
+INSERT INTO internal_llm (name, tier, model, endpoint_url, api_key_name, description, max_tokens, effort, dialect_name) VALUES
     -- COF configs: Anthropic models via direct API
-    ('summary', 'cof', 'google/gemma-4-31b-it', 'https://openrouter.ai/api/v1/chat/completions', 'openaicompat_key', 'Segment summary generation', 10000, NULL),
-    ('assessment', 'cof', 'claude-opus-4-6', 'https://api.anthropic.com/v1/messages', 'anthropic_key', 'Assessment extraction', 10000, NULL),
-    ('synthesis', 'cof', 'claude-opus-4-6', 'https://api.anthropic.com/v1/messages', 'anthropic_key', 'User model synthesis', 10000, NULL),
-    ('extraction', 'cof', 'claude-sonnet-4-6', 'https://api.anthropic.com/v1/messages', 'anthropic_batch_key', 'Memory extraction', 16000, 'high'),
-    ('consolidation', 'cof', 'claude-sonnet-4-6', 'https://api.anthropic.com/v1/messages', 'anthropic_batch_key', 'Memory consolidation', 4096, NULL),
-    ('tidyup', 'cof', 'claude-sonnet-4-6', 'https://api.anthropic.com/v1/messages', 'anthropic_batch_key', 'Context tidyup', 10000, NULL),
-    ('relationship', 'cof', 'claude-haiku-4-5-20251001', 'https://api.anthropic.com/v1/messages', 'anthropic_batch_key', 'Relationship classification', 500, NULL),
-    ('entity_gc', 'cof', 'claude-haiku-4-5', 'https://api.anthropic.com/v1/messages', 'anthropic_batch_key', 'Entity garbage collection', 2048, 'high'),
-    ('critic', 'cof', 'claude-sonnet-4-6', 'https://api.anthropic.com/v1/messages', 'anthropic_key', 'User model critic', 10000, NULL),
+    ('summary', 'cof', 'google/gemma-4-31b-it', 'https://openrouter.ai/api/v1/chat/completions', 'provider_key', 'Segment summary generation', 10000, NULL, 'openrouter'),
+    ('assessment', 'cof', 'claude-opus-4-6', 'https://api.anthropic.com/v1/messages', 'anthropic_key', 'Assessment extraction', 10000, NULL, 'anthropic'),
+    ('synthesis', 'cof', 'claude-opus-4-6', 'https://api.anthropic.com/v1/messages', 'anthropic_key', 'User model synthesis', 10000, NULL, 'anthropic'),
+    ('extraction', 'cof', 'claude-sonnet-4-6', 'https://api.anthropic.com/v1/messages', 'anthropic_batch_key', 'Memory extraction', 16000, 'high', 'anthropic'),
+    ('consolidation', 'cof', 'claude-sonnet-4-6', 'https://api.anthropic.com/v1/messages', 'anthropic_batch_key', 'Memory consolidation', 4096, NULL, 'anthropic'),
+    ('tidyup', 'cof', 'claude-sonnet-4-6', 'https://api.anthropic.com/v1/messages', 'anthropic_batch_key', 'Context tidyup', 10000, NULL, 'anthropic'),
+    ('relationship', 'cof', 'claude-haiku-4-5-20251001', 'https://api.anthropic.com/v1/messages', 'anthropic_batch_key', 'Relationship classification', 500, NULL, 'anthropic'),
+    ('entity_gc', 'cof', 'claude-haiku-4-5', 'https://api.anthropic.com/v1/messages', 'anthropic_batch_key', 'Entity garbage collection', 2048, 'high', 'anthropic'),
+    ('critic', 'cof', 'claude-sonnet-4-6', 'https://api.anthropic.com/v1/messages', 'anthropic_key', 'User model critic', 10000, NULL, 'anthropic'),
     -- Subcortical: same model for both tiers via Groq
-    ('analysis', 'cof', 'qwen/qwen3-32b', 'https://api.groq.com/openai/v1/chat/completions', 'subcortical_key', 'Subcortical analysis', 3072, NULL),
+    ('analysis', 'cof', 'qwen/qwen3-32b', 'https://api.groq.com/openai/v1/chat/completions', 'subcortical_key', 'Subcortical analysis', 3072, NULL, 'groq'),
     -- Forage: COF gets Kimi K2 via OpenRouter, free gets OSS 120B via Groq
-    ('forage', 'cof', 'moonshotai/kimi-k2-thinking', 'https://openrouter.ai/api/v1/chat/completions', 'openaicompat_key', 'Forage agent tool-calling loop', 4096, NULL),
+    ('forage', 'cof', 'moonshotai/kimi-k2-thinking', 'https://openrouter.ai/api/v1/chat/completions', 'provider_key', 'Forage agent tool-calling loop', 4096, NULL, 'openrouter'),
     -- Overwatch: passive agent iteration observer, same cheap model as subcortical
-    ('overwatch', 'cof', 'qwen/qwen3-32b', 'https://api.groq.com/openai/v1/chat/completions', 'subcortical_key', 'Passive agent iteration observer', 100, NULL),
+    ('overwatch', 'cof', 'qwen/qwen3-32b', 'https://api.groq.com/openai/v1/chat/completions', 'subcortical_key', 'Passive agent iteration observer', 100, NULL, 'groq'),
     -- Phone-a-friend: high-capability outside voices for synchronous subagent consultation
-    ('phoneafriend_claude', 'cof', 'claude-opus-4-7', 'https://api.anthropic.com/v1/messages', 'anthropic_key', 'Phone-a-friend level-headed thought partner', 10000, 'high'),
-    ('phoneafriend_gemini', 'cof', 'google/gemini-3.1-pro-preview', 'https://openrouter.ai/api/v1/chat/completions', 'openaicompat_key', 'Phone-a-friend outside voice with broad world knowledge', 10000, NULL)
+    ('phoneafriend_claude', 'cof', 'claude-opus-4-7', 'https://api.anthropic.com/v1/messages', 'anthropic_key', 'Phone-a-friend level-headed thought partner', 10000, 'high', 'anthropic'),
+    ('phoneafriend_gemini', 'cof', 'google/gemini-3.1-pro-preview', 'https://openrouter.ai/api/v1/chat/completions', 'provider_key', 'Phone-a-friend outside voice with broad world knowledge', 10000, NULL, 'openrouter'),
+    -- Repulsion feedback rewriter: register-aware rewrite pass for captured AI-tells
+    ('rewriter', 'cof', 'openai/gpt-5.5', 'https://openrouter.ai/api/v1/chat/completions', 'provider_key', 'Repulsion feedback rewrite generation', 10000, 'high', 'openrouter')
 ON CONFLICT (name, tier) DO NOTHING;
 
 GRANT SELECT ON internal_llm TO mira_dbuser;
@@ -167,9 +170,10 @@ CREATE TABLE IF NOT EXISTS usage_pricing (
 );
 
 INSERT INTO usage_pricing (name) VALUES
+    ('__default__'),
     -- Conversation LLMs (one model per config)
     ('gemini-deep'), ('minimax'), ('claude-high'), ('claude-opus-3'),
-    ('gemma'), ('experimental'), ('gpt-legacy'), ('demo'),
+    ('gemma'), ('experimental'), ('gpt-legacy'), ('gpt'), ('demo'),
     -- Internal LLM configs (tier-qualified: different models per free/cof)
     ('analysis:cof'), ('analysis:free'),
     ('consolidation:cof'), ('consolidation:free'),
@@ -179,10 +183,12 @@ INSERT INTO usage_pricing (name) VALUES
     ('phoneafriend_claude:cof'), ('phoneafriend_claude:free'),
     ('phoneafriend_gemini:cof'), ('phoneafriend_gemini:free'),
     ('relationship:cof'), ('relationship:free'),
+    ('rewriter:cof'), ('rewriter:free'),
     ('summary:cof'), ('summary:free'),
     ('tidyup:cof'), ('tidyup:free')
 ON CONFLICT (name) DO NOTHING;
 
+UPDATE usage_pricing SET input_price_per_mtok = 5.000000, output_price_per_mtok = 25.000000 WHERE name = '__default__';
 
 GRANT SELECT ON usage_pricing TO mira_dbuser;
 
@@ -787,18 +793,29 @@ COMMENT ON TABLE billing_transactions IS 'Audit log of all billing events: usage
 CREATE INDEX IF NOT EXISTS idx_billing_txn_user_created ON billing_transactions(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_billing_txn_type ON billing_transactions(transaction_type)
     WHERE transaction_type IN ('recharge_failed', 'deposit');
+CREATE UNIQUE INDEX IF NOT EXISTS idx_billing_positive_stripe_deposit_once
+    ON billing_transactions(stripe_payment_intent_id)
+    WHERE transaction_type = 'deposit'
+      AND amount_usd > 0
+      AND stripe_payment_intent_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS stripe_webhook_events (
     event_id VARCHAR(255) PRIMARY KEY,
     event_type VARCHAR(100) NOT NULL,
     processed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     processed_successfully BOOLEAN NOT NULL DEFAULT FALSE,
+    processing_lock_token UUID,
+    processing_started_at TIMESTAMP WITH TIME ZONE,
+    processing_finished_at TIMESTAMP WITH TIME ZONE,
     payload JSONB NOT NULL
 );
 
 COMMENT ON TABLE stripe_webhook_events IS 'Idempotency tracking for Stripe webhooks - prevents double-processing';
 
 CREATE INDEX IF NOT EXISTS idx_stripe_webhook_processed ON stripe_webhook_events(processed_at);
+CREATE INDEX IF NOT EXISTS idx_stripe_webhook_processing_lock
+    ON stripe_webhook_events(processing_lock_token)
+    WHERE processing_lock_token IS NOT NULL;
 
 -- =====================================================================
 -- PERMISSIONS

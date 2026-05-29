@@ -131,7 +131,7 @@ class ContinuumSearchTool(Tool):
 
     simple_description = "Search past conversations with immediate results. Hybrid vector+BM25 search finds relevant segments or messages. Use when you need synchronous search of conversation history."
 
-    anthropic_schema = {
+    tool_schema = {
         "name": "continuum_tool",
         "description": "Search past conversation history.",
         "input_schema": {

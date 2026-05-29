@@ -98,7 +98,7 @@ class MapsTool(Tool):
 
     name = "maps_tool"
     
-    anthropic_schema = {
+    tool_schema = {
         "name": "maps_tool",
         "description": "Provides comprehensive location intelligence and geographical services through Maps API integration. Use this tool for geocoding, place details, distance calculations, and location-based searches.",
         "input_schema": {

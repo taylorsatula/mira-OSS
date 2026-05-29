@@ -5,6 +5,7 @@ Executes state-changing operations through domain-specific handlers that
 call tools and services directly, just as MIRA does during continuums.
 """
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, TYPE_CHECKING, TypedDict
 from enum import Enum
 from uuid import UUID
@@ -44,6 +45,7 @@ class DomainType(str, Enum):
     DOMAIN_KNOWLEDGE = "domain_knowledge"
     CONTINUUM = "continuum"
     LORA = "lora"
+    FEEDBACK = "feedback"
 
 
 class ActionRequest(BaseModel):
@@ -1377,6 +1379,7 @@ class DomainKnowledgeDomainHandler(BaseDomainHandler):
                     "header": s["header"],
                     "content": s.get("encrypted__content", ""),
                     "collapsed": s.get("collapsed", False),
+                    "pinned": s.get("pinned", False),
                     "sort_order": s.get("sort_order", 0),
                     "parent_section_id": s.get("parent_section_id"),
                     "updated_at": s.get("updated_at"),
@@ -2048,12 +2051,15 @@ class DomainKnowledgeDomainHandler(BaseDomainHandler):
         from clients.llm_provider import LLMProvider
         from utils.user_context import get_user_preferences, resolve_conversation_llm
 
-        logger.info(f"_expand_description called for label='{label}', description='{description[:50]}...'")
+        logger.debug(
+            "_expand_description called with label length=%s and description length=%s",
+            len(label),
+            len(description)
+        )
 
         try:
             llm_config = resolve_conversation_llm(get_user_preferences().conversation_llm)
-            llm = LLMProvider(model=llm_config.model)
-            logger.debug(f"LLMProvider created, model={llm.model}")
+            llm = LLMProvider()
 
             prompt = f"""You are helping expand a brief description into comprehensive guidance for a knowledge document.
 
@@ -2072,22 +2078,23 @@ Example output: "Backyard garden management: current plantings with locations an
 
             logger.debug("Calling LLM generate_response...")
             response = llm.generate_response(
-                messages=[{"role": "user", "content": prompt}]
+                messages=[{"role": "user", "content": prompt}],
+                conversation_llm=llm_config.name,
             )
-            logger.debug(f"LLM response received: stop_reason={getattr(response, 'stop_reason', 'N/A')}, content_types={[b.type for b in getattr(response, 'content', [])]}")
+            logger.debug(f"LLM response received: stop_reason={response.stop_reason}")
 
             expanded = llm.extract_text_content(response).strip()
-            logger.debug(f"Extracted text length={len(expanded)}, preview='{expanded[:100] if expanded else '(empty)'}...'")
+            logger.debug("Extracted text length=%s", len(expanded))
 
             if expanded and len(expanded) > 20:
                 logger.info(f"LLM expansion successful, length={len(expanded)}")
                 return expanded
             else:
-                logger.warning(f"LLM expansion too short (len={len(expanded)}), using original: '{expanded}'")
+                logger.warning("LLM expansion too short (len=%s), using original description", len(expanded))
                 return description
 
-        except Exception as e:
-            logger.warning(f"Failed to expand description via LLM: {e}", exc_info=True)
+        except Exception:
+            logger.warning("Failed to expand description via LLM", exc_info=True)
             return description
 
 
@@ -2418,6 +2425,153 @@ class LoraDomainHandler(BaseDomainHandler):
         valkey.hdel_with_retry(hash_key, "behavioral_directives")
 
 
+_REPULSION_REWRITER_EXECUTOR = ThreadPoolExecutor(
+    max_workers=4,
+    thread_name_prefix="repulsion_rewriter",
+)
+
+_REWRITER_PROMPTS_DIR = "config/prompts"
+_REWRITER_SYSTEM_PROMPT_FILE = "repulsion_rewriter_system.txt"
+_REWRITER_USER_PROMPT_FILE = "repulsion_rewriter_user.txt"
+_REWRITER_INTERNAL_LLM_PURPOSE = "rewriter"
+_REWRITER_MODEL_LABEL = "openai/gpt-5.5"
+
+
+class FeedbackDomainHandler(BaseDomainHandler):
+    """Handler for direct user feedback capture."""
+
+    ACTIONS = {
+        "capture_repulsion": {
+            "required": ["response_text", "preceding_user_message"],
+            "optional": ["reason", "matched_tells"],
+            "types": {
+                "reason": str,
+                "response_text": str,
+                "preceding_user_message": str,
+                "matched_tells": list,
+            },
+        }
+    }
+
+    def execute_action(self, action: str, data: dict[str, Any]) -> dict[str, Any]:
+        if action != "capture_repulsion":
+            raise ValidationError(f"Unknown action: {action}")
+
+        if not self.user_id:
+            raise ValidationError("No user context available for feedback capture")
+
+        import contextvars
+        import uuid
+        from pathlib import Path
+
+        record_id = str(uuid.uuid4())
+        reason = data.get("reason", "").strip()
+        response_text = data["response_text"]
+        preceding_user_message = data["preceding_user_message"]
+        matched_tells = data.get("matched_tells", [])
+
+        click_record = {
+            "id": record_id,
+            "timestamp": utc_now().isoformat(),
+            "kind": "click",
+            "reason": reason,
+            "response_text": response_text,
+            "preceding_user_message": preceding_user_message,
+            "matched_tells": matched_tells,
+        }
+
+        output_dir = Path("data/users") / str(self.user_id) / "repulsion_feedback"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_file = output_dir / f"{utc_now().strftime('%Y-%m-%d')}.jsonl"
+
+        self._append_record(output_file, click_record)
+
+        logger.info(
+            f"Captured repulsion feedback for user {self.user_id} "
+            f"(id={record_id}, tells={matched_tells}, file={output_file})"
+        )
+
+        ctx = contextvars.copy_context()
+        _REPULSION_REWRITER_EXECUTOR.submit(
+            ctx.run,
+            self._run_rewriter,
+            record_id,
+            response_text,
+            preceding_user_message,
+            matched_tells,
+            output_file,
+        )
+
+        return {"captured": True, "id": record_id}
+
+    @staticmethod
+    def _append_record(output_file: "Path", record: dict[str, Any]) -> None:
+        import json
+
+        file_has_content = output_file.exists() and output_file.stat().st_size > 0
+        with open(output_file, "a", encoding="utf-8") as f:
+            if file_has_content:
+                f.write("\n------------------\n")
+            f.write(json.dumps(record))
+
+    @staticmethod
+    def _run_rewriter(
+        record_id: str,
+        response_text: str,
+        preceding_user_message: str,
+        matched_tells: list[str],
+        output_file: "Path",
+    ) -> None:
+        try:
+            from pathlib import Path
+            from clients.llm_provider import LLMProvider
+
+            prompts_dir = Path(_REWRITER_PROMPTS_DIR)
+            system_prompt = (prompts_dir / _REWRITER_SYSTEM_PROMPT_FILE).read_text()
+            user_template = (prompts_dir / _REWRITER_USER_PROMPT_FILE).read_text()
+
+            user_prompt = user_template.format(
+                user_message=preceding_user_message,
+                ai_response=response_text,
+                matched_tells=", ".join(matched_tells) if matched_tells else "(none)",
+            )
+
+            llm = LLMProvider()
+            response = llm.generate_response(
+                messages=[{"role": "user", "content": user_prompt}],
+                system_prompt=system_prompt,
+                internal_llm=_REWRITER_INTERNAL_LLM_PURPOSE,
+                effort="high",
+                allow_provider_stall_fallback=False,
+            )
+            chosen_text = llm.extract_text_content(response).strip()
+
+            if not chosen_text:
+                logger.warning(
+                    f"Repulsion rewriter returned empty output for record {record_id}"
+                )
+                return
+
+            rewrite_record = {
+                "id": record_id,
+                "timestamp": utc_now().isoformat(),
+                "kind": "rewrite_v1",
+                "rewriter_model": _REWRITER_MODEL_LABEL,
+                "chosen": chosen_text,
+            }
+            FeedbackDomainHandler._append_record(output_file, rewrite_record)
+
+            logger.info(
+                f"Repulsion rewriter completed for record {record_id} "
+                f"(output_chars={len(chosen_text)})"
+            )
+        except Exception as e:
+            logger.warning(
+                f"Repulsion rewriter failed for record {record_id} "
+                f"(non-critical): {e}"
+            )
+
+
 class ActionsEndpoint(BaseHandler):
     """Main actions endpoint handler with domain-based routing."""
 
@@ -2430,7 +2584,8 @@ class ActionsEndpoint(BaseHandler):
             DomainType.CONTACTS: ContactsDomainHandler,
             DomainType.DOMAIN_KNOWLEDGE: DomainKnowledgeDomainHandler,
             DomainType.CONTINUUM: ContinuumDomainHandler,
-            DomainType.LORA: LoraDomainHandler
+            DomainType.LORA: LoraDomainHandler,
+            DomainType.FEEDBACK: FeedbackDomainHandler,
         }
     
     def process_request(self, **params) -> dict[str, Any]:
@@ -2521,7 +2676,7 @@ async def actions_endpoint(
             }
         )
     except Exception as e:
-        logger.error(f"Actions endpoint error: {e}", exc_info=True)
+        logger.exception("Actions endpoint error")
         return JSONResponse(
             status_code=500,
             content={
@@ -2619,7 +2774,7 @@ async def query_tool(
             }
         )
     except Exception as e:
-        logger.error(f"Tool query error for {tool_name}: {e}", exc_info=True)
+        logger.exception("Tool query error for %s", tool_name)
         return JSONResponse(
             status_code=500,
             content={

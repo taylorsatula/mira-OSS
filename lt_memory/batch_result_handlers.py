@@ -18,10 +18,11 @@ from lt_memory.processing.batch_coordinator import BatchResultProcessor
 from lt_memory.processing.memory_processor import MemoryProcessor
 from lt_memory.vector_ops import VectorOps
 from lt_memory.linking import LinkingService
+from lt_memory.llm_routing import uses_anthropic_batch_adapter
 from lt_memory.models import ExtractionBatch, PostProcessingBatch, ExtractedMemory, MemoryLink, LinkingPair, ClassificationPair
 from lt_memory.processing.batch_coordinator import BATCH_EXPIRY_HOURS
 from clients.llm_provider import LLMProvider, build_batch_params
-from utils.user_context import set_current_user_id, clear_user_context, get_internal_llm
+from utils.user_context import set_current_user_id, clear_user_context
 from utils.timezone_utils import utc_now
 
 logger = logging.getLogger(__name__)
@@ -247,8 +248,12 @@ class ExtractionBatchResultHandler(BatchResultProcessor):
             if total_links:
                 logger.info(f"Persisted LLM entities: {total_links} links for {len(memories)} memories")
 
-        except Exception as e:
-            logger.warning(f"Entity persistence failed for user {user_id} (non-critical): {e}", exc_info=True)
+        except Exception:
+            logger.warning(
+                "Entity persistence failed for user %s (non-critical)",
+                user_id,
+                exc_info=True
+            )
 
     def _trigger_relationship_classification(
         self,
@@ -314,8 +319,7 @@ class ExtractionBatchResultHandler(BatchResultProcessor):
         if not all_pairs:
             return
 
-        # Check if we should bypass batching (emergency fallback or non-Anthropic endpoint)
-        if self.llm_provider._is_failover_active() or "api.anthropic.com" not in get_internal_llm('relationship').endpoint_url:
+        if not uses_anthropic_batch_adapter("relationship"):
             logger.warning(
                 f"Bypassing relationship batch for user {user_id} - "
                 f"executing {len(all_pairs)} classifications immediately"
@@ -411,12 +415,12 @@ class ExtractionBatchResultHandler(BatchResultProcessor):
                 try:
                     response = self.llm_provider.generate_response(
                         messages=[{"role": "user", "content": payload["user_prompt"]}],
-                        system_override=payload["system_prompt"],
+                        system_prompt=payload["system_prompt"],
                         internal_llm='relationship',
                         allow_negative=True,  # System task — segment already paid for
                     )
-                except Exception as e:
-                    logger.error(f"[{idx + 1}/{total}] LLM call failed: {e}")
+                except Exception:
+                    logger.exception("[%s/%s] LLM call failed", idx + 1, total)
                     skipped += 1
                     continue
 
@@ -505,15 +509,23 @@ class RelationshipBatchResultHandler(BatchResultProcessor):
                     # Parse JSON with repair fallback
                     try:
                         classifications[result.custom_id] = json.loads(response_text)
-                    except json.JSONDecodeError as e:
-                        logger.warning(f"JSON parsing failed for {result.custom_id}: {e}, attempting repair")
+                    except json.JSONDecodeError:
+                        logger.warning(
+                            "JSON parsing failed for %s, attempting repair",
+                            result.custom_id,
+                            exc_info=True
+                        )
                         try:
                             repaired = repair_json(response_text)
                             classifications[result.custom_id] = json.loads(repaired)
                             logger.debug(f"Successfully repaired JSON for {result.custom_id}")
-                        except json.JSONDecodeError as repair_error:
-                            logger.error(f"JSON repair failed for {result.custom_id}: {repair_error}")
-                            logger.debug(f"Response text (first 500 chars): {response_text[:500]}")
+                        except json.JSONDecodeError:
+                            logger.exception("JSON repair failed for %s", result.custom_id)
+                            logger.debug(
+                                "Response text length for %s: %s",
+                                result.custom_id,
+                                len(response_text)
+                            )
                             continue
 
             if not classifications:
@@ -562,7 +574,7 @@ class RelationshipBatchResultHandler(BatchResultProcessor):
             return True
 
         except Exception as e:
-            logger.error(f"Error processing relationship result: {e}", exc_info=True)
+            logger.exception("Error processing relationship result")
             self.db.update_batch_status("post_processing",
                 batch.id,
                 "failed",
@@ -680,8 +692,8 @@ class ConsolidationBatchResultHandler(BatchResultProcessor):
                             logger.info(
                                 f"Batch consolidation: {len(group_uuids)} memories -> {new_memory_id}"
                             )
-                        except (ValueError, RuntimeError) as e:
-                            logger.error(f"Consolidation failed for group in {custom_id}: {e}")
+                        except (ValueError, RuntimeError):
+                            logger.exception("Consolidation failed for group in %s", custom_id)
 
                 # Delete batch record
                 self.db.delete_batch("post_processing", batch.id, user_id=batch.user_id)
@@ -694,7 +706,7 @@ class ConsolidationBatchResultHandler(BatchResultProcessor):
                 clear_user_context()
 
         except Exception as e:
-            logger.error(f"Error processing consolidation result: {e}", exc_info=True)
+            logger.exception("Error processing consolidation result")
             self.db.update_batch_status("post_processing",
                 batch.id,
                 "failed",
@@ -793,7 +805,7 @@ class EntityGCBatchResultHandler(BatchResultProcessor):
             return True
 
         except Exception as e:
-            logger.error(f"Error processing entity GC result: {e}", exc_info=True)
+            logger.exception("Error processing entity GC result")
             self.db.update_batch_status("post_processing",
                 batch.id,
                 "failed",

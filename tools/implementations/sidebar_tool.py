@@ -55,7 +55,7 @@ class SidebarTool(Tool):
 
     name = "sidebar_tool"
 
-    anthropic_schema = {
+    tool_schema = {
         "name": "sidebar_tool",
         "description": (
             "Manage your working state and signal task completion.\n\n"

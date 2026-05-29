@@ -131,7 +131,7 @@ class PunchclockTool(Tool):
 
     simple_description = "Log work time with labeled sessions. Punch in to start, pause/resume as needed, punch out when done. Supports time offsets like '-10m'. Check status to see active and completed sessions."
 
-    anthropic_schema = {
+    tool_schema = {
         "name": name,
         "description": simple_description,
         "input_schema": {

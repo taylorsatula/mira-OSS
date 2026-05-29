@@ -67,7 +67,9 @@ class UnitOfWork:
                     content=truncated,
                     role=msg.role,
                     created_at=msg.created_at,
-                    metadata=msg.metadata
+                    metadata=msg.metadata,
+                    tool_call_id=msg.tool_call_id,
+                    is_error=msg.is_error
                 )
                 logger.warning(
                     "Truncated oversized %s message at persistence: %d -> %d chars",
