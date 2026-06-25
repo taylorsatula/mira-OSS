@@ -130,15 +130,17 @@ LAUNCHER
     print_info "Start MIRA with: $RUN_SH"
 fi
 
-# Write one-time credential dump to user's Desktop
+# Write one-time credential dump to user's home directory
 print_header "Step 15c: Credential Dump"
 
 ROOT_TOKEN=$(vault_extract_credential "Initial Root Token")
 UNSEAL_KEY=$(vault_extract_credential "Unseal Key 1")
 
-DESKTOP_CRED_FILE="$HOME/Desktop/MIRA_credentials.txt"
+CRED_FILE="$HOME/MIRA_credentials.txt"
 
-cat > "$DESKTOP_CRED_FILE" <<CREDS
+_cred_write_failed=false
+
+if ! cat > "$CRED_FILE" <<CREDS
 ================================================================================
   ⚠️  CRITICAL — READ BEFORE PROCEEDING  ⚠️
 ================================================================================
@@ -149,7 +151,7 @@ THIS IS THE ONLY TIME these credentials will be written to disk in plain text.
 
 ACTION REQUIRED:
   1. Copy this file to a secure location (password manager, encrypted drive)
-  2. DELETE this file from your Desktop immediately after saving
+  2. DELETE this file immediately after saving
   3. If you lose these credentials, you can recover by logging into Vault:
      export VAULT_ADDR='http://127.0.0.1:8200'
      vault login <root_token>
@@ -170,33 +172,41 @@ API Keys stored in Vault at secret/mira/api_keys:
   anthropic_key:        ${CONFIG_ANTHROPIC_KEY}
   anthropic_batch_key:  ${CONFIG_ANTHROPIC_BATCH_KEY}
 CREDS
+then
+    _cred_write_failed=true
+fi
 
-if [ "$CONFIG_OFFLINE_MODE" != "yes" ]; then
-    cat >> "$DESKTOP_CRED_FILE" <<CREDS
+if [ "$_cred_write_failed" = false ]; then
+    if [ "$CONFIG_OFFLINE_MODE" != "yes" ]; then
+        cat >> "$CRED_FILE" <<CREDS
   provider_key:         ${CONFIG_CHAT_API_KEY:-N/A}
   subcortical_key:      ${CONFIG_SUBCORTICAL_API_KEY}
   kagi_api_key:         ${CONFIG_KAGI_KEY:-N/A}
 CREDS
-else
-    cat >> "$DESKTOP_CRED_FILE" <<CREDS
+    else
+        cat >> "$CRED_FILE" <<CREDS
   (Offline/local mode — no external API keys configured)
 CREDS
-fi
+    fi
 
-cat >> "$DESKTOP_CRED_FILE" <<'CREDS'
+    cat >> "$CRED_FILE" <<'CREDS'
 
 ================================================================================
   ⚠️  REMEMBER TO DELETE THIS FILE AFTER SAVING SECURELY  ⚠️
 ================================================================================
 CREDS
 
-chmod 600 "$DESKTOP_CRED_FILE"
+    chmod 600 "$CRED_FILE"
 
-print_warning "Credential dump written to: $DESKTOP_CRED_FILE"
-echo ""
-print_info "⚠️  This is the ONLY time these credentials are written to disk."
-print_info "Save this file securely, then DELETE it from your Desktop."
-print_info "To retrieve later, use Vault CLI with your root token."
+    print_warning "Credential dump written to: $CRED_FILE"
+    echo ""
+    print_info "⚠️  This is the ONLY time these credentials are written to disk."
+    print_info "Save this file securely, then DELETE it."
+    print_info "To retrieve later, use Vault CLI with your root token."
+else
+    print_error "Failed to write credential dump to $CRED_FILE"
+    print_info "Credentials are still accessible via Vault CLI with your root token."
+fi
 echo ""
 
 print_header "Step 16: Cleanup"
