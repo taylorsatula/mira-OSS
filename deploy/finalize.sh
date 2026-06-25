@@ -335,8 +335,19 @@ else
     echo -e "  ${CYAN}→${RESET} Open the web UI: ${BOLD}http://localhost:1993/chat${RESET}"
 fi
 
-echo ""
-print_warning "IMPORTANT: Secure /opt/vault/ - it contains sensitive credentials!"
+# Harden /opt/vault/ permissions — restrict to MIRA_USER only
+if [ "$OS" = "linux" ]; then
+    sudo chmod 700 /opt/vault
+    sudo find /opt/vault -type f -exec chmod 600 {} \;
+    sudo find /opt/vault -type d -exec chmod 700 {} \;
+    # Ensure scripts remain executable by owner
+    sudo chmod 700 /opt/vault/unseal.sh 2>/dev/null || true
+elif [ "$OS" = "macos" ]; then
+    chmod 700 /opt/vault
+    find /opt/vault -type f -exec chmod 600 {} \;
+    find /opt/vault -type d -exec chmod 700 {} \;
+    chmod 700 /opt/vault/unseal.sh 2>/dev/null || true
+fi
 
 if [ "$OS" = "macos" ]; then
     echo ""
