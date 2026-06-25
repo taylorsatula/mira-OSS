@@ -36,6 +36,8 @@ if [ "$OS" = "linux" ] && [ "$DISTRO" = "debian" ]; then
         print_step "Installing system packages (Python ${PYTHON_VER})..."
         sudo apt-get install -y \
             build-essential \
+            cmake \
+            git \
             python${PYTHON_VER}-venv \
             python${PYTHON_VER}-dev \
             libpq-dev \
@@ -57,7 +59,7 @@ if [ "$OS" = "linux" ] && [ "$DISTRO" = "debian" ]; then
         show_progress $! "Updating package lists"
 
         (sudo apt-get install -y \
-            build-essential python${PYTHON_VER}-venv python${PYTHON_VER}-dev libpq-dev \
+            build-essential cmake git python${PYTHON_VER}-venv python${PYTHON_VER}-dev libpq-dev \
             postgresql-server-dev-17 unzip wget curl postgresql-17 \
             postgresql-contrib postgresql-17-pgvector valkey \
             libatk1.0-0t64 libatk-bridge2.0-0t64 libatspi2.0-0t64 \
@@ -264,7 +266,7 @@ if [ "$CONFIG_OFFLINE_MODE" = "yes" ]; then
         if [ -n "$MISSING_TOOLS" ]; then
             print_error "Missing build tools:$MISSING_TOOLS"
             print_info "Install them first, then re-run deploy."
-            if [ "$OS" = "linux" ] && [ "$DISTRO" = "ubuntu" ]; then
+            if [ "$OS" = "linux" ] && [ "$DISTRO" = "debian" ]; then
                 print_info "  sudo apt install -y cmake git build-essential"
             elif [ "$OS" = "linux" ] && [ "$DISTRO" = "fedora" ]; then
                 print_info "  sudo dnf install -y cmake git gcc-c++"
@@ -274,6 +276,12 @@ if [ "$CONFIG_OFFLINE_MODE" = "yes" ]; then
             exit 1
         fi
 
+        # Detect CUDA availability
+        USE_CUDA="OFF"
+        if command -v nvcc &> /dev/null; then
+            USE_CUDA="ON"
+        fi
+
         # Clone and build llama.cpp
         BUILD_DIR="/tmp/llama.cpp-build"
         rm -rf "$BUILD_DIR"
@@ -281,17 +289,26 @@ if [ "$CONFIG_OFFLINE_MODE" = "yes" ]; then
         if [ "$LOUD_MODE" = true ]; then
             print_step "Cloning llama.cpp..."
             git clone --depth 1 https://github.com/ggerganov/llama.cpp.git "$BUILD_DIR"
-            print_step "Building llama.cpp with CUDA support (this may take several minutes)..."
-            cd "$BUILD_DIR" && cmake -B build -DGGML_CUDA=ON -DLLAMA_SERVER=ON
+            if [ "$USE_CUDA" = "ON" ]; then
+                print_step "Building llama.cpp with CUDA support (this may take several minutes)..."
+            else
+                print_step "Building llama.cpp (CPU only, no CUDA detected)..."
+            fi
+            cd "$BUILD_DIR" && cmake -B build -DGGML_CUDA=$USE_CUDA -DLLAMA_SERVER=ON
             cd "$BUILD_DIR" && cmake --build build --config Release -j$(nproc)
             run_with_status "Installing llama.cpp" \
                 sudo cmake --install build
         else
             (git clone --depth 1 https://github.com/ggerganov/llama.cpp.git "$BUILD_DIR" > /dev/null 2>&1 && \
-             cd "$BUILD_DIR" && cmake -B build -DGGML_CUDA=ON -DLLAMA_SERVER=ON > /dev/null 2>&1 && \
+             cd "$BUILD_DIR" && cmake -B build -DGGML_CUDA=$USE_CUDA -DLLAMA_SERVER=ON > /dev/null 2>&1 && \
              cmake --build build --config Release -j$(nproc) > /dev/null 2>&1 && \
              sudo cmake --install build > /dev/null 2>&1) &
-            if show_progress $! "Building llama.cpp from source (CUDA)"; then
+            if [ "$USE_CUDA" = "ON" ]; then
+                PROGRESS_MSG="Building llama.cpp from source (CUDA)"
+            else
+                PROGRESS_MSG="Building llama.cpp from source (CPU)"
+            fi
+            if show_progress $! "$PROGRESS_MSG"; then
                 echo -e "${CHECKMARK}"
             else
                 print_error "llama.cpp build failed"
