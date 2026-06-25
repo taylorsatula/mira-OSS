@@ -23,7 +23,26 @@ def format_messages_for_api(messages: Sequence[Message]) -> list[dict[str, objec
     for message in messages:
         # --- Tool messages: emit directly with first-class fields ---
         if message.role == "tool":
-            msg_dict: dict[str, object] = {"role": "tool", "content": message.content}
+            content: object = message.content
+            if (
+                isinstance(message.content, str)
+                and message.metadata.get("tool_result_compacted")
+                and message.metadata.get("tool_result_id")
+            ):
+                tool_result_id = message.metadata["tool_result_id"]
+                content = [
+                    {"type": "text", "text": message.content},
+                    {
+                        "type": "text",
+                        "text": (
+                            "\n\n[Exact original tool result available via "
+                            "continuum_tool: "
+                            '{"operation":"get_tool_result",'
+                            f'"tool_result_id":"{tool_result_id}"}}]'
+                        ),
+                    },
+                ]
+            msg_dict: dict[str, object] = {"role": "tool", "content": content}
             if message.tool_call_id:
                 msg_dict["tool_call_id"] = message.tool_call_id
             if message.is_error:

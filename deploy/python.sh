@@ -93,25 +93,17 @@ run_quiet rm -rf /tmp/mira-OSS-main
 
 print_success "MIRA installed to /opt/mira/app"
 
-# Patch config if offline mode with custom model
-if [ -n "$CONFIG_PATCH_OLLAMA_MODEL" ] && [ "$CONFIG_PATCH_OLLAMA_MODEL" != "qwen3:1.7b" ]; then
-    echo -ne "${DIM}${ARROW}${RESET} Patching config with model ${CONFIG_PATCH_OLLAMA_MODEL}... "
-    if [ "$OS" = "macos" ]; then
-        sed -i '' "s|default=\"qwen3:1.7b\"|default=\"${CONFIG_PATCH_OLLAMA_MODEL}\"|" /opt/mira/app/config/config.py
-    else
-        sed -i "s|default=\"qwen3:1.7b\"|default=\"${CONFIG_PATCH_OLLAMA_MODEL}\"|" /opt/mira/app/config/config.py
-    fi
-    echo -e "${CHECKMARK}"
-fi
-
 # Offline mode: LLM endpoints are configured post-schema by postgresql.sh
-# (INSERTs offline tier, UPDATEs internal_llm to Ollama endpoints/models)
+# (INSERTs qwopus tier, UPDATEs internal_llm to llama-server endpoints/models)
 if [ "$CONFIG_OFFLINE_MODE" = "yes" ]; then
     echo ""
     echo -e "${DIM}NOTE: Tools (web_tool, forage_tool) use hardcoded LLM configs.${RESET}"
-    echo -e "${DIM}For offline providers, edit the tool config classes directly:${RESET}"
+    echo -e "${DIM}For local providers, edit the tool config classes directly:${RESET}"
     echo -e "${DIM}  - tools/implementations/web_tool.py (WebToolConfig)${RESET}"
     echo -e "${DIM}  - tools/implementations/forage_tool.py (ForageToolConfig)${RESET}"
+    echo ""
+    echo -e "${DIM}NOTE: phoneafriend entries remain remote (Anthropic/OpenRouter).${RESET}"
+    echo -e "${DIM}They will fail gracefully if called while air-gapped.${RESET}"
     echo ""
 fi
 
@@ -123,9 +115,9 @@ if [ "$CONFIG_OFFLINE_MODE" != "yes" ]; then
     if [ "$CONFIG_CHAT_PROVIDER_TYPE" = "generic" ]; then
         echo -ne "${DIM}${ARROW}${RESET} Configuring chat tier (OpenAI-compatible: ${CONFIG_CHAT_MODEL})... "
         if [ "$OS" = "macos" ]; then
-            sed -i '' "s|('primary', 'claude-sonnet-4-6', 0, 'Primary', 1, 'anthropic', NULL, NULL, FALSE)|('primary', '${CONFIG_CHAT_MODEL}', 0, 'Primary', 1, 'openai_compat', '${CONFIG_CHAT_ENDPOINT}', 'provider_key', FALSE)|" "$SCHEMA"
+            sed -i '' "s|('primary', 'claude-sonnet-4-6', 0, 'Primary', 1, 'anthropic', NULL, NULL, FALSE)|('primary', '${CONFIG_CHAT_MODEL}', 0, 'Primary', 1, 'openai', '${CONFIG_CHAT_ENDPOINT}', 'provider_key', FALSE)|" "$SCHEMA"
         else
-            sed -i "s|('primary', 'claude-sonnet-4-6', 0, 'Primary', 1, 'anthropic', NULL, NULL, FALSE)|('primary', '${CONFIG_CHAT_MODEL}', 0, 'Primary', 1, 'openai_compat', '${CONFIG_CHAT_ENDPOINT}', 'provider_key', FALSE)|" "$SCHEMA"
+            sed -i "s|('primary', 'claude-sonnet-4-6', 0, 'Primary', 1, 'anthropic', NULL, NULL, FALSE)|('primary', '${CONFIG_CHAT_MODEL}', 0, 'Primary', 1, 'openai', '${CONFIG_CHAT_ENDPOINT}', 'provider_key', FALSE)|" "$SCHEMA"
         fi
         echo -e "${CHECKMARK}"
     elif [ "$CONFIG_CHAT_MODEL" != "claude-sonnet-4-6" ] && [ -n "$CONFIG_CHAT_MODEL" ]; then

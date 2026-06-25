@@ -91,12 +91,16 @@ else
     exit 1
 fi
 
-# Configure LLM endpoints for offline mode (use local Ollama)
+# Configure LLM endpoints for offline mode (local llama-server)
+# Main:   Qwopus3.6-27B on port 3090 (0.0.0.0, 256K ctx, MTP speculative)
+# Small:  Qwen3.5-9B on port 3092 (127.0.0.1, 4K ctx, speed-critical)
+# VRAM target: dual RTX 3090 / 48GB total, tensor split 12,12
+# Note: phoneafriend entries remain remote (Anthropic/OpenRouter) — will fail if air-gapped
 if [ "$CONFIG_OFFLINE_MODE" = "yes" ]; then
-    echo -ne "${DIM}${ARROW}${RESET} Configuring LLM endpoints for offline mode (Ollama)... "
-    OLLAMA_MAIN="${CONFIG_OLLAMA_MODEL:-qwen3:1.7b}"
-    OLLAMA_SUB="${CONFIG_OLLAMA_SUBCORTICAL_MODEL:-$OLLAMA_MAIN}"
-    OFFLINE_SQL="INSERT INTO conversation_llm (name, model, thinking_budget, description, display_order, adapter_name, endpoint_url, api_key_name, hidden) VALUES ('offline', '${OLLAMA_MAIN}', 0, 'Local (Ollama)', 0, 'openai_compat', 'http://localhost:11434/v1/chat/completions', NULL, FALSE) ON CONFLICT (name) DO UPDATE SET model = '${OLLAMA_MAIN}', adapter_name = 'openai_compat', endpoint_url = 'http://localhost:11434/v1/chat/completions', api_key_name = NULL; UPDATE users SET conversation_llm = 'offline'; UPDATE internal_llm SET endpoint_url = 'http://localhost:11434/v1/chat/completions', model = '${OLLAMA_MAIN}', api_key_name = NULL WHERE endpoint_url LIKE 'https://%' AND name != 'analysis'; UPDATE internal_llm SET endpoint_url = 'http://localhost:11434/v1/chat/completions', model = '${OLLAMA_SUB}', api_key_name = NULL WHERE name = 'analysis';"
+    echo -ne "${DIM}${ARROW}${RESET} Configuring LLM endpoints for offline mode (llama-server)... "
+    LLAMA_MAIN_URL="http://localhost:3090/v1/chat/completions"
+    LLAMA_SMALL_URL="http://localhost:3092/v1/chat/completions"
+    OFFLINE_SQL="INSERT INTO conversation_llm (name, model, thinking_budget, description, display_order, dialect_name, endpoint_url, api_key_name, hidden) VALUES ('qwopus', 'Qwopus3.6-27B-v2-MTP-Q5_K_M', 0, 'Local (llama-server)', 0, 'openai', '$LLAMA_MAIN_URL', NULL, FALSE) ON CONFLICT (name) DO UPDATE SET model = 'Qwopus3.6-27B-v2-MTP-Q5_K_M', dialect_name = 'openai', endpoint_url = '$LLAMA_MAIN_URL', api_key_name = NULL; UPDATE users SET conversation_llm = 'qwopus'; UPDATE internal_llm SET endpoint_url = '$LLAMA_MAIN_URL', model = 'Qwopus3.6-27B-v2-MTP-Q5_K_M', api_key_name = NULL WHERE endpoint_url LIKE 'https://%'; UPDATE internal_llm SET endpoint_url = '$LLAMA_SMALL_URL', model = 'Qwen3.5-9B-UD-Q3_K_XL', api_key_name = NULL WHERE name IN ('analysis', 'tidyup', 'overwatch'); UPDATE internal_llm SET endpoint_url = 'https://api.anthropic.com/v1/messages', model = 'claude-opus-4-6', api_key_name = 'anthropic_key' WHERE name = 'phoneafriend_claude'; UPDATE internal_llm SET endpoint_url = 'https://openrouter.ai/api/v1/chat/completions', model = 'openai/gpt-5.5', api_key_name = 'provider_key' WHERE name = 'phoneafriend_gemini';"
     if [ "$OS" = "linux" ]; then
         if sudo -u postgres psql -d mira_service -c "$OFFLINE_SQL" > /dev/null 2>&1; then
             echo -e "${CHECKMARK}"

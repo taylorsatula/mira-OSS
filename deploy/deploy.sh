@@ -103,7 +103,7 @@ source "${SCRIPT_DIR}/preflight.sh"
 # ============================================================================
 # dependencies.sh handles:
 #   - Package installation (apt/dnf/brew)
-#   - Ollama setup (offline mode only)
+#   - llama.cpp build & model download (offline/local mode only)
 #   - Sets: PYTHON_VER
 source "${SCRIPT_DIR}/dependencies.sh"
 

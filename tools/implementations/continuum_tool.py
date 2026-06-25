@@ -18,10 +18,11 @@ from typing import Dict, Any, Optional, List
 
 from pydantic import BaseModel, Field
 
-from tools.repo import Tool
+from tools.repo import Tool, coerce_to_int
 from tools.registry import registry
 from cns.infrastructure.continuum_repository import get_continuum_repository
 from utils.timezone_utils import format_utc_iso, parse_utc_time_string, utc_now
+from utils.user_context import get_current_segment_id
 from clients.hybrid_embeddings_provider import get_hybrid_embeddings_provider
 
 
@@ -139,13 +140,26 @@ class ContinuumSearchTool(Tool):
             "properties": {
                 "operation": {
                     "type": "string",
-                    "enum": ["search", "search_within_segment", "expand_message"],
+                    "enum": [
+                        "search",
+                        "search_within_segment",
+                        "expand_message",
+                        "get_tool_result",
+                    ],
                     "default": "search",
                     "description": (
                         "'search' (default): query segment summaries or time-bounded messages. "
                         "'search_within_segment': query messages inside a specific segment (requires segment_id, query). "
-                        "'expand_message': get full message text plus context (requires message_id)"
+                        "'expand_message': get full message text plus context (requires message_id). "
+                        "'get_tool_result': retrieve an exact collapsed tool result (requires tool_result_id)"
                     )
+                },
+                "tool_result_id": {
+                    "type": "string",
+                    "description": (
+                        "Session-scoped tool result identifier copied from a collapsed-result "
+                        "breadcrumb. Required for 'get_tool_result'."
+                    ),
                 },
                 "search_mode": {
                     "type": "string",
@@ -278,43 +292,6 @@ class ContinuumSearchTool(Tool):
         """Escape SQL LIKE special characters to prevent wildcard injection."""
         return value.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
 
-    def _coerce_to_int(self, value: Any, param_name: str) -> Optional[int]:
-        """
-        Coerce a value to int, handling LLM quirks like sending [10] instead of 10.
-
-        Args:
-            value: The value to coerce (may be int, list, str, or None)
-            param_name: Parameter name for error messages
-
-        Returns:
-            Integer value or None if input was None
-
-        Raises:
-            ValueError: If value cannot be coerced to int
-        """
-        if value is None:
-            return None
-
-        # Handle list with single element (LLM quirk)
-        if isinstance(value, (list, tuple)):
-            if len(value) == 1:
-                value = value[0]
-            else:
-                raise ValueError(f"{param_name} must be a single integer, got list with {len(value)} elements")
-
-        # Handle string numbers
-        if isinstance(value, str):
-            try:
-                return int(value)
-            except ValueError:
-                raise ValueError(f"{param_name} must be an integer, got string '{value}'")
-
-        # Handle numeric types
-        if isinstance(value, (int, float)):
-            return int(value)
-
-        raise ValueError(f"{param_name} must be an integer, got {type(value).__name__}")
-
     # Parameter sets for each operation to filter kwargs
     _SEARCH_PARAMS = {
         'query', 'search_mode', 'entities', 'max_results', 'page',
@@ -323,8 +300,9 @@ class ContinuumSearchTool(Tool):
     }
     _SEARCH_WITHIN_SEGMENT_PARAMS = {'segment_id', 'query', 'max_results', 'include_thinking'}
     _EXPAND_MESSAGE_PARAMS = {'message_id', 'direction', 'context_count', 'include_thinking'}
+    _GET_TOOL_RESULT_PARAMS = {'tool_result_id'}
 
-    def run(self, operation: str = "search", **kwargs) -> Dict[str, Any]:
+    def run(self, operation: str = "search", **kwargs) -> Any:
         """
         Execute a continuum search operation.
 
@@ -349,14 +327,38 @@ class ContinuumSearchTool(Tool):
             elif operation == "expand_message":
                 filtered = {k: v for k, v in kwargs.items() if k in self._EXPAND_MESSAGE_PARAMS}
                 return self._expand_message(**filtered)
+            elif operation == "get_tool_result":
+                filtered = {k: v for k, v in kwargs.items() if k in self._GET_TOOL_RESULT_PARAMS}
+                return self._get_tool_result(**filtered)
             else:
                 raise ValueError(
                     f"Unknown operation: {operation}. "
-                    f"Valid operations are: search, search_within_segment, expand_message"
+                    "Valid operations are: search, search_within_segment, "
+                    "expand_message, get_tool_result"
                 )
         except Exception as e:
             self.logger.error(f"Error executing {operation} in continuum_tool: {e}")
             raise
+
+    def _get_tool_result(self, tool_result_id: str | None = None) -> str:
+        """Return the exact persisted tool result referenced by a breadcrumb."""
+        if not tool_result_id or not tool_result_id.startswith("tr_"):
+            raise ValueError("tool_result_id must be copied from a collapse breadcrumb")
+
+        session_id = get_current_segment_id()
+        if not session_id:
+            raise ValueError("No active conversation session for tool result lookup")
+
+        content = self._conversation_repo.load_tool_result_by_id(
+            user_id=self.user_id,
+            session_id=session_id,
+            tool_result_id=tool_result_id,
+        )
+        if content is None:
+            raise ValueError(
+                "No tool result found for that identifier in the active session"
+            )
+        return content
 
     def _search_messages(
         self,
@@ -395,8 +397,8 @@ class ContinuumSearchTool(Tool):
         entities = entities or []
 
         # Validate numeric parameters - LLM sometimes sends lists instead of scalars
-        max_results = self._coerce_to_int(max_results, "max_results")
-        page = self._coerce_to_int(page, "page") or 1
+        max_results = coerce_to_int(max_results, "max_results")
+        page = coerce_to_int(page, "page") or 1
 
         # Validate search mode
         if search_mode not in ["summaries", "precis", "messages"]:
@@ -972,7 +974,7 @@ class ContinuumSearchTool(Tool):
             raise ValueError("Query is required for search_within_segment operation")
 
         # Validate numeric parameter
-        max_results = self._coerce_to_int(max_results, "max_results")
+        max_results = coerce_to_int(max_results, "max_results")
 
         # Find the full segment sentinel
         db = self._conversation_repo._get_client(self.user_id)
@@ -1068,7 +1070,7 @@ class ContinuumSearchTool(Tool):
             raise ValueError(f"direction must be 'before', 'after', or 'both', got: {direction}")
 
         # Validate and set context count
-        context_count = self._coerce_to_int(context_count, "context_count")
+        context_count = coerce_to_int(context_count, "context_count")
         if context_count is None:
             context_count = self._config.default_context_window
         context_count = max(0, min(context_count, 10))

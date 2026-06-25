@@ -46,6 +46,7 @@ class DomainType(str, Enum):
     CONTINUUM = "continuum"
     LORA = "lora"
     FEEDBACK = "feedback"
+    PORTRAIT = "portrait"
 
 
 class ActionRequest(BaseModel):
@@ -2345,7 +2346,15 @@ class ContinuumDomainHandler(BaseDomainHandler):
             raise ValidationError(f"Unknown action: {action}")
 
 class LoraDomainHandler(BaseDomainHandler):
-    """Handler for user model actions."""
+    """Handler for user model actions.
+
+    Provides a preview-before-save refinement workflow (mirrors portrait):
+    the user requests a refinement with free-text instructions, receives a
+    proposed user model to review, then accepts or declines it. The refined
+    model XML never passes through the client on save — the preview is stored
+    server-side in Valkey with a 10-minute TTL and identified by an opaque
+    preview_id. Critic validation runs before presenting the preview.
+    """
 
     ACTIONS = {
         "get": {
@@ -2364,7 +2373,22 @@ class LoraDomainHandler(BaseDomainHandler):
             "required": [],
             "optional": [],
             "types": {}
-        }
+        },
+        "refine": {
+            "required": ["instructions"],
+            "optional": [],
+            "types": {"instructions": str},
+        },
+        "accept": {
+            "required": ["preview_id"],
+            "optional": [],
+            "types": {"preview_id": str},
+        },
+        "decline": {
+            "required": ["preview_id"],
+            "optional": [],
+            "types": {"preview_id": str},
+        },
     }
 
     def execute_action(self, action: str, data: dict[str, Any]) -> dict[str, Any]:
@@ -2415,6 +2439,36 @@ class LoraDomainHandler(BaseDomainHandler):
                 "message": "User model reset"
             }
 
+        elif action == "refine":
+            from cns.services.lora_service import refine_lora
+            instructions = data["instructions"]
+            result = refine_lora(self.user_id, instructions)
+            return {
+                "success": True,
+                "preview_id": result["preview_id"],
+                "proposed": result["proposed"],
+            }
+
+        elif action == "accept":
+            from cns.services.lora_service import accept_lora
+            preview_id = data["preview_id"]
+            accept_lora(self.user_id, preview_id)
+            return {
+                "success": True,
+                "accepted": True,
+                "message": "User model updated",
+            }
+
+        elif action == "decline":
+            from cns.services.lora_service import decline_lora
+            preview_id = data["preview_id"]
+            decline_lora(self.user_id, preview_id)
+            return {
+                "success": True,
+                "declined": True,
+                "message": "User model preview discarded",
+            }
+
         else:
             raise ValidationError(f"Unknown action: {action}")
 
@@ -2430,7 +2484,6 @@ _REPULSION_REWRITER_EXECUTOR = ThreadPoolExecutor(
     thread_name_prefix="repulsion_rewriter",
 )
 
-_REWRITER_PROMPTS_DIR = "config/prompts"
 _REWRITER_SYSTEM_PROMPT_FILE = "repulsion_rewriter_system.txt"
 _REWRITER_USER_PROMPT_FILE = "repulsion_rewriter_user.txt"
 _REWRITER_INTERNAL_LLM_PURPOSE = "rewriter"
@@ -2523,12 +2576,11 @@ class FeedbackDomainHandler(BaseDomainHandler):
         output_file: "Path",
     ) -> None:
         try:
-            from pathlib import Path
             from clients.llm_provider import LLMProvider
+            from config.prompts.loader import load_prompt
 
-            prompts_dir = Path(_REWRITER_PROMPTS_DIR)
-            system_prompt = (prompts_dir / _REWRITER_SYSTEM_PROMPT_FILE).read_text()
-            user_template = (prompts_dir / _REWRITER_USER_PROMPT_FILE).read_text()
+            system_prompt = load_prompt(_REWRITER_SYSTEM_PROMPT_FILE)
+            user_template = load_prompt(_REWRITER_USER_PROMPT_FILE)
 
             user_prompt = user_template.format(
                 user_message=preceding_user_message,
@@ -2572,6 +2624,85 @@ class FeedbackDomainHandler(BaseDomainHandler):
             )
 
 
+class PortraitDomainHandler(BaseDomainHandler):
+    """Handler for user portrait refinement actions.
+    Provides a preview-before-save workflow: the user requests a refinement
+    with free-text instructions, receives a proposed portrait to review, then
+    accepts or declines it. The portrait text never passes through the client
+    on save — the preview is stored server-side in Valkey with a 10-minute TTL
+    and identified by an opaque preview_id.
+    """
+    ACTIONS = {
+        "get": {
+            "required": [],
+            "optional": [],
+            "types": {},
+        },
+        "refine": {
+            "required": ["instructions"],
+            "optional": [],
+            "types": {"instructions": str},
+        },
+        "accept": {
+            "required": ["preview_id"],
+            "optional": [],
+            "types": {"preview_id": str},
+        },
+        "decline": {
+            "required": ["preview_id"],
+            "optional": [],
+            "types": {"preview_id": str},
+        },
+    }
+
+    def execute_action(self, action: str, data: dict[str, Any]) -> dict[str, Any]:
+        """Execute portrait actions."""
+        from cns.services.portrait_service import (
+            read_portrait,
+            refine_portrait,
+            accept_portrait,
+            decline_portrait,
+        )
+
+        if action == "get":
+            portrait = read_portrait(self.user_id)
+            return {
+                "success": True,
+                "portrait": portrait,
+                "has_portrait": bool(portrait),
+            }
+
+        elif action == "refine":
+            instructions = data["instructions"]
+            result = refine_portrait(self.user_id, instructions)
+            return {
+                "success": True,
+                "preview_id": result["preview_id"],
+                "proposed": result["proposed"],
+            }
+
+        elif action == "accept":
+            preview_id = data["preview_id"]
+            accept_portrait(self.user_id, preview_id)
+            return {
+                "success": True,
+                "accepted": True,
+                "message": "Portrait updated",
+            }
+
+        elif action == "decline":
+            preview_id = data["preview_id"]
+            decline_portrait(self.user_id, preview_id)
+            return {
+                "success": True,
+                "declined": True,
+                "message": "Portrait preview discarded",
+            }
+
+        else:
+            raise ValidationError(f"Unknown action: {action}")
+
+
 class ActionsEndpoint(BaseHandler):
     """Main actions endpoint handler with domain-based routing."""
 
@@ -2586,6 +2717,7 @@ class ActionsEndpoint(BaseHandler):
             DomainType.CONTINUUM: ContinuumDomainHandler,
             DomainType.LORA: LoraDomainHandler,
             DomainType.FEEDBACK: FeedbackDomainHandler,
+            DomainType.PORTRAIT: PortraitDomainHandler,
         }
     
     def process_request(self, **params) -> dict[str, Any]:

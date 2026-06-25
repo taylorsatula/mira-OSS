@@ -9,7 +9,7 @@ import logging
 from typing import Any, Dict, Optional, TYPE_CHECKING
 
 from clients.valkey_client import get_valkey_client
-from utils.user_context import get_current_user_id, get_user_preferences
+from utils.user_context import get_current_user_id, get_user_preferences, set_current_user_id
 from utils.timezone_utils import utc_now, format_utc_iso, format_relationship_duration
 from .composer import SystemPromptComposer
 from .trinkets.base import EventAwareTrinket, TRINKET_KEY_PREFIX, StatefulTrinket
@@ -221,10 +221,36 @@ class WorkingMemory:
                 trinket._clear_from_valkey()
                 flushed.append(name)
 
-        self._portrait_cache.pop(user_id, None)
+        self.invalidate_portrait(user_id)
 
         if flushed:
             logger.info(f"Flushed {len(flushed)} stateful trinkets on segment collapse: {', '.join(flushed)}")
+
+    def invalidate_portrait(self, user_id: str) -> None:
+        """Invalidate the portrait cache for a user after external mutation."""
+        self._portrait_cache.pop(user_id, None)
+
+    def invalidate_trinket(self, trinket_name: str, user_id: str) -> None:
+        """
+        Invalidate a trinket's Valkey cache for a specific user.
+
+        Used by external services (lora_service, etc.) after persisting changes
+        that would otherwise require a restart or segment collapse to pick up.
+        No-op if the trinket name is unknown.
+        """
+        trinket = self._trinkets.get(trinket_name)
+        if not isinstance(trinket, EventAwareTrinket):
+            logger.warning("Cannot invalidate unknown trinket: %s", trinket_name)
+            return
+
+        # _clear_from_valkey reads user_id from contextvar — temporarily swap it
+        prev_user_id = get_current_user_id()
+        try:
+            set_current_user_id(user_id)
+            trinket._clear_from_valkey()
+        finally:
+            if prev_user_id is not None:
+                set_current_user_id(prev_user_id)
 
     def publish_trinket_update(self, target_trinket: str, context: dict[str, Any] | None = None) -> None:
         """

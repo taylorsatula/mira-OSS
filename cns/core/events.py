@@ -109,6 +109,28 @@ class TurnCompletedEvent(ContinuumCheckpointEvent):
         )
 
 
+@dataclass(frozen=True, kw_only=True)
+class ToolResultHistoryCommittedEvent(ContinuumCheckpointEvent):
+    """Tool result messages committed to PostgreSQL and the hot Valkey cache."""
+
+    tool_messages: tuple[Message, ...]
+
+    @classmethod
+    def create(
+        cls,
+        continuum_id: str,
+        tool_messages: list[Message],
+    ) -> ToolResultHistoryCommittedEvent:
+        """Create a post-commit tool-result event for the current user."""
+        from utils.user_context import get_current_user_id
+
+        return cls(
+            continuum_id=continuum_id,
+            user_id=get_current_user_id(),
+            tool_messages=tuple(tool_messages),
+        )
+
+
 @dataclass(frozen=True)
 class ComposeSystemPromptEvent(WorkingMemoryEvent):
     """Request to compose the system prompt with current working memory state."""

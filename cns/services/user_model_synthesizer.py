@@ -8,7 +8,6 @@ catches observation laundering, personality labels, and internal contradictions.
 import logging
 import re
 from dataclasses import dataclass
-from pathlib import Path
 from typing import List, Literal, Optional
 
 from cns.infrastructure.feedback_repository import FeedbackRepository, FeedbackSignalRow
@@ -83,21 +82,11 @@ class UserModelSynthesizer:
 
     def _load_prompts(self) -> None:
         """Load synthesis and critic prompts."""
-        prompts_dir = Path("config/prompts")
-
-        synthesis_system = prompts_dir / "user_model_synthesis_system.txt"
-        synthesis_user = prompts_dir / "user_model_synthesis_user.txt"
-        critic_system = prompts_dir / "user_model_critic_system.txt"
-        critic_user = prompts_dir / "user_model_critic_user.txt"
-
-        for path in [synthesis_system, synthesis_user, critic_system, critic_user]:
-            if not path.exists():
-                raise FileNotFoundError(f"Prompt not found: {path}")
-
-        self._synthesis_system_prompt = synthesis_system.read_text().strip()
-        self._synthesis_user_template = synthesis_user.read_text().strip()
-        self._critic_system_prompt = critic_system.read_text().strip()
-        self._critic_user_template = critic_user.read_text().strip()
+        from config.prompts.loader import load_prompt
+        self._synthesis_system_prompt = load_prompt("user_model_synthesis_system.txt")
+        self._synthesis_user_template = load_prompt("user_model_synthesis_user.txt")
+        self._critic_system_prompt = load_prompt("user_model_critic_system.txt")
+        self._critic_user_template = load_prompt("user_model_critic_user.txt")
 
     def synthesize(self, user_id: str, current_model_xml: Optional[str] = None) -> SynthesisResult:
         """

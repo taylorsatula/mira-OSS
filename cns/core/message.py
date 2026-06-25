@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import TypedDict
+from typing import Literal, TypedDict
 from uuid import UUID, uuid4
 from utils.timezone_utils import utc_now
 
@@ -135,6 +135,13 @@ class MessageMetadata(TypedDict, total=False):
     # Tool call fields
     has_tool_calls: bool
     tool_calls: list[dict[str, object]]
+    tool_name: str
+    tool_result_id: str
+    tool_result_session_id: str
+    tool_result_compacted: bool
+    tool_result_original_chars: int
+    tool_result_retrieved: bool
+    tool_result_source_id: str
     # Reasoning round-trip fields (Anthropic adapter reads these)
     thinking_signatures: list[dict[str, object]]
     reasoning_details: list[dict[str, object]]

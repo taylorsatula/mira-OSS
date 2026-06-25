@@ -5,15 +5,15 @@ Single-stage LLM pipeline for conversation observation.
 The observer reviews recent conversation plus a compact execution trace and
 emits metacognitive guidance when MIRA needs evidence-backed correction.
 
-Actions: noop, concern, coaching
+Actions: noop, concern, coaching, initiative
 """
 import json
 import logging
 import re
 from dataclasses import dataclass
-from pathlib import Path
 from typing import List, Literal, Optional
 
+from config.prompts.loader import load_prompt
 from cns.core.message import Message, preprocess_content_blocks
 from clients.llm_provider import LLMProvider
 
@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class PeanutGalleryResult:
     """Result from the Peanut Gallery observer evaluation."""
-    action_type: Literal["noop", "concern", "coaching"]
+    action_type: Literal["noop", "concern", "coaching", "initiative"]
     guidance: Optional[str] = None
     critical: bool = False
 
@@ -39,6 +39,7 @@ class PeanutGalleryModel:
     - noop: No action needed
     - concern: Direct corrective guidance for an active failure
     - coaching: Strong steering guidance before a bigger failure lands
+    - initiative: Conversational stewardship directive when MIRA is correct but passive
     """
 
     def __init__(
@@ -49,20 +50,13 @@ class PeanutGalleryModel:
         self.llm_provider = llm_provider
         self._observer_window_turns = analysis_interval_turns * 2
 
-        prompts_dir = Path("config/prompts")
-        self._system_prompt = self._load_prompt(prompts_dir / "peanutgallery_system.txt")
-        self._user_template = self._load_prompt(prompts_dir / "peanutgallery_user.txt")
+        self._system_prompt = load_prompt("peanutgallery_system.txt")
+        self._user_template = load_prompt("peanutgallery_user.txt")
 
         logger.info(
             "PeanutGalleryModel initialized (observer_window_turns=%d)",
             self._observer_window_turns,
         )
-
-    def _load_prompt(self, path: Path) -> str:
-        """Load prompt template from file."""
-        if not path.exists():
-            raise FileNotFoundError(f"Prompt file not found: {path}")
-        return path.read_text()
 
     def evaluate(self, messages: List[Message]) -> PeanutGalleryResult:
         """
@@ -176,7 +170,7 @@ class PeanutGalleryModel:
         action_type = action_type_match.group(1).lower()
         severity = severity_match.group(1) if severity_match else None
 
-        if action_type in ("concern", "coaching") and content is not None:
+        if action_type in ("concern", "coaching", "initiative") and content is not None:
             return self._parse_guidance(action_type, content, severity)
 
         logger.warning("Unknown action type: %s", action_type)
@@ -184,11 +178,11 @@ class PeanutGalleryModel:
 
     def _parse_guidance(
         self,
-        guidance_type: Literal["concern", "coaching"],
+        guidance_type: Literal["concern", "coaching", "initiative"],
         content: str,
         severity: Optional[str] = None
     ) -> PeanutGalleryResult:
-        """Parse concern or coaching guidance from content."""
+        """Parse concern, coaching, or initiative guidance from content."""
         guidance_match = re.search(
             r'<guidance>(.*?)</guidance>',
             content,
@@ -202,7 +196,7 @@ class PeanutGalleryModel:
         return PeanutGalleryResult(
             action_type=guidance_type,
             guidance=guidance_match.group(1).strip(),
-            critical=severity is not None and severity.lower() == "critical"
+            critical=False if guidance_type == "initiative" else (severity is not None and severity.lower() == "critical")
         )
 
     def _extract_conversational_messages(self, messages: List[Message]) -> list[Message]:

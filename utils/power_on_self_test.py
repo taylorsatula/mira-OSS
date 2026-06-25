@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 PRE_SERVER_POST_DEADLINE_SECONDS = 60
 POST_SERVER_POST_DEADLINE_SECONDS = 60
 LLM_PROVIDER_PROBE_MAX_WORKERS = 4
+LLM_PROVIDER_PROBE_MAX_TOKENS = 256
 POST_PROBE_TEXT = "mira post probe"
 REPORT_BEGIN = "MIRA_POST_REPORT_BEGIN"
 REPORT_END = "MIRA_POST_REPORT_END"
@@ -1009,7 +1010,10 @@ def _probe_llm_target(target: dict[str, Any]) -> dict[str, Any]:
     from config.config_manager import config
 
     dialect_name = coerce_dialect_name(target["dialect_name"])
-    max_tokens = min(target.get("max_tokens") or config.api.max_tokens, 16)
+    max_tokens = min(
+        target.get("max_tokens") or config.api.max_tokens,
+        LLM_PROVIDER_PROBE_MAX_TOKENS,
+    )
     selection = ModelSelection(
         dialect_name=dialect_name,
         model=target["model"],
@@ -1045,14 +1049,17 @@ def _probe_llm_target(target: dict[str, Any]) -> dict[str, Any]:
         accounting_policy=None,
         response_timeout_seconds=timeout,
     ).complete(request, dialect, fallback_factory=None)
-    if not result.text.strip():
-        raise RuntimeError("Provider returned an empty response")
+    reasoning_text = result.reasoning.text if result.reasoning is not None else ""
+    if not result.text.strip() and not reasoning_text.strip() and not result.tool_calls:
+        raise RuntimeError("Provider returned no text, reasoning, or tool calls")
     return {
         "target": _llm_target_label(target),
         "dialect_name": dialect_name,
         "model": target["model"],
         "represented_configs": sorted(target.get("represented_configs") or []),
         "response_chars": len(result.text),
+        "reasoning_chars": len(reasoning_text),
+        "tool_calls": len(result.tool_calls),
         "stop_reason": result.stop_reason,
     }
 
@@ -1081,15 +1088,25 @@ def _print_report(report: PostReport, *, json_output: bool, report_marker: bool 
 
 
 def _run_cli_phase(args: argparse.Namespace) -> int:
-    if args.phase == "pre-server":
-        report = run_pre_server_post(deadline_seconds=args.deadline_seconds)
-    else:
-        report = run_post_server_post(
-            base_url=args.base_url,
-            deadline_seconds=args.deadline_seconds,
-        )
-    _print_report(report, json_output=args.json, report_marker=args.report_marker)
-    return 0 if report.required_passed else 1
+    try:
+        if args.phase == "pre-server":
+            report = run_pre_server_post(deadline_seconds=args.deadline_seconds)
+        else:
+            report = run_post_server_post(
+                base_url=args.base_url,
+                deadline_seconds=args.deadline_seconds,
+            )
+        _print_report(report, json_output=args.json, report_marker=args.report_marker)
+        return 0 if report.required_passed else 1
+    finally:
+        _close_cli_resources()
+
+
+def _close_cli_resources() -> None:
+    """Close process-local infrastructure created by standalone POST checks."""
+    from clients.postgres_client import PostgresClient
+
+    PostgresClient.close_all_pools()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1128,12 +1145,15 @@ def post_server_cli(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--json", action="store_true", help="Print structured JSON report")
     args = parser.parse_args(argv)
-    report = run_post_server_post(
-        base_url=args.base_url,
-        deadline_seconds=args.deadline_seconds,
-    )
-    _print_report(report, json_output=args.json)
-    return 0 if report.required_passed else 1
+    try:
+        report = run_post_server_post(
+            base_url=args.base_url,
+            deadline_seconds=args.deadline_seconds,
+        )
+        _print_report(report, json_output=args.json)
+        return 0 if report.required_passed else 1
+    finally:
+        _close_cli_resources()
 
 
 if __name__ == "__main__":

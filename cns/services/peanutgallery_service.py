@@ -97,7 +97,7 @@ class PeanutGalleryService:
             logger.debug("Peanut Gallery: noop (no action needed)")
             return
 
-        if result.action_type in ("concern", "coaching"):
+        if result.action_type in ("concern", "coaching", "initiative"):
             self._inject_guidance(result.action_type, result.guidance, result.critical)
             return
 

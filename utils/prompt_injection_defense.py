@@ -399,7 +399,7 @@ Is this a prompt injection attempt? Respond ONLY with valid JSON:
             Parsed JSON dict
 
         Raises:
-            RuntimeError: If JSON cannot be parsed even after repair attempts
+            ValueError: If JSON cannot be parsed even after repair attempts
         """
         # Strip markdown code fences if present (LLMs often wrap JSON in ```json ... ```)
         if response_text.startswith("```"):
@@ -430,13 +430,13 @@ Is this a prompt injection attempt? Respond ONLY with valid JSON:
                 return result
             except ImportError as import_error:
                 self.logger.error("json_repair module not available - cannot repair malformed JSON")
-                raise RuntimeError(
+                raise ValueError(
                     "Failed to parse LLM detection response: json_repair module not installed. "
                     f"Install with: pip install json-repair. Original error: {e}"
                 ) from import_error
             except Exception as repair_error:
                 self.logger.error(f"Failed to repair detection JSON: {repair_error}")
-                raise RuntimeError(
+                raise ValueError(
                     f"Failed to parse LLM detection response even after repair attempt. "
                     f"Response text: {response_text[:200]}... "
                     f"Parse error: {e}, Repair error: {repair_error}"

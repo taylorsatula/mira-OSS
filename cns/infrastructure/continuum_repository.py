@@ -183,54 +183,6 @@ class ContinuumRepository:
             logger.error(f"Failed to create continuum for user {user_id}: {str(e)}")
             raise RuntimeError(f"Database operation failed: {str(e)}") from e
     
-    def get_by_id(self, continuum_id: str, user_id: str) -> Continuum | None:
-        """
-        Get continuum by ID.
-        
-        Args:
-            continuum_id: Continuum ID (string, will be converted to UUID)
-            user_id: User ID for access verification
-            
-        Returns:
-            Continuum or None if not found
-        """
-        try:
-            db = self._get_client(user_id)
-            
-            # Convert string ID to UUID for query
-            from uuid import UUID as uuid_type
-            try:
-                conv_uuid = uuid_type(continuum_id)
-            except ValueError:
-                raise ValueError(f"Invalid continuum ID format: {continuum_id}")
-            
-            result = db.execute_query(
-                "SELECT * FROM continuums WHERE id = %s",
-                (conv_uuid,)
-            )
-            
-            if not result:
-                return None
-            
-            row = result[0]
-            # Parse JSON metadata if it's a string (asyncpg doesn't auto-parse)
-            metadata = row.get('metadata', {})
-            if isinstance(metadata, str):
-                import json
-                metadata = json.loads(metadata) if metadata else {}
-            
-            state = ContinuumState(
-                id=row['id'],  # Already a UUID from database
-                user_id=row['user_id'],
-                metadata=metadata
-            )
-            
-            continuum = Continuum(state)
-            return continuum
-        except Exception as e:
-            logger.error(f"Failed to get continuum {continuum_id} for user {user_id}: {str(e)}")
-            raise RuntimeError(f"Database operation failed: {str(e)}") from e
-    
     def save_message(self, message: Message, continuum_id: str | UUID, user_id: str) -> None:
         """
         Save message to database.
@@ -604,93 +556,43 @@ class ContinuumRepository:
 
         return self._parse_message_rows(message_rows)
 
-    def load_messages_by_ids(self,
-                              continuum_id: str,
-                              user_id: str,
-                              message_ids: list[str]) -> list[Message]:
-        """Load persisted messages by their IDs."""
-        if not message_ids:
-            return []
-
-        try:
-            canonical_continuum_id = (
-                continuum_id
-                if isinstance(continuum_id, UUID)
-                else UUID(str(continuum_id))
-            )
-        except (ValueError, TypeError):
-            logger.error(f"Invalid continuum ID provided when loading messages: {continuum_id}")
-            return []
-
-        try:
-            unique_ids = []
-            seen = set()
-            for message_id in message_ids:
-                if not message_id:
-                    continue
-                uuid_obj = message_id if isinstance(message_id, UUID) else UUID(str(message_id))
-                if uuid_obj not in seen:
-                    unique_ids.append(uuid_obj)
-                    seen.add(uuid_obj)
-        except (ValueError, TypeError) as exc:
-            logger.error(f"Invalid message ID provided when loading messages: {exc}")
-            return []
-
-        if not unique_ids:
-            return []
-
-        db = self._get_client(user_id)
-
-        query = """
-            SELECT * FROM messages
-            WHERE continuum_id = %s
-              AND id = ANY(%s::uuid[])
-        """
-
-        rows = db.execute_query(query, (canonical_continuum_id, unique_ids))
-        messages = self._parse_message_rows(rows)
-
-        by_id = {str(message.id): message for message in messages}
-        ordered_messages = []
-
-        for message_id in message_ids:
-            try:
-                canonical_id = str(message_id) if isinstance(message_id, UUID) else str(UUID(str(message_id)))
-            except (ValueError, TypeError):
-                continue
-            message = by_id.get(canonical_id)
-            if message:
-                ordered_messages.append(message)
-
-        return ordered_messages
-
-    def update_message_metadata(
+    def load_tool_result_by_id(
         self,
-        continuum_id: str,
         user_id: str,
-        message_id: str,
-        metadata_patch: dict[str, Any],
-    ) -> None:
-        """Merge metadata_patch into the message metadata payload."""
-        if not metadata_patch:
-            return
+        session_id: str,
+        tool_result_id: str,
+    ) -> str | None:
+        """Load raw tool-result text by its session-scoped retrieval ID."""
+        try:
+            message_id = UUID(tool_result_id.rsplit("_", 1)[1])
+        except (IndexError, ValueError) as exc:
+            raise ValueError("Malformed tool result identifier") from exc
 
         db = self._get_client(user_id)
-
-        query = """
-            UPDATE messages
-            SET metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb
-            WHERE continuum_id = %s AND id = %s
-        """
-
-        db.execute_update(
-            query,
-            (
-                json.dumps(metadata_patch),
-                UUID(str(continuum_id)) if not isinstance(continuum_id, UUID) else continuum_id,
-                UUID(str(message_id)) if not isinstance(message_id, UUID) else message_id,
-            ),
+        rows = db.execute_query(
+            """
+            SELECT content
+            FROM messages
+            WHERE id = %s
+              AND user_id = %s
+              AND role = 'tool'
+              AND metadata->>'tool_result_session_id' = %s
+              AND metadata->>'tool_result_id' = %s
+            """,
+            (message_id, user_id, session_id, tool_result_id),
         )
+        if len(rows) > 1:
+            raise RuntimeError(
+                f"Ambiguous tool result ID in session {session_id}: {tool_result_id}"
+            )
+        if not rows:
+            return None
+        content = rows[0].get("content")
+        if not isinstance(content, str):
+            raise RuntimeError(
+                f"Tool result {tool_result_id} does not contain persisted text"
+            )
+        return content
 
     def get_history(self, user_id: str, offset: int = 0, limit: int = 50,
                    start_date: datetime | None = None, end_date: datetime | None = None,
@@ -828,55 +730,6 @@ class ContinuumRepository:
             "search_query": search_query
         }
     
-    
-    def get_messages_for_dates(self, user_id: str, dates: list[str]) -> dict[str, list[dict[str, object]]]:
-        """
-        Get messages grouped by date for temporal RAG linking.
-        
-        Args:
-            user_id: User ID for RLS
-            dates: List of date strings (YYYY-MM-DD)
-            
-        Returns:
-            Dictionary mapping dates to their messages
-        """
-        from datetime import datetime, time, timezone
-
-        db = self._get_client(user_id)
-        messages_by_date = {}
-
-        for date_str in dates:
-            # Parse date and create UTC-aware date range for SQL query
-            target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
-            start_datetime = datetime.combine(target_date, time.min, tzinfo=timezone.utc)
-            end_datetime = datetime.combine(target_date, time.max, tzinfo=timezone.utc)
-            
-            query = """
-                SELECT id, role, content, created_at, metadata
-                FROM messages
-                WHERE created_at >= %s AND created_at <= %s
-                ORDER BY created_at
-            """
-            
-            message_rows = db.execute_query(
-                query,
-                (start_datetime, end_datetime)
-            )
-            
-            messages = []
-            for row in message_rows:
-                messages.append({
-                    "id": str(row['id']),
-                    "role": row['role'],
-                    "content": row['content'],
-                    "created_at": format_utc_iso(row['created_at']),
-                    "metadata": row.get('metadata', {})
-                })
-            
-            if messages:
-                messages_by_date[date_str] = messages
-                
-        return messages_by_date
     
     def update_continuum_metadata(self, continuum: Continuum) -> None:
         """

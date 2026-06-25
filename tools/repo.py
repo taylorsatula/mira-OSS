@@ -21,6 +21,46 @@ from clients.llm.types import ToolDefinition
 from tools.registry import registry
 
 
+def coerce_to_int(value: Any, param_name: str) -> Optional[int]:
+    """
+    Coerce a value to int, handling LLM quirks like sending [10] instead of 10.
+
+    Shared utility for tools that receive numeric params as strings from JSON parsing.
+
+    Args:
+        value: The value to coerce (may be int, list, str, float, or None)
+        param_name: Parameter name for error messages
+
+    Returns:
+        Integer value or None if input was None
+
+    Raises:
+        ValueError: If value cannot be coerced to int
+    """
+    if value is None:
+        return None
+
+    # Handle list with single element (LLM quirk)
+    if isinstance(value, (list, tuple)):
+        if len(value) == 1:
+            value = value[0]
+        else:
+            raise ValueError(f"{param_name} must be a single integer, got list with {len(value)} elements")
+
+    # Handle string numbers
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            raise ValueError(f"{param_name} must be an integer, got string '{value}'")
+
+    # Handle numeric types
+    if isinstance(value, (int, float)):
+        return int(value)
+
+    raise ValueError(f"{param_name} must be an integer, got {type(value).__name__}")
+
+
 def get_config():
     from config import config
     return config
@@ -453,13 +493,12 @@ class ToolRepository:
 
         # TODO: Add type coercion layer here based on tool's tool_schema.
         # Currently, tools receive params as-is from JSON parsing, which means numeric
-        # values may arrive as strings (e.g., "10" instead of 10). Each tool handles
-        # this individually with int()/float() casts (see email_tool,
-        # weather_tool, continuum_tool._coerce_to_int). A unified solution would:
+        # values may arrive as strings (e.g., "10" instead of 10). Tools use
+        # coerce_to_int() for individual params. A unified solution would:
         # 1. Read the tool's input_schema from tool_schema
         # 2. Coerce each param to its declared type (integer, number, boolean, array)
         # 3. Handle LLM quirks like [10] instead of 10 (single-element list unwrapping)
-        # This would eliminate ad-hoc casting in every tool and centralize error handling.
+        # This would eliminate per-param casting in every tool and centralize error handling.
 
         try:
             result = tool.run(**params)
@@ -517,11 +556,11 @@ class ToolRepository:
         definitions: List[ToolDefinition] = []
 
         # Standard enabled tools (explicit enable/disable)
-        for name in self.enabled_tools:
+        for name in sorted(self.enabled_tools):
             definitions.append(self.get_tool_definition(name))
 
         # Gated tools - check is_available() at runtime
-        for name in self.gated_tools:
+        for name in sorted(self.gated_tools):
             tool = self.get_tool(name)
             if hasattr(tool, 'is_available') and tool.is_available():
                 definitions.append(self.get_tool_definition(name))

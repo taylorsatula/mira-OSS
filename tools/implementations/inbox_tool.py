@@ -36,7 +36,7 @@ from typing import Dict, Any, Optional
 
 from config.config import InboxToolConfig
 
-from tools.repo import Tool
+from tools.repo import Tool, coerce_to_int
 from tools.registry import registry
 from utils.timezone_utils import utc_now, format_utc_iso
 
@@ -189,8 +189,8 @@ class InboxTool(Tool):
             if operation == "read":
                 return self._op_read(
                     filename=params.get("filename"),
-                    chars=int(params.get("chars") or 10000),
-                    offset=int(params.get("offset") or 0),
+                    chars=coerce_to_int(params.get("chars"), "chars") or 10000,
+                    offset=coerce_to_int(params.get("offset"), "offset") or 0,
                 )
             if operation == "archive":
                 return self._op_archive(
@@ -267,9 +267,10 @@ class InboxTool(Tool):
                 f"read limit of {cfg.max_read_file_size_mb} MB for inbox_tool."
             )
 
-        requested_chars = int(chars or 10000)
-        if requested_chars <= 0:
+        if chars is None or chars <= 0:
             requested_chars = 10000
+        else:
+            requested_chars = chars
         effective_chars = min(requested_chars, cfg.max_read_chars)
         if offset < 0:
             offset = 0

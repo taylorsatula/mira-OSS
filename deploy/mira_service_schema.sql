@@ -111,7 +111,7 @@ CREATE TABLE IF NOT EXISTS conversation_llm (
     hidden BOOLEAN NOT NULL DEFAULT FALSE
 );
 
-INSERT INTO conversation_llm (name, model, thinking_budget, description, display_order, adapter_name, endpoint_url, api_key_name, hidden) VALUES
+INSERT INTO conversation_llm (name, model, thinking_budget, description, display_order, dialect_name, endpoint_url, api_key_name, hidden) VALUES
     ('primary', 'claude-sonnet-4-6', 0, 'Primary', 1, 'anthropic', NULL, NULL, FALSE)
 ON CONFLICT (name) DO NOTHING;
 
@@ -170,10 +170,8 @@ CREATE TABLE IF NOT EXISTS usage_pricing (
 );
 
 INSERT INTO usage_pricing (name) VALUES
-    ('__default__'),
-    -- Conversation LLMs (one model per config)
-    ('gemini-deep'), ('minimax'), ('claude-high'), ('claude-opus-3'),
-    ('gemma'), ('experimental'), ('gpt-legacy'), ('gpt'), ('demo'),
+    -- Conversation LLM
+    ('primary'),
     -- Internal LLM configs (tier-qualified: different models per free/cof)
     ('analysis:cof'), ('analysis:free'),
     ('consolidation:cof'), ('consolidation:free'),
@@ -211,7 +209,7 @@ CREATE TABLE IF NOT EXISTS users (
     last_activity_date DATE,
 
     -- Conversation LLM preference
-    conversation_llm VARCHAR(20) DEFAULT 'gemma' REFERENCES conversation_llm(name),
+    conversation_llm VARCHAR(20) DEFAULT 'primary' REFERENCES conversation_llm(name),
 
     -- Balance in USD (OSS: seeded high since user brings own API key)
     balance_usd DECIMAL(12,6) NOT NULL DEFAULT 0.00,
@@ -383,11 +381,15 @@ CREATE TABLE IF NOT EXISTS messages (
     role VARCHAR(50) NOT NULL CHECK (role IN ('user', 'assistant', 'tool')),
     content TEXT NOT NULL,
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    tool_call_id TEXT,
+    is_error BOOLEAN NOT NULL DEFAULT FALSE
 );
 
 COMMENT ON COLUMN messages.content IS 'Message content - text for simple messages, JSON for multimodal content blocks';
-COMMENT ON COLUMN messages.metadata IS 'Message metadata: has_tool_calls, tool_calls, tool_call_id, is_summary, summary_type, etc.';
+COMMENT ON COLUMN messages.metadata IS 'Message metadata: has_tool_calls, tool_calls, is_summary, summary_type, etc.';
+COMMENT ON COLUMN messages.tool_call_id IS 'Tool call identifier for role=tool messages.';
+COMMENT ON COLUMN messages.is_error IS 'Whether this tool message reports an error.';
 
 -- Set LZ4 compression for large text columns
 ALTER TABLE messages ALTER COLUMN content SET COMPRESSION lz4;
@@ -403,6 +405,11 @@ COMMENT ON COLUMN messages.segment_embedding IS 'mdbr-leaf-ir-asym embedding (76
 
 -- User ID index for RLS policy filtering
 CREATE INDEX IF NOT EXISTS idx_messages_user_id ON messages(user_id);
+
+-- Tool call ID index for joining tool results to tool calls
+CREATE INDEX IF NOT EXISTS idx_messages_tool_call_id
+    ON messages(tool_call_id)
+    WHERE tool_call_id IS NOT NULL;
 
 -- Continuum ID index for conversation retrieval
 CREATE INDEX IF NOT EXISTS idx_messages_continuum_id ON messages(continuum_id);

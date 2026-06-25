@@ -9,7 +9,7 @@ feature flags, infrastructure coordinates, scheduling cadences, deployment setti
 from pathlib import Path
 from typing import List
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class ApiConfig(BaseModel):
@@ -30,6 +30,11 @@ class ApiConfig(BaseModel):
     # Operational limits
     timeout: int = Field(default=60, description="Request timeout in seconds")
     provider_response_timeout: int = Field(default=60, description="Max seconds any LLM provider can accept the connection without producing output before it's killed.")
+    async_work_barrier_timeout_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        description="Max seconds a new chat turn waits for previous-turn background cache work.",
+    )
     emergency_fallback_recovery_minutes: int = Field(default=5, description="Minutes to wait before testing Anthropic recovery")
 
     # Generation settings
@@ -37,8 +42,22 @@ class ApiConfig(BaseModel):
     max_tokens: int = Field(default=31999, description="Maximum tokens to generate in responses")
     context_window_tokens: int = Field(default=200000, description="Total context window size in tokens")
     temperature: float = Field(default=1.0, description="Temperature for response generation (Anthropic default: 1.0)")
-    compaction_trigger_buffer_tokens: int = Field(default=4000, description="Tokens buffer before provider limit to trigger live context compaction speculatively.")
+    compaction_trigger_tokens: int = Field(
+        default=40_000,
+        ge=1,
+        description="Estimated input-token count at which to trigger live context compaction.",
+    )
     compaction_raw_user_turns_to_preserve: int = Field(default=10, description="Number of recent user turns to preserve in raw format without compaction.")
+
+    @model_validator(mode="after")
+    def validate_compaction_trigger_tokens(self) -> "ApiConfig":
+        available_input_tokens = self.context_window_tokens - self.max_tokens
+        if self.compaction_trigger_tokens > available_input_tokens:
+            raise ValueError(
+                "compaction_trigger_tokens must not exceed the provider input budget "
+                f"of {available_input_tokens} tokens"
+            )
+        return self
 
 
 class ApiServerConfig(BaseModel):

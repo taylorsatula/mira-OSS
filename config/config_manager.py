@@ -98,17 +98,38 @@ class AppConfig(BaseModel):
     
     def _load_system_prompt(self) -> None:
         """Load system prompt once at startup."""
-        file_path = Path("config/system_prompt.txt")
-        
-        if not file_path.exists():
-            raise FileNotFoundError(f"System prompt not found: {file_path}")
-        
-        try:
-            with open(file_path, 'r') as f:
-                self._system_prompt = f.read().strip()
-            logging.info("System prompt loaded")
-        except Exception as e:
-            raise RuntimeError(f"Error loading system prompt: {e}")
+        _CONFIG_DIR = Path(__file__).parent.resolve()
+        path = (_CONFIG_DIR / "system_prompt.txt").resolve()
+
+        if not path.is_relative_to(_CONFIG_DIR):
+            raise ValueError(
+                f"System prompt path resolves outside config/: {path}"
+            )
+
+        if not path.suffix == ".txt":
+            raise ValueError(
+                f"System prompt must be a .txt file, "
+                f"got {path.suffix!r}"
+            )
+
+        if not path.exists():
+            raise FileNotFoundError(
+                f"System prompt not found at {path}. "
+                f"Prompts are system configuration, not optional features."
+            )
+
+        content = path.read_text(encoding="utf-8").strip()
+
+        if not content:
+            raise FileNotFoundError(
+                f"System prompt file is empty: {path}. "
+                f"Prompt files must contain non-whitespace content."
+            )
+
+        self._system_prompt = content
+        logging.getLogger(__name__).debug(
+            "Loaded system prompt (%d chars)", len(content)
+        )
     
     @property
     def system_prompt(self) -> str:

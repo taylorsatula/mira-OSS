@@ -8,7 +8,6 @@ The Section Index is rendered dynamically by the domaindoc trinket from these
 stored summaries - no separate index storage needed.
 """
 import logging
-from pathlib import Path
 from typing import Optional
 
 from clients.llm_provider import LLMProvider
@@ -29,19 +28,9 @@ def _load_prompts() -> None:
     if _system_prompt is not None:
         return  # Already loaded
 
-    prompts_dir = Path(__file__).parent.parent.parent / "config" / "prompts"
-
-    system_path = prompts_dir / "domaindoc_summary_system.txt"
-    user_path = prompts_dir / "domaindoc_summary_user.txt"
-
-    # Buffer both reads before assigning globals (atomic lazy-load)
-    with open(system_path, "r") as f:
-        system = f.read()
-    with open(user_path, "r") as f:
-        user = f.read()
-
-    _system_prompt = system
-    _user_template = user
+    from config.prompts.loader import load_prompt
+    _system_prompt = load_prompt("domaindoc_summary_system.txt")
+    _user_template = load_prompt("domaindoc_summary_user.txt")
 
 
 def _get_llm_provider() -> LLMProvider:

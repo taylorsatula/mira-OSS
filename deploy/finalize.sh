@@ -174,15 +174,23 @@ fi
 echo ""
 if [ "$CONFIG_OFFLINE_MODE" = "yes" ]; then
     echo -e "${BOLD}${BLUE}LLM Provider${RESET}"
-    echo -e "  Provider:     ${CYAN}Local Ollama${RESET}"
-    if [ "$CONFIG_OLLAMA_MODEL" = "$CONFIG_OLLAMA_SUBCORTICAL_MODEL" ]; then
-        echo -e "  Model:        ${CONFIG_OLLAMA_MODEL}"
+    echo -e "  Provider:     ${CYAN}Local llama-server${RESET}"
+    if [ "$CONFIG_LOCAL_MODEL_CHOICE" = "auto" ]; then
+        echo -e "  Main Model:   ${CYAN}Qwopus3.6-27B-v2-MTP-Q5_K_M${RESET} ${DIM}(port 3090)${RESET}"
+        echo -e "  Small Model:  ${CYAN}Qwen3.5-9B-UD-Q3_K_XL${RESET} ${DIM}(port 3092)${RESET}"
+        echo -e "  VRAM Target:  ${DIM}Dual RTX 3090 / 48GB total${RESET}"
+        echo ""
+        print_info "Before first MIRA startup, download models & start servers:"
+        print_info "  scripts/download_models_for_offline_install.sh"
+        print_info ""
+        print_info "Models stored at: /opt/mira/models/"
+        print_info "Server logs at:   /opt/mira/logs/llama-{main,small}.log"
+        print_info "Health check:     curl http://localhost:3090/health"
     else
-        echo -e "  Main Model:   ${CONFIG_OLLAMA_MODEL}"
-        echo -e "  Subcortical:  ${CONFIG_OLLAMA_SUBCORTICAL_MODEL}"
+        echo -e "  Mode:         ${CYAN}Custom (bring your own GGUF)${RESET}"
+        echo ""
+        print_info "Place your GGUF files in /opt/mira/models/ and configure llama-server manually."
     fi
-    echo ""
-    print_info "Ensure Ollama is running: ollama serve"
 else
     echo -e "${BOLD}${BLUE}Provider Configuration${RESET}"
     echo -e "  Chat Provider:   ${STATUS_CHAT_PROVIDER}"

@@ -14,11 +14,13 @@ translation is necessarily lossy.
 
 from __future__ import annotations
 
+import ipaddress
 from typing import Any
+from urllib.parse import urlparse
 
 from clients.llm.dialects.openai_chat_base import OpenAIChatBase
 from clients.llm.thinking import TranslationNote
-from clients.llm.types import EFFORT_LEVEL_ORDER, EffortLevel, ThinkingConfig
+from clients.llm.types import EFFORT_LEVEL_ORDER, EffortLevel, Request, ThinkingConfig
 
 
 class OpenAIDialect(OpenAIChatBase):
@@ -32,6 +34,35 @@ class OpenAIDialect(OpenAIChatBase):
     _MAX_EFFORT_PER_MODEL: dict[str, EffortLevel] = {
         # Add entries when a model ships with a documented effort cap.
     }
+
+    def _convert_assistant_message(
+        self,
+        message: dict[str, Any],
+        content: Any,
+        request: Request,
+    ) -> dict[str, Any]:
+        converted = super()._convert_assistant_message(message, content, request)
+
+        if self._is_local_endpoint() and isinstance(content, list):
+            if any(
+                isinstance(block, dict) and block.get("cache")
+                for block in content
+            ):
+                converted["cache_checkpoint"] = True
+
+        return converted
+
+    def _is_local_endpoint(self) -> bool:
+        host = urlparse(self.endpoint_url).hostname
+        if host is None:
+            return False
+        if host == "localhost":
+            return True
+        try:
+            address = ipaddress.ip_address(host)
+        except ValueError:
+            return False
+        return address.is_loopback or address.is_private
 
     def _serialize_thinking(self, payload: dict[str, Any], thinking: ThinkingConfig) -> None:
         effort = thinking.effort

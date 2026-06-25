@@ -117,7 +117,7 @@ def _require_diagnostics_token(x_mira_diagnostics_token: str | None = Header(def
 
 
 @router.get("/health/threads")
-def thread_health_endpoint(_: None = Depends(_require_diagnostics_token)):
+async def thread_health_endpoint(_: None = Depends(_require_diagnostics_token)):
     """
     Thread monitoring endpoint - shows active and stuck operations.
 

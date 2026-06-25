@@ -143,6 +143,18 @@ class CNSIntegrationFactory:
             live_context_compaction_service=live_context_compaction_service,
         )
 
+        # Initialize async work barrier (shared gate for cross-turn async tasks)
+        from cns.services.async_work_barrier import initialize_async_work_barrier
+        initialize_async_work_barrier()
+
+        # Initialize retrieval-backed tool result compaction for the hot cache.
+        from cns.services.tool_result_summarizer import initialize_tool_result_summarizer
+        initialize_tool_result_summarizer(
+            llm_provider,
+            event_bus,
+            get_continuum_pool().valkey_cache,
+        )
+
         logger.info("CNS orchestrator initialized successfully with full integration")
         return orchestrator
         

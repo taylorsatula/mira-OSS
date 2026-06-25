@@ -8,7 +8,6 @@ import logging
 from typing import List, Optional
 from enum import Enum
 from dataclasses import dataclass
-from pathlib import Path
 
 from cns.core.message import Message, preprocess_content_blocks
 from cns.infrastructure.continuum_repository import ContinuumRepository
@@ -72,19 +71,11 @@ class SummaryGenerator:
 
     def _load_prompts(self):
         """Load prompts from files."""
-        prompts_dir = Path("config/prompts")
+        from config.prompts.loader import load_prompt
 
         # Load segment summary prompts
-        segment_system_path = prompts_dir / "segment_summary_system.txt"
-        segment_user_path = prompts_dir / "segment_summary_user.txt"
-
-        if not segment_system_path.exists() or not segment_user_path.exists():
-            raise FileNotFoundError(f"Segment summary prompts not found in {prompts_dir}")
-
-        with open(segment_system_path, 'r') as f:
-            segment_system_prompt = f.read().strip()
-        with open(segment_user_path, 'r') as f:
-            segment_user_template = f.read().strip()
+        segment_system_prompt = load_prompt("segment_summary_system.txt")
+        segment_user_template = load_prompt("segment_summary_user.txt")
 
         # Store prompts in a dictionary
         self.PROMPTS = {
@@ -96,14 +87,8 @@ class SummaryGenerator:
 
         # Load synthesis prompts (for merging chunk summaries of oversized segments)
         # Optional at init - will fail at runtime if chunking needed but prompts missing
-        synthesis_system_path = prompts_dir / "synthesis_summary_system.txt"
-        synthesis_user_path = prompts_dir / "synthesis_summary_user.txt"
-        if synthesis_system_path.exists() and synthesis_user_path.exists():
-            self._synthesis_system_prompt = synthesis_system_path.read_text().strip()
-            self._synthesis_user_template = synthesis_user_path.read_text().strip()
-        else:
-            self._synthesis_system_prompt = None
-            self._synthesis_user_template = None
+        self._synthesis_system_prompt = load_prompt("synthesis_summary_system.txt", required=False) or None
+        self._synthesis_user_template = load_prompt("synthesis_summary_user.txt", required=False) or None
     
     def generate_summary(self,
                              messages: Optional[List[Message]],

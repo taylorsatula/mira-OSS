@@ -6,7 +6,6 @@ via connected-components graph analysis and LLM-driven merge decisions.
 """
 import logging
 from collections import defaultdict, deque
-from pathlib import Path
 from typing import List, Optional, Set
 from uuid import UUID
 
@@ -51,17 +50,8 @@ class RefinementService:
         Raises:
             FileNotFoundError: If required prompt file not found (prompts are required configuration)
         """
-        prompts_dir = Path("config/prompts")
-
-        consolidation_system_path = prompts_dir / "memory_consolidation_system.txt"
-        if not consolidation_system_path.exists():
-            raise FileNotFoundError(
-                f"Required prompt file not found: {consolidation_system_path}. "
-                f"Prompts are system configuration, not optional features."
-            )
-        with open(consolidation_system_path, 'r', encoding='utf-8') as f:
-            self.consolidation_system_prompt = f.read().strip()
-
+        from config.prompts.loader import load_prompt
+        self.consolidation_system_prompt = load_prompt("memory_consolidation_system.txt")
         logger.info("Loaded consolidation prompt")
 
     def identify_consolidation_clusters(

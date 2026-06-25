@@ -13,7 +13,7 @@
 ## Files
 
 - `core/` — Immutable domain model: Continuum aggregate, Message value objects, domain events, stream events, segment cache reconstruction. No I/O.
-- `services/` — Stateless service layer: orchestrator, subcortical processing, summary generation, segment collapse, user model pipeline, peanut gallery, manifest query.
+- `services/` — Stateless service layer: orchestrator, subcortical processing, summary generation, segment collapse, user model pipeline, peanut gallery, manifest query, portrait synthesis & refinement.
 - `infrastructure/` — Persistence and caching: PostgreSQL continuum repository, Valkey message cache, feedback storage.
 - `api/` — FastAPI endpoints: chat (HTTP + WebSocket), actions, data queries, health, tool config, federation.
 - `integration/` — Event bus (pub/sub) and factory (dependency wiring for the entire CNS graph).
@@ -22,6 +22,12 @@
 
 Segment lifecycle has three states: `active` (timeout ticking), `paused` (timeout suspended), `collapsed` (processed). Users can pause sessions indefinitely; segments auto-resume to `active` when the user sends their next message (via `increment_segment_turn()`). Segment collapse chain (triggered by `SegmentTimeoutEvent` on active-only segments): `segment_timeout_service` publishes → `segment_collapse_handler` handles → `summary_generator` produces summary → embedding → sentinel collapse in `infrastructure/continuum_repository` → `lt_memory` extraction → portrait synthesis gate (every 10 activity days via `ScheduledJobsConfig.portrait_synthesis_use_days`).
 
+Portrait refinement (user-initiated): `PortraitDomainHandler` in `actions.py` routes `refine`/`accept`/`decline` actions to `portrait_service.py`. `refine_portrait()` generates a revised portrait via LLM and stores it in Valkey with 10-min TTL under an opaque `preview_id`. `accept_portrait()` consumes the preview and persists to `users.portrait`. `decline_portrait()` discards the preview. Preview-before-save prevents junk prompts from corrupting the portrait. Cache invalidation: `_invalidate_portrait_cache()` clears `WorkingMemory._portrait_cache` on accept.
+
+LoRA refinement (user-initiated): `LoraDomainHandler` in `actions.py` routes `refine`/`accept`/`decline` actions to `lora_service.py`. `refine_lora()` generates a revised user model via LLM, validates it through the critic (same quality loop as synthesis, up to 3 attempts), and stores it in Valkey with 10-min TTL under an opaque `preview_id`. `accept_lora()` consumes the preview and persists via `FeedbackTracker.set_synthesis_output()`. `decline_lora()` discards the preview. Critic validation before preview display prevents observation laundering and personality labels from entering the model through user instructions. Cache invalidation: `_invalidate_lora_cache()` clears the `behavioral_directives` trinket hash field in Valkey on accept.
+
 Memory surfacing pipeline (inside `orchestrator.process_message()`): `subcortical.generate()` (query expansion + retention + entities + complexity) → pinned cap (`max_pinned_memories=15`) → fresh budget (`max(min_fresh, max_surfaced - pinned)`) → `memory_relevance_service` embedding search → merge → `UpdateTrinketEvent` to `ProactiveMemoryTrinket`. Total bounded by `max_surfaced_memories=20`.
 
 `actions.py` calls `segment_collapse_handler.collapse_segment(event, force_immediate=True)` — the `force_immediate` flag skips batch scheduling so memories are available before the user's next turn.
+
+`actions.py` domain handlers: `reminder`, `memory`, `user`, `contacts`, `domain_knowledge`, `continuum`, `lora`, `feedback`, `portrait`.

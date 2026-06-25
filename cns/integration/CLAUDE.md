@@ -4,6 +4,8 @@
 
 `CNSIntegrationFactory` is the sole entry point for constructing the CNS graph. Never instantiate `ContinuumOrchestrator`, `WorkingMemory`, `ToolRepository`, live context compaction services, or peripheral services directly outside this factory — the initialization order encodes hard dependency constraints.
 
+The factory initializes `AsyncWorkBarrier` before the retrieval-backed tool-result summarizer. The summarizer receives the pool's existing `ValkeyMessageCache`; do not resolve the pool again from its worker thread.
+
 Event handlers registered via `event_bus.subscribe()` must be synchronous. Exceptions in handlers are caught and logged by the bus; non-critical handlers must not let errors propagate. For async work inside a handler, spawn a thread with `contextvars.copy_context()`.
 
 `event_type` strings passed to `subscribe()` must match the class `__name__` exactly (`'TurnCompletedEvent'`, not `'turn_completed'`).

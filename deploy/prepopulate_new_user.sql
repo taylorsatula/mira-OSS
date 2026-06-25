@@ -48,6 +48,7 @@ FROM conv, first_message_time, (VALUES
         'segment_id', gen_random_uuid()::text,
         'segment_start_time', (SELECT created_at FROM first_message_time),
         'segment_end_time', (SELECT created_at FROM first_message_time),
+        'segment_turn_count', 1,
         'tools_used', '[]'::jsonb,
         'memories_extracted', false,
         'domain_blocks_updated', false

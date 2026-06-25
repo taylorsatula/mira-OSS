@@ -205,21 +205,19 @@ CONFIG_INSTALL_SYSTEMD="yes"       # Recreate systemd services
 CONFIG_START_MIRA_NOW="no"         # Don't auto-start until verified
 
 # Detect offline mode from backed-up API keys
-# If anthropic_key is placeholder, original install was offline mode
+# If anthropic_key is placeholder, original install was offline/local mode
 if [ "$CONFIG_ANTHROPIC_KEY" = "OFFLINE_MODE_PLACEHOLDER" ]; then
     CONFIG_OFFLINE_MODE="yes"
-    CONFIG_OLLAMA_MODEL="qwen3:1.7b"  # Default offline model
-    CONFIG_OLLAMA_SUBCORTICAL_MODEL="$CONFIG_OLLAMA_MODEL"  # Same default for migration
+    CONFIG_LOCAL_MODEL_CHOICE="auto"  # Default: pre-configured model pair
 else
     CONFIG_OFFLINE_MODE="no"
-    CONFIG_OLLAMA_MODEL=""
-    CONFIG_OLLAMA_SUBCORTICAL_MODEL=""
+    CONFIG_LOCAL_MODEL_CHOICE=""
 fi
 
 echo -e "${CHECKMARK}"
 print_info "Database password: preserved from backup"
 if [ "$CONFIG_OFFLINE_MODE" = "yes" ]; then
-    print_info "API keys: offline mode detected (will configure Ollama endpoints)"
+    print_info "API keys: offline mode detected (will configure llama-server endpoints)"
 else
     print_info "API keys: preserved from backup"
 fi
@@ -356,8 +354,7 @@ else
     export CONFIG_INSTALL_PLAYWRIGHT
     export CONFIG_INSTALL_SYSTEMD
     export CONFIG_OFFLINE_MODE
-    export CONFIG_OLLAMA_MODEL
-    export CONFIG_OLLAMA_SUBCORTICAL_MODEL
+    export CONFIG_LOCAL_MODEL_CHOICE
 
     # Track installation progress for rollback
     PHASE6_FAILED=""

@@ -5,8 +5,8 @@
 - Naming: `{feature}_system.txt` = system message (instructions, output format); `{feature}_user.txt` = user message with `{variable}` placeholders. Exception: `memory_relationship_classification.txt` (single combined file).
 - Template variables use Python `.format()` syntax: `{variable_name}`. Literal braces in JSON examples require doubling: `{{` / `}}`. See `entity_gc_user.txt`.
 - Wrap runtime data in descriptive XML tags within user templates: `<conversation>`, `<entity_groups>`, `<candidate_memories>`, etc. — not bare text.
-- Each consuming service loads its own prompts in `__init__` via `open(Path("config/prompts") / "feature_system.txt")`. There is no centralized loader. Missing files raise `FileNotFoundError` — do not add fallbacks.
-- `agents/` holds prompts for autonomous sidebar agents. `base_system.txt` is the shared loop-mechanics preamble; agent-specific rubrics are `{agent_id}_system.txt`. Loaded via `agents.base.load_agent_prompt()`.
+- All prompt loading must go through `config.prompts.loader.load_prompt(filename)` (importable as `from config.prompts import load_prompt`). Never roll your own `open()`/`read_text()` for prompt files. The loader guarantees UTF-8 encoding, existence checks with descriptive errors, and consistent `.strip()`. Use `load_prompt("file.txt", required=False)` for optional addendum prompts that may not exist.
+- `agents/` holds prompts for autonomous sidebar agents. `base_system.txt` is the shared loop-mechanics preamble; agent-specific rubrics are `{agent_id}_system.txt`. Loaded via `load_prompt("agents/{agent_id}_system.txt")`.
 - `variants/` holds experimental subcortical prompt variants for tuning. Nothing in `variants/` is loaded in production.
 
 ## Files
@@ -23,6 +23,7 @@
 - `user_model_synthesis_system.txt` / `user_model_synthesis_user.txt` — Evolves user model observations from assessment signals. Section-anchored XML output. Consumer: `cns/services/user_model_synthesizer.py`.
 - `user_model_critic_system.txt` / `user_model_critic_user.txt` — Quality critic for user model drafts: catches observation laundering, personality labels, contradictions. Pass/fail XML output. Consumer: `cns/services/user_model_synthesizer.py`.
 - `portrait_synthesis_system.txt` / `portrait_synthesis_user.txt` — Produces concise factual user portrait injected via `{user_context}` into `config/system_prompt.txt`. Variable: `{segment_summaries}`. Consumer: `cns/services/portrait_service.py`.
+- `portrait_refinement_system.txt` — Refines existing portrait from user instructions. Minimal-change editing: preserve style, length (4-5 sentences ~100-150 words), and factual tone. No user template — user message built inline from existing portrait + instructions. Consumer: `cns/services/portrait_service.py:refine_portrait()`.
 - `subcortical_system.txt` / `subcortical_user.txt` — Pre-LLM IR stage: entity extraction, passage filtering, query expansion, complexity assessment. XML output. Consumer: `cns/services/subcortical.py`.
 - `domaindoc_summary_system.txt` / `domaindoc_summary_user.txt` — One-sentence section summaries (max 100 chars). Plain text output. Consumer: `cns/services/domaindoc_summary_service.py`.
 - `peanutgallery_system.txt` / `peanutgallery_user.txt` — Metacognitive observer: receives conversation + execution trace, emits noop/concern/coaching signal as out-of-band corrective guidance. Consumer: `cns/services/peanutgallery_model.py`.

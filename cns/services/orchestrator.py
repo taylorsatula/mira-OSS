@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from dataclasses import dataclass, field
 from typing import Callable, TypedDict, TYPE_CHECKING
+from uuid import uuid4
 import numpy as np
 
 if TYPE_CHECKING:
@@ -32,7 +33,8 @@ from config import config
 from cns.core.continuum import Continuum
 from cns.core.events import (
     ContinuumEvent,
-    TurnCompletedEvent
+    ToolResultHistoryCommittedEvent,
+    TurnCompletedEvent,
 )
 from clients.llm.events import (
     CircuitBreakerEvent,
@@ -63,6 +65,7 @@ from lt_memory.proactive import (
     MAX_ASSISTANT_MEMORIES,
 )
 from utils.tag_parser import TagParser, match_memory_id
+from utils.user_context import get_current_segment_id
 
 # Context overflow remediation
 CONTEXT_OVERFLOW_FALLBACK_TEXT_LIMIT = 400
@@ -277,16 +280,16 @@ class ContinuumOrchestrator:
         # Store composed prompt sections when received via event
         self._cached_content = None
         self._non_cached_content = None
-        self._conversation_prefix_items = ()  # Before history (currently unused, reserved)
+        self._conversation_prefix_items = ()  # Before history (set from event.conversation_prefix_items)
         self._post_history_items = ()  # After history, before HUD (domaindoc, BP4)
         self._notification_center = None
 
-        # In-memory token tracking for context overflow detection
-        # Tracks actual input tokens from previous turn for accurate estimation
+        # In-memory cache of provider-reported input tokens per continuum
         self._last_turn_usage: dict[str, int] = {}  # {continuum_id: input_tokens}
 
-        # Subscribe to system prompt composed event
+        # Subscribe to events
         self.event_bus.subscribe('SystemPromptComposedEvent', self._handle_system_prompt_composed)
+        self.event_bus.subscribe('SegmentCollapsedEvent', self._invalidate_on_segment_collapse)
 
         logger.info("ContinuumOrchestrator initialized")
 
@@ -317,7 +320,7 @@ class ContinuumOrchestrator:
         message created immediately after this returns.
         """
         from datetime import timedelta
-        from cns.core.message import Message
+        from cns.core.message import Message, MessageMetadata
         from clients.llm.tool_messages import assistant_message_from_result
 
         base_time = utc_now()
@@ -353,16 +356,16 @@ class ContinuumOrchestrator:
             content = assistant_dict["content"]
 
             # Extract metadata that lives on Message.metadata, not on content
-            metadata: dict[str, object] = {"has_tool_calls": True}
+            assistant_metadata: MessageMetadata = {"has_tool_calls": True}
             if assistant_dict.get("thinking_signatures"):
-                metadata["thinking_signatures"] = assistant_dict["thinking_signatures"]
+                assistant_metadata["thinking_signatures"] = assistant_dict["thinking_signatures"]
             if assistant_dict.get("reasoning_details"):
-                metadata["reasoning_details"] = assistant_dict["reasoning_details"]
+                assistant_metadata["reasoning_details"] = assistant_dict["reasoning_details"]
 
             assistant_msg = Message(
                 content=content,
                 role="assistant",
-                metadata=metadata,
+                metadata=assistant_metadata,
             )
             object.__setattr__(
                 assistant_msg, 'created_at',
@@ -380,15 +383,44 @@ class ContinuumOrchestrator:
                 if interaction is None:
                     continue
                 tool_result = interaction.result
+                is_retrieved_result = (
+                    interaction.tool_name == "continuum_tool"
+                    and interaction.arguments.get("operation") == "get_tool_result"
+                )
                 if isinstance(tool_result, list):
                     tool_result = json.dumps(tool_result)
-                if isinstance(tool_result, str) and len(tool_result) > limit:
+                if (
+                    not is_retrieved_result
+                    and isinstance(tool_result, str)
+                    and len(tool_result) > limit
+                ):
                     tool_result = _truncate_tool_result(
                         tool_result, limit, interaction.tool_name,
                     )
+
+                message_id = uuid4()
+                tool_metadata: MessageMetadata = {"tool_name": interaction.tool_name}
+                if is_retrieved_result:
+                    tool_metadata["tool_result_retrieved"] = True
+                    source_id = interaction.arguments.get("tool_result_id")
+                    if isinstance(source_id, str):
+                        tool_metadata["tool_result_source_id"] = source_id
+                elif (
+                    not interaction.is_error
+                    and isinstance(tool_result, str)
+                    and (segment_id := get_current_segment_id())
+                ):
+                    session_prefix = segment_id.replace("-", "")[:8]
+                    tool_metadata["tool_result_id"] = (
+                        f"tr_{session_prefix}_{message_id.hex}"
+                    )
+                    tool_metadata["tool_result_session_id"] = segment_id
+
                 tool_msg = Message(
+                    id=message_id,
                     content=tool_result,
                     role="tool",
+                    metadata=tool_metadata,
                     tool_call_id=interaction.tool_id,
                     is_error=interaction.is_error,
                 )
@@ -878,7 +910,7 @@ class ContinuumOrchestrator:
                     valkey.setex(valkey_key, 3600, event.response.container_id)
                     logger.info(f"📦 Stored container ID in Valkey: {event.response.container_id}")
 
-                # Log cache metrics and track for next turn's estimation
+                # Log provider cache metrics and track input tokens for next turn.
                 if event.response.usage:
                     usage = event.response.usage
                     self._last_turn_usage[continuum_id] = usage.input_tokens
@@ -987,16 +1019,14 @@ class ContinuumOrchestrator:
         complete_messages = compose_messages()
         messages_for_llm = complete_messages
         available_tools = self._cached_tool_definitions()
-        last_input = self._last_turn_usage.get(str(continuum.id))
-        estimated = self._estimate_request_tokens(messages_for_llm, available_tools, last_input)
-        available_for_input = (
-            config.api.context_window_tokens
-            - llm_kwargs.get('max_tokens', config.api.max_tokens)
-        )
+
+        # Use last turn's actual provider-reported input tokens for compaction check.
+        # Segment collapse invalidation via _invalidate_on_segment_collapse event handler.
+        continuum_id_str = str(continuum.id)
+        last_input = self._last_turn_usage.get(continuum_id_str)
         self._maybe_prefetch_context_compaction(
-            continuum_id=str(continuum.id),
-            estimated_tokens=estimated,
-            available_for_input=available_for_input,
+            continuum_id=continuum_id_str,
+            input_tokens=last_input,
         )
 
         # Retrieve container_id from Valkey for adapter-owned container reuse.
@@ -1049,7 +1079,6 @@ class ContinuumOrchestrator:
                 if overflow_attempt == 1:
                     deep_fallback_active = True
                     messages_for_llm = self._apply_deep_context_overflow_fallback(messages_for_llm)
-                    self._last_turn_usage.pop(continuum_id, None)
                     acc.reset()
                     continue
 
@@ -1199,6 +1228,18 @@ class ContinuumOrchestrator:
 
         unit_of_work.add_messages(persist_user_msg, *tool_history_messages, assistant_msg_obj)
         unit_of_work.mark_metadata_updated()
+        committed_tool_messages = [
+            message for message in tool_history_messages
+            if message.role == "tool"
+        ]
+        if committed_tool_messages:
+            committed_event = ToolResultHistoryCommittedEvent.create(
+                continuum_id=continuum_id,
+                tool_messages=committed_tool_messages,
+            )
+            unit_of_work.add_post_commit_callback(
+                lambda event=committed_event: self._publish_events([event])
+            )
 
         # Auto-continuation: If tools were loaded and we haven't already tried,
         # automatically continue with the task
@@ -1508,88 +1549,28 @@ class ContinuumOrchestrator:
     # Context Overflow Detection and Remediation
     # =========================================================================
 
-    def _estimate_request_tokens(
-        self,
-        messages: list[dict[str, object]],
-        tools: list[dict[str, object]],
-        last_turn_input_tokens: int | None = None
-    ) -> int:
-        """
-        Estimate tokens for upcoming LLM request.
-
-        Prefers the previous turn's actual input-token count as the baseline
-        (most accurate when the message set is roughly stable turn-over-turn),
-        but always computes a char-based fallback and uses it when the cached
-        baseline is implausibly larger than the current message set — which
-        happens when the message set was shrunk out-of-band between turns
-        (e.g. `segment_timeout_service` collapsing a segment while no turn is
-        in progress). Without this guard, a stale baseline produces a phantom
-        overflow on every subsequent turn until the orchestrator process
-        restarts.
-
-        Args:
-            messages: Messages to send (including system message)
-            tools: Tool definitions
-            last_turn_input_tokens: Actual input tokens from previous turn
-
-        Returns:
-            Estimated token count for the request
-        """
-        total_chars = 0
-        for msg in messages:
-            content = msg.get('content', '')
-            if isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict):
-                        total_chars += len(str(block.get('text', '')))
-            else:
-                total_chars += len(str(content))
-        char_based_tokens = total_chars // 4
-
-        # Char-based is intentionally high (BPE compresses better than 4:1
-        # for typical English), so a legitimate cached baseline should be at
-        # or below it. A cached value more than 2x char-based is stale —
-        # something was removed from the message set since it was written.
-        if last_turn_input_tokens is not None and last_turn_input_tokens <= char_based_tokens * 2:
-            base_tokens = last_turn_input_tokens
-        else:
-            if last_turn_input_tokens is not None:
-                logger.info(
-                    "Discarding stale input-token baseline: cached=%d, "
-                    "char-based=%d (ratio=%.1fx). Message set shrank out-of-band "
-                    "since the last turn — falling back to char-based estimate.",
-                    last_turn_input_tokens,
-                    char_based_tokens,
-                    last_turn_input_tokens / max(char_based_tokens, 1),
-                )
-            base_tokens = char_based_tokens
-
-        # Tool definitions: ~100 tokens per tool baseline
-        tool_tokens = len(tools) * 100 if tools else 0
-
-        # 5% overhead buffer for formatting, separators, etc.
-        return int((base_tokens + tool_tokens) * 1.05)
+    def _invalidate_on_segment_collapse(self, event: "ContinuumEvent") -> None:
+        """Invalidate cached input-token baseline when segment collapse shrinks the message set."""
+        self._last_turn_usage.pop(event.continuum_id, None)
 
     def _maybe_prefetch_context_compaction(
         self,
         *,
         continuum_id: str,
-        estimated_tokens: int,
-        available_for_input: int,
+        input_tokens: int | None,
     ) -> None:
         """Speculatively pre-compute a context compaction brief so it can be injected with zero latency when ready."""
+        if input_tokens is None:
+            return
         try:
-            if not self.live_context_compaction_service.should_schedule(
-                estimated_tokens,
-                available_for_input,
-            ):
+            if not self.live_context_compaction_service.should_schedule(input_tokens):
                 return
             scheduled = self.live_context_compaction_service.schedule(continuum_id)
             if scheduled:
                 logger.info(
-                    "Scheduled live context compaction: estimated=%d available=%d",
-                    estimated_tokens,
-                    available_for_input,
+                    "Scheduled live context compaction: input_tokens=%d trigger=%d",
+                    input_tokens,
+                    config.api.compaction_trigger_tokens,
                 )
         except Exception:
             logger.error("Live context compaction scheduling failed", exc_info=True)

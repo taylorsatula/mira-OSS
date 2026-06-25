@@ -15,7 +15,6 @@ import logging
 import xml.etree.ElementTree as ET
 from collections import defaultdict, deque
 from datetime import timedelta
-from pathlib import Path
 from typing import Any, List, Dict, NamedTuple, Optional, TypedDict
 from uuid import UUID
 
@@ -94,23 +93,9 @@ class EntityGCService:
 
     def _load_prompts(self) -> None:
         """Load GC prompts from external files."""
-        prompts_dir = Path("config/prompts")
-
-        system_path = prompts_dir / "entity_gc_system.txt"
-        if not system_path.exists():
-            raise FileNotFoundError(
-                f"Required prompt file not found: {system_path}. "
-                f"Prompts are system configuration, not optional features."
-            )
-        self.gc_system_prompt = system_path.read_text()
-
-        user_path = prompts_dir / "entity_gc_user.txt"
-        if not user_path.exists():
-            raise FileNotFoundError(
-                f"Required prompt file not found: {user_path}. "
-                f"Prompts are system configuration, not optional features."
-            )
-        self.gc_user_template = user_path.read_text()
+        from config.prompts.loader import load_prompt
+        self.gc_system_prompt = load_prompt("entity_gc_system.txt")
+        self.gc_user_template = load_prompt("entity_gc_user.txt")
 
     # ============================================================================
     # Pair Discovery & Grouping

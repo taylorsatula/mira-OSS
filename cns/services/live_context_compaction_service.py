@@ -15,7 +15,6 @@ from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from clients.llm_provider import LLMProvider
@@ -312,20 +311,13 @@ class LiveContextCompactionService:
         self._load_prompts()
 
     def _load_prompts(self) -> None:
-        prompts_dir = Path("config/prompts")
-        system_path = prompts_dir / "live_context_compaction_system.txt"
-        user_path = prompts_dir / "live_context_compaction_user.txt"
-        if not system_path.exists() or not user_path.exists():
-            raise FileNotFoundError(f"Live context compaction prompts not found in {prompts_dir}")
-        self._system_template = system_path.read_text().strip()
-        self._user_template = user_path.read_text().strip()
+        from config.prompts.loader import load_prompt
+        self._system_template = load_prompt("live_context_compaction_system.txt")
+        self._user_template = load_prompt("live_context_compaction_user.txt")
 
-    def should_schedule(self, estimated_tokens: int, available_for_input: int) -> bool:
-        """Return True when the request is near enough to the provider limit."""
-        return (
-            available_for_input - estimated_tokens
-            <= config.api.compaction_trigger_buffer_tokens
-        )
+    def should_schedule(self, estimated_tokens: int) -> bool:
+        """Return True when the request reaches the configured compaction threshold."""
+        return estimated_tokens >= config.api.compaction_trigger_tokens
 
     def schedule(self, continuum_id: str) -> bool:
         """

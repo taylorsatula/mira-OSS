@@ -25,7 +25,6 @@ CONFIG_PROVIDER_KEY=""
 CONFIG_KAGI_KEY=""
 CONFIG_DB_PASSWORD=""
 CONFIG_OFFLINE_MODE=""
-CONFIG_OLLAMA_MODEL=""
 CONFIG_PROVIDER_NAME=""
 CONFIG_PROVIDER_ENDPOINT=""
 CONFIG_PROVIDER_KEY_PREFIX=""
@@ -46,7 +45,7 @@ echo ""
 print_header "API Key Configuration"
 
 # Note: Offline mode not supported in standard Docker image
-# (would require Ollama bundled or external Ollama)
+# (would require llama.cpp bundled or external llama-server)
 CONFIG_OFFLINE_MODE="no"
 
 # Anthropic API Key (required)

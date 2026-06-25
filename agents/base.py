@@ -29,8 +29,6 @@ from clients.llm.types import Result, ToolCall, ToolResult
 from clients.llm_provider import LLMProvider
 from utils.timezone_utils import utc_now, format_utc_iso
 
-_AGENT_PROMPTS_DIR = Path("config/prompts/agents")
-
 _OVERWATCH_SYSTEM_PROMPT = (
     "You produce one-sentence research progress log entries. "
     "Each entry reports what an agent found or attempted in a single "
@@ -53,10 +51,8 @@ logger = logging.getLogger(__name__)
 
 def load_agent_prompt(filename: str) -> str:
     """Load a prompt file from config/prompts/agents/."""
-    path = _AGENT_PROMPTS_DIR / filename
-    if not path.exists():
-        raise FileNotFoundError(f"Agent prompt not found at {path}")
-    return path.read_text().strip()
+    from config.prompts.loader import load_prompt
+    return load_prompt(f"agents/{filename}")
 
 
 # -----------------------------------------------------------------------

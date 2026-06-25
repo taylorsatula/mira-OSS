@@ -110,24 +110,9 @@ class SubcorticalLayer:
             )
 
         # Load prompt templates
-        system_prompt_path = Path("config/prompts/subcortical_system.txt")
-        user_prompt_path = Path("config/prompts/subcortical_user.txt")
-
-        if not system_prompt_path.exists():
-            raise FileNotFoundError(
-                f"Subcortical system prompt not found at {system_prompt_path}"
-            )
-
-        if not user_prompt_path.exists():
-            raise FileNotFoundError(
-                f"Subcortical user prompt not found at {user_prompt_path}"
-            )
-
-        with open(system_prompt_path, 'r') as f:
-            self.system_prompt = f.read()
-
-        with open(user_prompt_path, 'r') as f:
-            self.user_prompt_template = f.read()
+        from config.prompts.loader import load_prompt
+        self.system_prompt = load_prompt("subcortical_system.txt")
+        self.user_prompt_template = load_prompt("subcortical_user.txt")
 
         logger.info("SubcorticalLayer initialized")
 

@@ -12,14 +12,12 @@ Discovery uses three axes:
 """
 import json
 import logging
-from pathlib import Path
 from typing import List, Optional, Union
 from uuid import UUID
 
 from lt_memory.models import Memory, MemoryLink, ClassificationPayload, ClassificationResult, TraversalResult, VALID_RELATIONSHIP_TYPES
 from lt_memory.vector_ops import VectorOps
 from lt_memory.db_access import LTMemoryDB
-from clients.llm_provider import LLMProvider
 from utils.timezone_utils import utc_now, format_utc_iso
 from utils.user_context import get_current_user_id
 
@@ -67,12 +65,10 @@ class LinkingService:
     def __init__(
         self,
         vector_ops: VectorOps,
-        db: LTMemoryDB,
-        llm_provider: Optional[LLMProvider] = None
+        db: LTMemoryDB
     ):
         self.vector_ops = vector_ops
         self.db = db
-        self.llm_provider = llm_provider
         self._load_prompts()
 
         self._tfidf_states: dict[str, _TfidfState] = {}
@@ -84,17 +80,8 @@ class LinkingService:
         Raises:
             FileNotFoundError: If prompt file not found (prompts are required configuration)
         """
-        prompt_path = Path("config/prompts/memory_relationship_classification.txt")
-
-        if not prompt_path.exists():
-            raise FileNotFoundError(
-                f"Required prompt file not found: {prompt_path}. "
-                f"Prompts are system configuration, not optional features."
-            )
-
-        with open(prompt_path, 'r', encoding='utf-8') as f:
-            self.relationship_system_prompt = f.read().strip()
-
+        from config.prompts.loader import load_prompt
+        self.relationship_system_prompt = load_prompt("memory_relationship_classification.txt")
         logger.info("Loaded relationship classification prompt")
 
     def find_similar_candidates(
@@ -392,103 +379,6 @@ Relationship types: corroborates, conflicts, supersedes, refines, precedes, cont
 {{"relationship_type": "<exactly one type from above>", "reasoning": "<one sentence>"}}"""
 
         return prompt
-
-    # DEAD CODE — no active callers (verified 2026-02-26). Candidate for removal.
-    def _parse_classification_response(
-        self,
-        response_text: str
-    ) -> Optional[ClassificationResult]:
-        """
-        Parse relationship classification response from LLM.
-
-        Args:
-            response_text: LLM response (JSON format)
-
-        Returns:
-            Parsed classification dict or None if invalid
-        """
-        try:
-            classification = json.loads(response_text)
-
-            # Validate required fields
-            if not isinstance(classification, dict):
-                logger.warning("Classification response is not a dict")
-                return None
-
-            relationship_type = classification.get("relationship_type")
-            if not relationship_type:
-                logger.warning("Classification missing relationship_type")
-                return None
-
-            # Validate relationship type
-            if relationship_type not in VALID_RELATIONSHIP_TYPES:
-                logger.warning(f"Invalid relationship type: {relationship_type}")
-                return None
-
-            return classification
-
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse classification response: {e}")
-            return None
-
-    # DEAD CODE — no active callers (verified 2026-02-26). Candidate for removal.
-    def classify_relationship_sync(
-        self,
-        source_memory: Memory,
-        target_memory: Memory
-    ) -> Optional[MemoryLink]:
-        """
-        Synchronously classify relationship and create link.
-
-        Makes immediate LLM call for classification. Use sparingly -
-        prefer batch classification for cost efficiency.
-
-        Args:
-            source_memory: Source memory
-            target_memory: Target memory
-
-        Returns:
-            MemoryLink object or None if relationship type is null
-
-        Raises:
-            RuntimeError: If LLM provider not configured or LLM call fails
-        """
-        if not self.llm_provider:
-            raise RuntimeError(
-                "LLM provider required for synchronous classification"
-            )
-
-        # Build prompt
-        user_prompt = self._build_relationship_prompt(source_memory, target_memory)
-
-        # Call LLM using relationship internal LLM config
-        response = self.llm_provider.generate_response(
-            messages=[
-                {"role": "system", "content": self.relationship_system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            internal_llm='relationship',
-            allow_negative=True,  # System task - complete even if user balance negative
-        )
-
-        response_text = self.llm_provider.extract_text_content(response)
-
-        # Parse classification
-        classification = self._parse_classification_response(response_text)
-
-        if not classification:
-            return None
-
-        # Create MemoryLink
-        link = MemoryLink(
-            source_id=source_memory.id,
-            target_id=target_memory.id,
-            link_type=classification["relationship_type"],
-            reasoning=classification.get("reasoning", ""),
-            created_at=utc_now()
-        )
-
-        return link
 
     def create_bidirectional_link(
         self,

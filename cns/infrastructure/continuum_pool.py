@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Callable
 
 from cns.core.continuum import Continuum
 from cns.core.message import Message
@@ -39,6 +40,7 @@ class UnitOfWork:
         self.pool = pool
         self.pending_messages: list[Message] = []
         self.metadata_updated = False
+        self._post_commit_callbacks: list[Callable[[], None]] = []
         
     def add_messages(self, *messages: Message) -> None:
         """
@@ -80,6 +82,10 @@ class UnitOfWork:
     def mark_metadata_updated(self) -> None:
         """Mark that continuum metadata needs to be updated."""
         self.metadata_updated = True
+
+    def add_post_commit_callback(self, callback: Callable[[], None]) -> None:
+        """Run a callback only after database and cache persistence succeed."""
+        self._post_commit_callbacks.append(callback)
         
     def commit(self) -> None:
         """
@@ -105,6 +111,11 @@ class UnitOfWork:
         if self.metadata_updated:
             self.pool.repository.update_continuum_metadata(self.continuum)
             logger.debug(f"Updated metadata for continuum {self.continuum.id}")
+
+        callbacks = tuple(self._post_commit_callbacks)
+        self._post_commit_callbacks.clear()
+        for callback in callbacks:
+            callback()
 
     def _get_real_messages(self) -> list[Message]:
         """
@@ -216,21 +227,6 @@ class ContinuumPool:
         else:
             logger.debug(f"No cached continuum to invalidate for user {user_id}")
     
-    def update_cache(self, user_id: str, messages: list[Message]) -> None:
-        """
-        Update continuum cache in Valkey.
-
-        Called when messages are added or modified.
-
-        Args:
-            user_id: User identifier
-            messages: Updated message list
-        """
-        self.valkey_cache.set_continuum(messages)
-        logger.debug(f"Updated continuum cache for user {user_id}")
-
-
-
 # Global continuum pool instance
 _continuum_pool: ContinuumPool | None = None
 

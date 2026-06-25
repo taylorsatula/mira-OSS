@@ -1,9 +1,9 @@
 # deploy/dependencies.sh
-# System package installation and Ollama setup
+# System package installation and local LLM setup (llama.cpp)
 # Source this file - do not execute directly
 #
 # Requires: lib/output.sh and lib/services.sh sourced first
-# Requires: OS, DISTRO, CONFIG_OFFLINE_MODE, CONFIG_OLLAMA_MODEL, CONFIG_OLLAMA_SUBCORTICAL_MODEL, LOUD_MODE variables set
+# Requires: OS, DISTRO, CONFIG_OFFLINE_MODE, CONFIG_LOCAL_MODEL_CHOICE, LOUD_MODE variables set
 #
 # Sets: PYTHON_VER
 
@@ -238,125 +238,87 @@ fi
 
 print_success "System dependencies installed"
 
-# Ollama setup (only for offline mode)
+# Local LLM setup via llama.cpp (only for offline/local mode)
 if [ "$CONFIG_OFFLINE_MODE" = "yes" ]; then
-    print_header "Step 1b: Ollama Setup"
+    print_header "Step 1b: llama.cpp Setup"
 
-    # Install Ollama if not present
-    echo -ne "${DIM}${ARROW}${RESET} Checking for Ollama... "
-    if command -v ollama &> /dev/null; then
-        echo -e "${CHECKMARK} ${DIM}(already installed)${RESET}"
-        OLLAMA_INSTALLED=true
+    LLAMA_MODELS_DIR="/opt/mira/models"
+    LLAMA_MAIN_PORT=8080
+    LLAMA_SMALL_PORT=8081
+
+    # --- Detect or build llama-server ---
+    echo -ne "${DIM}${ARROW}${RESET} Checking for llama-server... "
+    if command -v llama-server &> /dev/null; then
+        echo -e "${CHECKMARK} ${DIM}(found in PATH)${RESET}"
     else
-        echo -e "${DIM}(not found)${RESET}"
+        echo -e "${DIM}(not found, building from source)${RESET}"
+
+        # Check for required build tools
+        MISSING_TOOLS=""
+        for tool in cmake git g++; do
+            if ! command -v $tool &> /dev/null; then
+                MISSING_TOOLS="$MISSING_TOOLS $tool"
+            fi
+        done
+
+        if [ -n "$MISSING_TOOLS" ]; then
+            print_error "Missing build tools:$MISSING_TOOLS"
+            print_info "Install them first, then re-run deploy."
+            if [ "$OS" = "linux" ] && [ "$DISTRO" = "ubuntu" ]; then
+                print_info "  sudo apt install -y cmake git build-essential"
+            elif [ "$OS" = "linux" ] && [ "$DISTRO" = "fedora" ]; then
+                print_info "  sudo dnf install -y cmake git gcc-c++"
+            elif [ "$OS" = "macos" ]; then
+                print_info "  brew install cmake"
+            fi
+            exit 1
+        fi
+
+        # Clone and build llama.cpp
+        BUILD_DIR="/tmp/llama.cpp-build"
+        rm -rf "$BUILD_DIR"
+
         if [ "$LOUD_MODE" = true ]; then
-            print_step "Installing Ollama..."
-            if curl -fsSL https://ollama.com/install.sh | sh; then
-                OLLAMA_INSTALLED=true
-            else
-                OLLAMA_INSTALLED=false
-            fi
+            print_step "Cloning llama.cpp..."
+            git clone --depth 1 https://github.com/ggerganov/llama.cpp.git "$BUILD_DIR"
+            print_step "Building llama.cpp with CUDA support (this may take several minutes)..."
+            cd "$BUILD_DIR" && cmake -B build -DGGML_CUDA=ON -DLLAMA_SERVER=ON
+            cd "$BUILD_DIR" && cmake --build build --config Release -j$(nproc)
+            run_with_status "Installing llama.cpp" \
+                sudo cmake --install build
         else
-            (curl -fsSL https://ollama.com/install.sh | sh > /dev/null 2>&1) &
-            if show_progress $! "Installing Ollama"; then
-                OLLAMA_INSTALLED=true
+            (git clone --depth 1 https://github.com/ggerganov/llama.cpp.git "$BUILD_DIR" > /dev/null 2>&1 && \
+             cd "$BUILD_DIR" && cmake -B build -DGGML_CUDA=ON -DLLAMA_SERVER=ON > /dev/null 2>&1 && \
+             cmake --build build --config Release -j$(nproc) > /dev/null 2>&1 && \
+             sudo cmake --install build > /dev/null 2>&1) &
+            if show_progress $! "Building llama.cpp from source (CUDA)"; then
+                echo -e "${CHECKMARK}"
             else
-                OLLAMA_INSTALLED=false
+                print_error "llama.cpp build failed"
+                exit 1
             fi
+        fi
+        rm -rf "$BUILD_DIR"
+
+        # Verify installation
+        if ! command -v llama-server &> /dev/null; then
+            print_error "llama-server not found after build — installation may have failed"
+            exit 1
+        fi
+        echo -e "${CHECKMARK} ${DIM}(built & installed)${RESET}"
+    fi
+
+    # Create models directory (downloaded later by standalone script)
+    run_with_status "Creating models directory" \
+        sudo mkdir -p "$LLAMA_MODELS_DIR"
+    run_quiet sudo chown -R $(whoami): "$LLAMA_MODELS_DIR"
+
+    if [ "$CONFIG_LOCAL_MODEL_CHOICE" = "custom" ]; then
+        print_info "Custom model mode — place your GGUF files in $LLAMA_MODELS_DIR/"
+        if [ -n "${CONFIG_CUSTOM_GGUF:-}" ]; then
+            print_info "User-specified model: $CONFIG_CUSTOM_GGUF"
         fi
     fi
 
-    if [ "$OLLAMA_INSTALLED" = true ]; then
-        # Start Ollama server if not already running
-        echo -ne "${DIM}${ARROW}${RESET} Checking Ollama server... "
-        if curl -s http://localhost:11434/api/tags > /dev/null 2>&1; then
-            echo -e "${CHECKMARK} ${DIM}(already running)${RESET}"
-        else
-            echo -e "${DIM}(starting)${RESET}"
-            # Start server based on OS/init system
-            if [ "$OS" = "linux" ] && systemctl is-enabled ollama &>/dev/null 2>&1; then
-                run_with_status "Starting Ollama service" \
-                    sudo systemctl start ollama
-            else
-                # Start in background for macOS or non-systemd Linux
-                ollama serve > /dev/null 2>&1 &
-                OLLAMA_PID=$!
-                print_info "Started Ollama server (PID $OLLAMA_PID)"
-            fi
-
-            # Wait for server to be ready
-            echo -ne "${DIM}${ARROW}${RESET} Waiting for Ollama server... "
-            OLLAMA_READY=0
-            for i in {1..30}; do
-                if curl -s http://localhost:11434/api/tags > /dev/null 2>&1; then
-                    OLLAMA_READY=1
-                    break
-                fi
-                sleep 1
-            done
-
-            if [ $OLLAMA_READY -eq 1 ]; then
-                echo -e "${CHECKMARK} ${DIM}(ready after ${i}s)${RESET}"
-            else
-                echo -e "${ERROR}"
-                print_warning "Ollama server did not start within 30 seconds"
-                print_info "Model pull will be skipped - you can pull manually later:"
-                print_info "  ollama serve &"
-                print_info "  ollama pull ${CONFIG_OLLAMA_MODEL}"
-            fi
-        fi
-
-        # Pull the model(s) if server is ready
-        if curl -s http://localhost:11434/api/tags > /dev/null 2>&1; then
-            if [ "$LOUD_MODE" = true ]; then
-                print_step "Pulling model ${CONFIG_OLLAMA_MODEL}..."
-                if ollama pull "$CONFIG_OLLAMA_MODEL"; then
-                    print_success "Model ${CONFIG_OLLAMA_MODEL} ready"
-                else
-                    print_warning "Could not pull model (network unavailable)"
-                fi
-            else
-                (ollama pull "$CONFIG_OLLAMA_MODEL" > /dev/null 2>&1) &
-                if show_progress $! "Pulling model ${CONFIG_OLLAMA_MODEL}"; then
-                    print_success "Model ${CONFIG_OLLAMA_MODEL} ready"
-                else
-                    print_warning "Could not pull model (network unavailable)"
-                    echo ""
-                    print_info "For air-gapped installation, manually transfer the model:"
-                    print_info "  1. On a connected machine: ollama pull ${CONFIG_OLLAMA_MODEL}"
-                    print_info "  2. Export: ~/.ollama/models -> transfer to this machine"
-                    print_info "  3. Or use: ollama create ${CONFIG_OLLAMA_MODEL} -f Modelfile"
-                fi
-            fi
-
-            # Pull subcortical model if it differs from the main model
-            if [ -n "$CONFIG_OLLAMA_SUBCORTICAL_MODEL" ] && [ "$CONFIG_OLLAMA_SUBCORTICAL_MODEL" != "$CONFIG_OLLAMA_MODEL" ]; then
-                if [ "$LOUD_MODE" = true ]; then
-                    print_step "Pulling subcortical model ${CONFIG_OLLAMA_SUBCORTICAL_MODEL}..."
-                    if ollama pull "$CONFIG_OLLAMA_SUBCORTICAL_MODEL"; then
-                        print_success "Model ${CONFIG_OLLAMA_SUBCORTICAL_MODEL} ready"
-                    else
-                        print_warning "Could not pull subcortical model (network unavailable)"
-                    fi
-                else
-                    (ollama pull "$CONFIG_OLLAMA_SUBCORTICAL_MODEL" > /dev/null 2>&1) &
-                    if show_progress $! "Pulling subcortical model ${CONFIG_OLLAMA_SUBCORTICAL_MODEL}"; then
-                        print_success "Model ${CONFIG_OLLAMA_SUBCORTICAL_MODEL} ready"
-                    else
-                        print_warning "Could not pull subcortical model (network unavailable)"
-                    fi
-                fi
-            fi
-        fi
-    else
-        print_warning "Could not install Ollama (network unavailable or blocked)"
-        echo ""
-        print_info "For air-gapped Ollama installation:"
-        print_info "  1. Download Ollama binary from https://ollama.com/download"
-        print_info "  2. Transfer and install manually"
-        print_info "  3. Transfer model files to ~/.ollama/models"
-        print_info "  4. Start Ollama: ollama serve"
-    fi
-
-    print_success "Ollama setup complete"
+    print_success "llama.cpp setup complete"
 fi

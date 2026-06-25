@@ -24,6 +24,7 @@ from lt_memory.processing.batch_coordinator import (
     BatchResultProcessor
 )
 from lt_memory.processing.orchestrator import ExtractionOrchestrator
+from lt_memory.processing.post_processing_orchestrator import PostProcessingOrchestrator
 
 __all__ = [
     "MemoryProcessor",
@@ -37,4 +38,5 @@ __all__ = [
     "BatchCoordinator",
     "BatchResultProcessor",
     "ExtractionOrchestrator",
+    "PostProcessingOrchestrator",
 ]

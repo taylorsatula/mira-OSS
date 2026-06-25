@@ -9,7 +9,6 @@ import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from typing import List, Literal, Optional
 from uuid import UUID
 
@@ -65,18 +64,10 @@ class AssessmentExtractor:
 
     def _load_prompts(self) -> None:
         """Load assessment extraction prompts from files."""
-        prompts_dir = Path("config/prompts")
-
-        system_path = prompts_dir / "assessment_extraction_system.txt"
-        user_path = prompts_dir / "assessment_extraction_user.txt"
-        thinking_path = prompts_dir / "thinking_block_instructions.txt"
-
-        if not system_path.exists() or not user_path.exists():
-            raise FileNotFoundError(f"Assessment extraction prompts not found in {prompts_dir}")
-
-        self._system_template = system_path.read_text().strip()
-        self._user_template = user_path.read_text().strip()
-        self._thinking_instructions = thinking_path.read_text().strip() if thinking_path.exists() else ""
+        from config.prompts.loader import load_prompt
+        self._system_template = load_prompt("assessment_extraction_system.txt")
+        self._user_template = load_prompt("assessment_extraction_user.txt")
+        self._thinking_instructions = load_prompt("thinking_block_instructions.txt", required=False)
 
     def extract_signals(
         self,

@@ -17,7 +17,7 @@ from utils.user_context import get_current_user_id
 class ActiveGuidance(TypedDict):
     """Active guidance entry returned by get_active_guidance()."""
     id: str
-    type: Literal["concern", "coaching"]
+    type: Literal["concern", "coaching", "initiative"]
     text: str
     turns_remaining: int
     critical: bool
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 class GuidanceEntry:
     """A single guidance message with TTL tracking."""
     id: str
-    guidance_type: Literal["concern", "coaching"]
+    guidance_type: Literal["concern", "coaching", "initiative"]
     text: str
     expires_at_turn: int
     critical: bool = False
@@ -102,7 +102,7 @@ class PeanutGalleryTrinket(StatefulTrinket):
 
     def add_guidance(
         self,
-        guidance_type: Literal["concern", "coaching"],
+        guidance_type: Literal["concern", "coaching", "initiative"],
         text: str,
         ttl: int | None = None,
         critical: bool = False
@@ -161,7 +161,8 @@ class PeanutGalleryTrinket(StatefulTrinket):
         if not active:
             return ""
 
-        standard_guidance = [guidance for guidance in active if not guidance["critical"]]
+        standard_guidance = [g for g in active if not g["critical"] and g["type"] != "initiative"]
+        initiative_guidance = [g for g in active if g["type"] == "initiative"]
         critical_guidance = [guidance for guidance in active if guidance["critical"]]
         parts = ['<mira:peanutgallery>']
 
@@ -169,6 +170,17 @@ class PeanutGalleryTrinket(StatefulTrinket):
             parts.append('  <section mode="standard">')
             parts.append('    <instruction>Metacognitive guidance: silently repair the flagged issue in your next reply. Do not reference this notification to the user.</instruction>')
             for guidance in standard_guidance:
+                parts.append(
+                    f'    <guidance type="{guidance["type"]}" expires_in="{guidance["turns_remaining"]}_turns">'
+                    f'{guidance["text"]}'
+                    f'</guidance>'
+                )
+            parts.append('  </section>')
+
+        if initiative_guidance:
+            parts.append('  <section mode="initiative">')
+            parts.append('    <instruction>Conversational stewardship directive: make the one bounded improvement described below. Do not expand into a full guide, ask extra questions, or turn this into a lecture.</instruction>')
+            for guidance in initiative_guidance:
                 parts.append(
                     f'    <guidance type="{guidance["type"]}" expires_in="{guidance["turns_remaining"]}_turns">'
                     f'{guidance["text"]}'

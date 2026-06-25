@@ -18,6 +18,8 @@ from pydantic import BaseModel, Field
 from auth.api import get_current_user
 from auth.types import SessionData, APITokenContext
 from clients.files_manager import FilesManager
+from config.config_manager import config as app_config
+from cns.services.async_work_barrier import get_async_work_barrier
 from utils.distributed_lock import UserRequestLock
 
 # Import billing exception for proper type checking (None if OSS mode)
@@ -166,6 +168,14 @@ class ChatEndpoint(BaseHandler):
             orchestrator = get_orchestrator()
             continuum_pool = get_continuum_pool()
 
+            # Give previous-turn tool-result compaction a bounded head start before
+            # loading the hot continuum. Timeout is intentionally fail-open.
+            get_async_work_barrier().wait_for_user(
+                user_id,
+                timeout=app_config.api.async_work_barrier_timeout_seconds,
+                source="tool_summarizer",
+            )
+
             # Get the user's continuum
             continuum = continuum_pool.get_or_create()
 
@@ -262,7 +272,6 @@ class ChatEndpoint(BaseHandler):
                 from utils import cost_accumulator
                 cost_accumulator.start()
 
-            from config.config_manager import config as app_config
             continuum, response_text, metadata = orchestrator.process_message(
                 continuum,
                 inference_content,

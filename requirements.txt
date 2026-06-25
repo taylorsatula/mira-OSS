@@ -20,6 +20,7 @@ valkey            # Redis-compatible cache - valkey_client.py, many services
 
 # == AUTHENTICATION & SECURITY ==
 cryptography      # Encryption utilities - credential_security.py, userdata_manager.py
+email-validator   # Pydantic EmailStr validation - auth/api.py
 
 # == AI & MACHINE LEARNING ==
 anthropic        # Anthropic Claude API SDK - primary LLM provider with prompt caching

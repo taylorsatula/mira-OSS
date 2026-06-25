@@ -480,14 +480,18 @@ class AnthropicDialect(Dialect):
                     continue
                 text = block.get("text", "")
                 anthro_block: dict[str, Any] = {"type": "thinking", "thinking": text}
+                matched = False
                 while sig_index < len(thinking_signatures):
                     sig = thinking_signatures[sig_index]
                     sig_index += 1
                     if sig.get("type") == "thinking":
                         anthro_block["signature"] = sig["signature"]
+                        matched = True
                         break
                     elif sig.get("type") == "redacted_thinking":
                         result.append({"type": "redacted_thinking", "data": sig["data"]})
+                if not matched:
+                    continue
                 result.append(anthro_block)
             elif block_type == "tool_call":
                 result.append({

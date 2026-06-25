@@ -642,7 +642,7 @@ DB_STRUCTURAL_TABLES=(
     "api_tokens:id:id,user_id,name,token_hash"
     "domain_knowledge_blocks:id:id,user_id,domain_label,domain_name,enabled"
     "entities:id:id,user_id,name,entity_type"
-    "conversation_llm:name:name,model,adapter_name,endpoint_url,api_key_name"
+    "conversation_llm:name:name,model,dialect_name,endpoint_url,api_key_name"
     "internal_llm:name:name,model,endpoint_url,api_key_name"
 )
 

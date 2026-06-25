@@ -6,6 +6,7 @@ Three operations:
 - fetch: Extract webpage content via trafilatura (HTTP first, Playwright escalation for JS-heavy pages)
 - http: Make direct HTTP requests to APIs
 """
+import os
 import re
 from dataclasses import dataclass
 from typing import Dict, Any, List, Literal, Optional
@@ -57,9 +58,18 @@ class WebToolConfig(BaseModel):
     default_timeout: int = Field(default=30, description="Default timeout in seconds")
     max_timeout: int = Field(default=120, description="Maximum allowed timeout")
     # LLM config for synthesis of long pages (trafilatura text in, compressed text out)
-    synthesis_model: str = Field(default="openai/gpt-oss-120b", description="Model for content synthesis")
-    synthesis_endpoint: str = Field(default="https://api.groq.com/openai/v1/chat/completions", description="Synthesis LLM endpoint")
-    synthesis_api_key_name: Optional[str] = Field(default="subcortical_key", description="Vault key name for API key")
+    synthesis_model: str = Field(
+        default=os.getenv("MIRA_WEB_TOOL_SYNTHESIS_MODEL", "openai/gpt-oss-120b"),
+        description="Model for content synthesis",
+    )
+    synthesis_endpoint: str = Field(
+        default=os.getenv("MIRA_WEB_TOOL_SYNTHESIS_ENDPOINT", "https://api.groq.com/openai/v1/chat/completions"),
+        description="Synthesis LLM endpoint",
+    )
+    synthesis_api_key_name: Optional[str] = Field(
+        default=os.getenv("MIRA_WEB_TOOL_SYNTHESIS_API_KEY_NAME", "subcortical_key") or None,
+        description="Vault key name for API key",
+    )
 
 
 registry.register("web_tool", WebToolConfig)

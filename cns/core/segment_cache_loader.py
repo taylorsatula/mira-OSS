@@ -6,7 +6,6 @@ Loads context for new sessions with segment summaries and session boundary marke
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 
 from cns.core.message import Message
 from cns.infrastructure.continuum_repository import ContinuumRepository
@@ -45,11 +44,8 @@ class SegmentCacheLoader:
         Parsed once at init. Messages are reused across all load_session_cache()
         calls — they're never persisted, so shared instances are fine.
         """
-        path = Path("config/prompts/behavioral_primer.txt")
-        if not path.exists():
-            raise FileNotFoundError(f"Behavioral primer not found at {path}")
-
-        raw = path.read_text(encoding='utf-8').strip()
+        from config.prompts.loader import load_prompt
+        raw = load_prompt("behavioral_primer.txt")
         messages = []
         for block in raw.split("---"):
             block = block.strip()

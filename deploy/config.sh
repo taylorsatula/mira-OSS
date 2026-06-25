@@ -16,8 +16,9 @@ CONFIG_INSTALL_PLAYWRIGHT=""
 CONFIG_INSTALL_SYSTEMD=""
 CONFIG_START_MIRA_NOW=""
 CONFIG_OFFLINE_MODE=""
-CONFIG_OLLAMA_MODEL=""
-CONFIG_OLLAMA_SUBCORTICAL_MODEL=""
+CONFIG_LOCAL_MODEL_CHOICE=""       # auto / custom
+CONFIG_LLAMA_MAIN_MODEL="Qwopus3.6-27B-v2-MTP-Q5_K_M.gguf"
+CONFIG_LLAMA_SMALL_MODEL="Qwen3.5-9B-UD-Q3_K_XL.gguf"
 CONFIG_CHAT_PROVIDER_TYPE=""
 CONFIG_CHAT_ENDPOINT=""
 CONFIG_CHAT_API_KEY=""
@@ -238,40 +239,44 @@ print_success "Port check passed"
 print_header "LLM Provider Configuration"
 
 echo -e "${BOLD}${BLUE}LLM Provider${RESET}"
-read -p "$(echo -e ${CYAN}Use local Ollama?${RESET}) (y/n, default=n): " USE_OLLAMA_INPUT
-if [[ "$USE_OLLAMA_INPUT" =~ ^[Yy](es)?$ ]]; then
+read -p "$(echo -e ${CYAN}Use local LLM via llama-server?${RESET}) (y/n, default=n): " USE_LOCAL_LLM_INPUT
+if [[ "$USE_LOCAL_LLM_INPUT" =~ ^[Yy](es)?$ ]]; then
     CONFIG_OFFLINE_MODE="yes"
     # Placeholder keys so Vault validation passes
     CONFIG_ANTHROPIC_KEY="OFFLINE_MODE_PLACEHOLDER"
     CONFIG_ANTHROPIC_BATCH_KEY="OFFLINE_MODE_PLACEHOLDER"
-    STATUS_CHAT_PROVIDER="${CHECKMARK} Local Ollama"
-    STATUS_CHAT_KEY="${DIM}N/A (Ollama)${RESET}"
-    STATUS_SUBCORTICAL="${DIM}N/A (Ollama)${RESET}"
-    STATUS_SUBCORTICAL_KEY="${DIM}N/A (Ollama)${RESET}"
+    STATUS_CHAT_PROVIDER="${CHECKMARK} Local llama-server"
+    STATUS_CHAT_KEY="${DIM}N/A (local)${RESET}"
+    STATUS_SUBCORTICAL="${DIM}N/A (local)${RESET}"
+    STATUS_SUBCORTICAL_KEY="${DIM}N/A (local)${RESET}"
 
-    # Main model
     echo ""
-    echo -e "${DIM}   The main model handles chat responses and background processing${RESET}"
-    echo -e "${DIM}   (memory extraction, summarization, synthesis).${RESET}"
-    read -p "$(echo -e ${CYAN}Main Ollama model${RESET}) (default: qwen3:1.7b): " OLLAMA_MODEL_INPUT
-    if [ -z "$OLLAMA_MODEL_INPUT" ]; then
-        CONFIG_OLLAMA_MODEL="qwen3:1.7b"
-    else
-        CONFIG_OLLAMA_MODEL="$OLLAMA_MODEL_INPUT"
-    fi
-
-    # Subcortical model (runs on every message, benefits from speed)
+    echo -e "${BOLD}Local Model Configuration${RESET}"
+    echo -e "${DIM}   Two models are needed — a capable main model and a small fast model.${RESET}"
+    echo -e "${DIM}   The analysis/subcortical model runs on every message; no gains from${RESET}"
+    echo -e "${DIM}   using a larger slow model there — speed is the only thing that matters.${RESET}"
     echo ""
-    echo -e "${DIM}   The subcortical model runs on every message for query expansion${RESET}"
-    echo -e "${DIM}   and memory retrieval. A smaller/faster model works well here.${RESET}"
-    read -p "$(echo -e ${CYAN}Subcortical Ollama model${RESET}) (default: same as main): " OLLAMA_SUBCORTICAL_INPUT
-    if [ -z "$OLLAMA_SUBCORTICAL_INPUT" ]; then
-        CONFIG_OLLAMA_SUBCORTICAL_MODEL="$CONFIG_OLLAMA_MODEL"
+    echo -e "${DIM}   Pre-configured pair (sized for dual RTX 3090 / 48GB VRAM):${RESET}"
+    echo -e "${DIM}     Main:      Qwopus3.6-27B-v2-MTP-Q5_K_M.gguf${RESET}"
+    echo -e "${DIM}     Small:     Qwen3.5-9B-UD-Q3_K_XL.gguf${RESET}"
+    echo ""
+    echo -e "${DIM}   If your hardware differs or lacks sufficient VRAM, choose custom${RESET}"
+    echo -e "${DIM}   and download your own GGUF model after install completes.${RESET}"
+    echo ""
+    echo "     1. Pre-configured pair (Qwopus3.6-27B + Qwen3.5-9B)"
+    echo "     2. Custom (bring your own GGUF model)"
+    read -p "$(echo -e ${CYAN}Model selection${RESET}) [1-2, default=1]: " LOCAL_MODEL_CHOICE
+    if [[ "$LOCAL_MODEL_CHOICE" == "2" ]]; then
+        CONFIG_LOCAL_MODEL_CHOICE="custom"
+        echo ""
+        echo -e "${DIM}   Enter the path or URL of your GGUF model file:${RESET}"
+        read -p "$(echo -e ${CYAN}Custom GGUF model${RESET}): " CUSTOM_GGUF_INPUT
+        if [ -n "$CUSTOM_GGUF_INPUT" ]; then
+            CONFIG_CUSTOM_GGUF="$CUSTOM_GGUF_INPUT"
+        fi
     else
-        CONFIG_OLLAMA_SUBCORTICAL_MODEL="$OLLAMA_SUBCORTICAL_INPUT"
+        CONFIG_LOCAL_MODEL_CHOICE="auto"
     fi
-
-    CONFIG_PATCH_OLLAMA_MODEL="$CONFIG_OLLAMA_MODEL"
 else
     CONFIG_OFFLINE_MODE="no"
 
@@ -495,12 +500,13 @@ fi
 echo ""
 echo -e "${BOLD}Configuration Summary:${RESET}"
 if [ "$CONFIG_OFFLINE_MODE" = "yes" ]; then
-    if [ "$CONFIG_OLLAMA_MODEL" = "$CONFIG_OLLAMA_SUBCORTICAL_MODEL" ]; then
-        echo -e "  LLM Provider:    ${CYAN}Local Ollama (${CONFIG_OLLAMA_MODEL})${RESET}"
+    if [ "$CONFIG_LOCAL_MODEL_CHOICE" = "auto" ]; then
+        echo -e "  LLM Provider:    ${CYAN}Local llama-server${RESET}"
+        echo -e "  Main Model:      ${CYAN}Qwopus3.6-27B-v2-MTP-Q5_K_M${RESET}"
+        echo -e "  Small Model:     ${CYAN}Qwen3.5-9B-UD-Q3_K_XL${RESET}"
     else
-        echo -e "  LLM Provider:    ${CYAN}Local Ollama${RESET}"
-        echo -e "  Main Model:      ${CYAN}${CONFIG_OLLAMA_MODEL}${RESET}"
-        echo -e "  Subcortical:     ${CYAN}${CONFIG_OLLAMA_SUBCORTICAL_MODEL}${RESET}"
+        echo -e "  LLM Provider:    ${CYAN}Local llama-server (custom)${RESET}"
+        echo -e "  Model:           ${CYAN}${CONFIG_CUSTOM_GGUF:-TBD}${RESET}"
     fi
 else
     echo -e "  Chat Provider:   ${STATUS_CHAT_PROVIDER}"

@@ -296,6 +296,17 @@ class ValkeyClient:
             kwargs['ex'] = ex
         return self._client.set(key, value, **kwargs)
 
+    def compare_and_set(self, key: str, expected_value: str, new_value: str) -> bool:
+        """Atomically replace a string value only when it still matches."""
+        script = """
+        if redis.call('GET', KEYS[1]) ~= ARGV[1] then
+            return 0
+        end
+        redis.call('SET', KEYS[1], ARGV[2])
+        return 1
+        """
+        return bool(self._client.eval(script, 1, key, expected_value, new_value))
+
     def scan_iter(self, match: Optional[str] = None) -> Iterator[str]:
         """Scan iterator for keys matching pattern."""
         return self._client.scan_iter(match=match)

@@ -7,11 +7,25 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
+from typing import cast
+from uuid import UUID
 
-from cns.core.message import Message
+from cns.core.message import Message, MessageMetadata
 from utils.user_context import get_current_user_id
 
 logger = logging.getLogger(__name__)
+
+CACHE_PATCH_MAX_ATTEMPTS = 3
+
+
+@dataclass(frozen=True)
+class ToolResultCachePatch:
+    """Conditional replacement for one tool result in the hot cache."""
+
+    message_id: UUID
+    expected_content: str
+    compacted_content: str
 
 
 class ValkeyMessageCache:
@@ -118,6 +132,74 @@ class ValkeyMessageCache:
         self.valkey.set(key, data)
 
         logger.debug(f"Cached continuum for user {user_id}")
+
+    def apply_tool_result_patches(
+        self,
+        patches: list[ToolResultCachePatch],
+    ) -> int:
+        """Atomically compact still-current tool messages by message ID."""
+        if not patches:
+            return 0
+
+        user_id = get_current_user_id()
+        key = self._get_key(user_id)
+        patches_by_id = {patch.message_id: patch for patch in patches}
+
+        for _attempt in range(CACHE_PATCH_MAX_ATTEMPTS):
+            serialized = self.valkey.get(key)
+            if serialized is None:
+                logger.debug(
+                    "Continuum cache missing while compacting tool results for user %s",
+                    user_id,
+                )
+                return 0
+
+            messages = self._deserialize_messages(serialized)
+            updated_messages: list[Message] = []
+            applied_count = 0
+
+            for message in messages:
+                patch = patches_by_id.get(message.id)
+                if (
+                    patch is None
+                    or message.role != "tool"
+                    or not isinstance(message.content, str)
+                    or message.content != patch.expected_content
+                    or message.metadata.get("tool_result_compacted")
+                ):
+                    updated_messages.append(message)
+                    continue
+
+                metadata = cast(MessageMetadata, dict(message.metadata))
+                metadata["tool_result_compacted"] = True
+                metadata["tool_result_original_chars"] = len(patch.expected_content)
+                updated_messages.append(Message(
+                    id=message.id,
+                    content=patch.compacted_content,
+                    role=message.role,
+                    created_at=message.created_at,
+                    metadata=metadata,
+                    tool_call_id=message.tool_call_id,
+                    is_error=message.is_error,
+                ))
+                applied_count += 1
+
+            if applied_count == 0:
+                return 0
+
+            replacement = self._serialize_messages(updated_messages)
+            if self.valkey.compare_and_set(key, serialized, replacement):
+                logger.debug(
+                    "Compacted %d cached tool result(s) for user %s",
+                    applied_count,
+                    user_id,
+                )
+                return applied_count
+
+        raise RuntimeError(
+            f"Continuum cache changed during {CACHE_PATCH_MAX_ATTEMPTS} "
+            f"tool-result compaction attempts for user {user_id}"
+        )
 
     def invalidate_continuum(self) -> bool:
         """

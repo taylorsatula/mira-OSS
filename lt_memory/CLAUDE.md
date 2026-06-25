@@ -17,7 +17,7 @@
 - `factory.py` — Creates and wires all service instances in dependency order with reverse-order cleanup. Singleton via `get_lt_memory_factory()`.
 - `vector_ops.py` — Embedding generation and vector similarity search using mdbr-leaf-ir-asym (768d). Owns `HybridSearcher` composition.
 - `hybrid_search.py` — BM25 + vector hybrid search with reciprocal rank fusion. `HybridSearcher.hybrid_search()` returns `List[Memory]`.
-- `linking.py` — Three-axis candidate discovery (vector similarity, entity co-occurrence with similarity floor, TF-IDF term overlap) and bidirectional link creation. TF-IDF state lazily initialized on `LinkingService`, rebuilt when memory count changes. `classify_relationship_sync()` and `_parse_classification_response()` have no active callers (dead code).
+- `linking.py` — Three-axis candidate discovery (vector similarity, entity co-occurrence with similarity floor, TF-IDF term overlap) and bidirectional link creation. TF-IDF state lazily initialized on `LinkingService`, rebuilt when memory count changes.
 - `proactive.py` — Proactive memory surfacing: merges similarity pool and hub-derived pool, reranks with link traversal. Returns `List[MemoryDict]`.
 - `llm_routing.py` — Resolver-backed helper for LT memory batch-vs-immediate decisions. `uses_anthropic_batch_adapter(purpose)` is the only routing check for Anthropic Batch API eligibility.
 - `hub_discovery.py` — Entity-driven retrieval: pg_trgm fuzzy entity match → linked memories → expansion-similarity ranking. DB errors propagate from `_match_entities()`.

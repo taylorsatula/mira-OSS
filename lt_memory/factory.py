@@ -113,8 +113,7 @@ class LTMemoryFactory:
             logger.debug("Initializing LinkingService...")
             self.linking = LinkingService(
                 vector_ops=self.vector_ops,
-                db=self.db,
-                llm_provider=self._llm_provider
+                db=self.db
             )
             self._service_init_order.append(self.linking)
         except Exception as e:

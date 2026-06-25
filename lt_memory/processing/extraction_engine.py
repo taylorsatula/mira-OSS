@@ -13,7 +13,6 @@ This module handles WHAT to extract and HOW to ask the LLM.
 MemoryProcessor handles parsing the LLM's response.
 """
 import logging
-from pathlib import Path
 from typing import List, Dict, Any, Tuple, TypedDict
 from uuid import UUID
 
@@ -80,22 +79,9 @@ class ExtractionEngine:
         Raises:
             FileNotFoundError: If prompt files not found (fail-fast)
         """
-        prompts_dir = Path("config/prompts")
-
-        system_path = prompts_dir / "memory_extraction_system.txt"
-        user_path = prompts_dir / "memory_extraction_user.txt"
-
-        if not system_path.exists() or not user_path.exists():
-            raise FileNotFoundError(
-                f"Memory extraction prompts not found in {prompts_dir}"
-            )
-
-        with open(system_path, 'r', encoding='utf-8') as f:
-            self.extraction_system_prompt = f.read().strip()
-
-        with open(user_path, 'r', encoding='utf-8') as f:
-            self.extraction_user_template = f.read().strip()
-
+        from config.prompts.loader import load_prompt
+        self.extraction_system_prompt = load_prompt("memory_extraction_system.txt")
+        self.extraction_user_template = load_prompt("memory_extraction_user.txt")
         logger.info("Loaded memory extraction prompts")
 
     def build_extraction_payload(
