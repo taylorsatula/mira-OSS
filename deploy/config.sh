@@ -311,8 +311,8 @@ else
             done
 
             # Model
-            read -p "$(echo -e ${CYAN}Model name${RESET}) [default: qwen/qwen3.5-397b-a17b]: " CHAT_MODEL_INPUT
-            CONFIG_CHAT_MODEL="${CHAT_MODEL_INPUT:-qwen/qwen3.5-397b-a17b}"
+            read -p "$(echo -e ${CYAN}Model name${RESET}) [default: z-ai/glm-5.2]: " CHAT_MODEL_INPUT
+            CONFIG_CHAT_MODEL="${CHAT_MODEL_INPUT:-z-ai/glm-5.2}"
 
             # Anthropic placeholders (background tasks won't work without real keys)
             CONFIG_ANTHROPIC_KEY="PLACEHOLDER_NOT_CONFIGURED"
@@ -431,8 +431,8 @@ else
     done
 
     # Subcortical Model
-    read -p "$(echo -e ${CYAN}Model${RESET}) [default: qwen/qwen3-32b]: " SUBCORTICAL_MODEL_INPUT
-    CONFIG_SUBCORTICAL_MODEL="${SUBCORTICAL_MODEL_INPUT:-qwen/qwen3-32b}"
+    read -p "$(echo -e ${CYAN}Model${RESET}) [default: qwen/qwen3.6-27b]: " SUBCORTICAL_MODEL_INPUT
+    CONFIG_SUBCORTICAL_MODEL="${SUBCORTICAL_MODEL_INPUT:-qwen/qwen3.6-27b}"
 fi
 
 # Kagi Search API Key (optional — works with any provider)

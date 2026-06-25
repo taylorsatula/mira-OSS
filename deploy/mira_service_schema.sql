@@ -144,11 +144,11 @@ INSERT INTO internal_llm (name, tier, model, endpoint_url, api_key_name, descrip
     ('entity_gc', 'cof', 'claude-haiku-4-5', 'https://api.anthropic.com/v1/messages', 'anthropic_batch_key', 'Entity garbage collection', 2048, 'high', 'anthropic'),
     ('critic', 'cof', 'claude-sonnet-4-6', 'https://api.anthropic.com/v1/messages', 'anthropic_key', 'User model critic', 10000, NULL, 'anthropic'),
     -- Subcortical: same model for both tiers via Groq
-    ('analysis', 'cof', 'qwen/qwen3-32b', 'https://api.groq.com/openai/v1/chat/completions', 'subcortical_key', 'Subcortical analysis', 3072, NULL, 'groq'),
+    ('analysis', 'cof', 'qwen/qwen3.6-27b', 'https://api.groq.com/openai/v1/chat/completions', 'subcortical_key', 'Subcortical analysis', 3072, NULL, 'groq'),
     -- Forage: COF gets Kimi K2 via OpenRouter, free gets OSS 120B via Groq
     ('forage', 'cof', 'moonshotai/kimi-k2-thinking', 'https://openrouter.ai/api/v1/chat/completions', 'provider_key', 'Forage agent tool-calling loop', 4096, NULL, 'openrouter'),
     -- Overwatch: passive agent iteration observer, same cheap model as subcortical
-    ('overwatch', 'cof', 'qwen/qwen3-32b', 'https://api.groq.com/openai/v1/chat/completions', 'subcortical_key', 'Passive agent iteration observer', 100, NULL, 'groq'),
+    ('overwatch', 'cof', 'qwen/qwen3.6-27b', 'https://api.groq.com/openai/v1/chat/completions', 'subcortical_key', 'Passive agent iteration observer', 100, NULL, 'groq'),
     -- Phone-a-friend: high-capability outside voices for synchronous subagent consultation
     ('phoneafriend_claude', 'cof', 'claude-opus-4-7', 'https://api.anthropic.com/v1/messages', 'anthropic_key', 'Phone-a-friend level-headed thought partner', 10000, 'high', 'anthropic'),
     ('phoneafriend_gemini', 'cof', 'google/gemini-3.1-pro-preview', 'https://openrouter.ai/api/v1/chat/completions', 'provider_key', 'Phone-a-friend outside voice with broad world knowledge', 10000, NULL, 'openrouter'),

@@ -140,12 +140,12 @@ if [ "$CONFIG_OFFLINE_MODE" != "yes" ]; then
         fi
         echo -e "${CHECKMARK}"
     fi
-    if [ "$CONFIG_SUBCORTICAL_MODEL" != "qwen/qwen3-32b" ] && [ -n "$CONFIG_SUBCORTICAL_MODEL" ]; then
+    if [ "$CONFIG_SUBCORTICAL_MODEL" != "qwen/qwen3.6-27b" ] && [ -n "$CONFIG_SUBCORTICAL_MODEL" ]; then
         echo -ne "${DIM}${ARROW}${RESET} Patching subcortical model (${CONFIG_SUBCORTICAL_MODEL})... "
         if [ "$OS" = "macos" ]; then
-            sed -i '' "s|qwen/qwen3-32b|${CONFIG_SUBCORTICAL_MODEL}|g" "$SCHEMA"
+            sed -i '' "s|qwen/qwen3.6-27b|${CONFIG_SUBCORTICAL_MODEL}|g" "$SCHEMA"
         else
-            sed -i "s|qwen/qwen3-32b|${CONFIG_SUBCORTICAL_MODEL}|g" "$SCHEMA"
+            sed -i "s|qwen/qwen3.6-27b|${CONFIG_SUBCORTICAL_MODEL}|g" "$SCHEMA"
         fi
         echo -e "${CHECKMARK}"
     fi

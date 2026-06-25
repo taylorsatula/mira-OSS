@@ -35,7 +35,7 @@ FALLBACK_PRICES: Dict[str, Dict[str, float]] = {
     "claude-haiku-4-5":          {"input":  1.00, "output":  5.00, "cache_read": 0.10,  "cache_write":  1.25},
     "claude-haiku-4-5-20251001": {"input":  1.00, "output":  5.00, "cache_read": 0.10,  "cache_write":  1.25},
     # Groq (subcortical)
-    "qwen/qwen3-32b":            {"input":  0.29, "output":  0.39, "cache_read": 0.0,   "cache_write":  0.0},
+    "qwen/qwen3.6-27b":          {"input":  0.29, "output":  0.39, "cache_read": 0.0,   "cache_write":  0.0},
 }
 
 
