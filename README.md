@@ -141,6 +141,26 @@ Existing installations can use the migration path:
 ./deploy/deploy.sh --migrate
 ```
 
+## Install MIRA via Docker
+Build the base image first (heavy, rarely changes), then the thin app layer:
+
+```bash
+docker build -t mira-base:latest -f deploy/docker/Dockerfile.base .
+docker build -t mira:latest -f deploy/docker/Dockerfile .
+```
+
+Run interactively (setup wizard) or headless with environment variables:
+
+```bash
+# Interactive setup
+docker run -it -v mira-data:/opt/vault -p 1993:1993 mira:latest
+
+# Headless (non-interactive)
+docker run -e MIRA_ANTHROPIC_KEY=sk-ant-xxx -e MIRA_PROVIDER_KEY=gsk_xxx -v mira-data:/opt/vault -p 1993:1993 mira:latest
+```
+
+Vault data persists in the `mira-data` volume. PostgreSQL and Valkey data persist in container volumes.
+
 ## Trying MIRA without installing anything
 I run a hosted copy of MIRA on [miraos.org](https://miraos.org/). It has a macOS app that can be downloaded [here](https://miraos.org/assets/MIRA-for-Mac.dmg).
 
