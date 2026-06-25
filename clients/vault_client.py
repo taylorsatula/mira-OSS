@@ -206,6 +206,7 @@ def preload_secrets() -> None:
     secret_groups = [
         ('mira/api_keys', 'API keys'),
         ('mira/database', 'database secrets'),
+        ('mira/services', 'service config secrets'),
     ]
 
     successes = []

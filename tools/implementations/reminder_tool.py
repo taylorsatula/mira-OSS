@@ -6,6 +6,7 @@ multi-tenant isolation through automatic user-scoped queries. Integrates with
 the user's contacts by storing contact UUID references.
 """
 
+import inspect
 import json
 import logging
 import uuid
@@ -318,28 +319,30 @@ class ReminderTool(Tool):
                     self.logger.error(f"Invalid JSON in kwargs for {operation}: {e}")
                     raise ValueError(f"Invalid JSON in kwargs: {e}")
             
-            # Route to the appropriate operation
-            if operation == "add_reminder":
-                return self._add_reminder(**kwargs)
-            elif operation == "get_reminders":
-                return self._get_reminders(**kwargs)
-            elif operation == "mark_completed":
-                return self._mark_completed(**kwargs)
-            elif operation == "update_reminder":
-                return self._update_reminder(**kwargs)
-            elif operation == "delete_reminder":
-                return self._delete_reminder(**kwargs)
-            elif operation == "snooze_reminder":
-                return self._snooze_reminder(**kwargs)
-            elif operation == "batch":
-                return self._batch(**kwargs)
-            else:
+            # Route to the appropriate operation, filtering kwargs to params
+            # the target method actually accepts. The repo filters unknown schema
+            # properties, but can't filter per-operation — schema-valid params like
+            # 'title' pass through and crash methods that don't accept them.
+            operation_map = {
+                "add_reminder": self._add_reminder,
+                "get_reminders": self._get_reminders,
+                "mark_completed": self._mark_completed,
+                "update_reminder": self._update_reminder,
+                "delete_reminder": self._delete_reminder,
+                "snooze_reminder": self._snooze_reminder,
+                "batch": self._batch,
+            }
+            method = operation_map.get(operation)
+            if method is None:
                 self.logger.error(f"Unknown operation: {operation}")
                 raise ValueError(
                     f"Unknown operation: {operation}. Valid operations are: "
                     "add_reminder, get_reminders, mark_completed, "
                     "update_reminder, delete_reminder, snooze_reminder, batch"
                 )
+            accepted = set(inspect.signature(method).parameters)
+            filtered = {k: v for k, v in kwargs.items() if k in accepted}
+            return method(**filtered)
         except Exception as e:
             self.logger.error(f"Error executing {operation} in reminder_tool: {e}")
             raise
