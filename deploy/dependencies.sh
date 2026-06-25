@@ -67,6 +67,14 @@ if [ "$OS" = "linux" ] && [ "$DISTRO" = "debian" ]; then
         show_progress $! "Installing system packages (18 packages)"
     fi
 elif [ "$OS" = "linux" ] && [ "$DISTRO" = "fedora" ]; then
+    # Check minimum Fedora version (PGDG dropped support for F-40 and earlier)
+    FEDORA_VER=$(rpm -E %fedora 2>/dev/null || echo 0)
+    if [ "$FEDORA_VER" -lt 41 ]; then
+        print_error "Fedora $FEDORA_VER is not supported — MIRA requires Fedora 41+"
+        print_info "PostgreSQL 17 + PGDG repository are unavailable on older releases."
+        exit 1
+    fi
+
     # Fedora/RHEL: Add PostgreSQL PGDG repository for PostgreSQL 17
     if ! rpm -q pgdg-fedora-repo-latest > /dev/null 2>&1 && ! rpm -q pgdg-redhat-repo-latest > /dev/null 2>&1; then
         if [ -f /etc/fedora-release ]; then
