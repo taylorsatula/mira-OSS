@@ -130,6 +130,75 @@ LAUNCHER
     print_info "Start MIRA with: $RUN_SH"
 fi
 
+# Write one-time credential dump to user's Desktop
+print_header "Step 15c: Credential Dump"
+
+ROOT_TOKEN=$(vault_extract_credential "Initial Root Token")
+UNSEAL_KEY=$(vault_extract_credential "Unseal Key 1")
+
+DESKTOP_CRED_FILE="$HOME/Desktop/MIRA_credentials.txt"
+
+cat > "$DESKTOP_CRED_FILE" <<CREDS
+================================================================================
+  ⚠️  CRITICAL — READ BEFORE PROCEEDING  ⚠️
+================================================================================
+
+This file contains ALL credentials for your MIRA installation.
+
+THIS IS THE ONLY TIME these credentials will be written to disk in plain text.
+
+ACTION REQUIRED:
+  1. Copy this file to a secure location (password manager, encrypted drive)
+  2. DELETE this file from your Desktop immediately after saving
+  3. If you lose these credentials, you can recover by logging into Vault:
+     export VAULT_ADDR='http://127.0.0.1:8200'
+     vault login <root_token>
+     vault kv get secret/mira/api_keys
+
+================================================================================
+
+Vault Root Token (hvs_...):
+  ${ROOT_TOKEN}
+
+Vault Unseal Key:
+  ${UNSEAL_KEY}
+
+================================================================================
+
+API Keys stored in Vault at secret/mira/api_keys:
+
+  anthropic_key:        ${CONFIG_ANTHROPIC_KEY}
+  anthropic_batch_key:  ${CONFIG_ANTHROPIC_BATCH_KEY}
+CREDS
+
+if [ "$CONFIG_OFFLINE_MODE" != "yes" ]; then
+    cat >> "$DESKTOP_CRED_FILE" <<CREDS
+  provider_key:         ${CONFIG_CHAT_API_KEY:-N/A}
+  subcortical_key:      ${CONFIG_SUBCORTICAL_API_KEY}
+  kagi_api_key:         ${CONFIG_KAGI_KEY:-N/A}
+CREDS
+else
+    cat >> "$DESKTOP_CRED_FILE" <<CREDS
+  (Offline/local mode — no external API keys configured)
+CREDS
+fi
+
+cat >> "$DESKTOP_CRED_FILE" <<'CREDS'
+
+================================================================================
+  ⚠️  REMEMBER TO DELETE THIS FILE AFTER SAVING SECURELY  ⚠️
+================================================================================
+CREDS
+
+chmod 600 "$DESKTOP_CRED_FILE"
+
+print_warning "Credential dump written to: $DESKTOP_CRED_FILE"
+echo ""
+print_info "⚠️  This is the ONLY time these credentials are written to disk."
+print_info "Save this file securely, then DELETE it from your Desktop."
+print_info "To retrieve later, use Vault CLI with your root token."
+echo ""
+
 print_header "Step 16: Cleanup"
 
 if [ "$LOUD_MODE" = true ]; then
