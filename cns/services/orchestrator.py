@@ -459,7 +459,7 @@ class ContinuumOrchestrator:
         non_cached_content = self._non_cached_content or ""
         conversation_prefix_items = self._conversation_prefix_items or ()
         post_history_items = self._post_history_items or ()
-        notification_center = self._notification_center or ""
+        notification_center = self._notification_center or {}
 
         system_blocks = []
         all_system_parts = []
@@ -531,16 +531,41 @@ class ContinuumOrchestrator:
             if stable_messages[i].get("role") == "assistant":
                 break
 
+        # Inject HUD as a synthetic tool call + result pair.
+        # The model sees it as a tool interaction (not Mira speaking),
+        # and the matching tool_call/tool pair avoids provider 400s.
+        hud_messages: list[dict[str, object]] = []
+        if notification_center:
+            hud_id = f"hud_{uuid4().hex[:8]}"
+            hud_json = json.dumps(notification_center, ensure_ascii=False)
+            hud_messages = [
+                {
+                    "role": "assistant",
+                    "content": [{
+                        "type": "tool_call",
+                        "id": hud_id,
+                        "name": "hud",
+                        "input": {"action": "get_runtime_state"},
+                    }],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": hud_id,
+                    "content": hud_json,
+                },
+            ]
+
         complete_messages = [
             *stable_messages,
-            {"role": "assistant", "content": [{"type": "text", "text": notification_center, "cache": "1h"}]},
+            *hud_messages,
             current_user_msg,
         ]
+        nc_chars = sum(len(v) for v in notification_center.values())
         logger.debug(
             f"Injected {len(prefix_messages)} prefix msgs + "
             f"{len(history_messages)} history msgs + "
             f"{len(post_history_messages)} post-history msgs + "
-            f"notification center ({len(notification_center)} chars)"
+            f"HUD ({len(notification_center)} fields, {nc_chars} chars)"
         )
         return complete_messages
 
@@ -1273,13 +1298,14 @@ class ContinuumOrchestrator:
         self._non_cached_content = event.non_cached_content
         self._conversation_prefix_items = event.conversation_prefix_items
         self._post_history_items = event.post_history_items
-        self._notification_center = event.notification_center
+        self._notification_center = event.notification_center or {}
+        nc_chars = sum(len(v) for v in self._notification_center.values())
         logger.debug(
             f"Received system prompt: cached {len(event.cached_content)} chars, "
             f"non-cached {len(event.non_cached_content)} chars, "
             f"{len(event.conversation_prefix_items)} prefix items, "
             f"{len(event.post_history_items)} post-history items, "
-            f"notification center {len(event.notification_center)} chars"
+            f"HUD {len(self._notification_center)} fields ({nc_chars} chars)"
         )
 
 

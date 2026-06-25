@@ -11,7 +11,7 @@ class ComposedPrompt(TypedDict):
     non_cached_content: str
     conversation_prefix_items: list[str]
     post_history_items: list[str]
-    notification_center: str
+    notification_center: dict[str, str]  # Named fields: section_name -> XML content
 
 
 class TrinketState(TypedDict):

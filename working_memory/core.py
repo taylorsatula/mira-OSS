@@ -149,12 +149,13 @@ class WorkingMemory:
             notification_center=structured['notification_center']
         ))
 
+        nc_chars = sum(len(v) for v in structured['notification_center'].values())
         logger.info(
             f"Composed system prompt: cached {len(structured['cached_content'])} chars, "
             f"non-cached {len(structured['non_cached_content'])} chars, "
             f"{len(structured['conversation_prefix_items'])} prefix items, "
             f"{len(structured['post_history_items'])} post-history items, "
-            f"notification center {len(structured['notification_center'])} chars"
+            f"HUD {len(structured['notification_center'])} fields ({nc_chars} chars)"
         )
     
     def _handle_update_trinket(self, event: 'UpdateTrinketEvent') -> None:

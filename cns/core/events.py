@@ -157,7 +157,7 @@ class SystemPromptComposedEvent(WorkingMemoryEvent):
     non_cached_content: str
     conversation_prefix_items: tuple[str, ...]  # Each becomes assistant message before history
     post_history_items: tuple[str, ...]  # Each becomes assistant message after history (BP4)
-    notification_center: str  # Dynamic content for sliding assistant message
+    notification_center: dict[str, str]  # Named fields: section_name -> XML content
 
     @classmethod
     def create(
@@ -167,7 +167,7 @@ class SystemPromptComposedEvent(WorkingMemoryEvent):
         non_cached_content: str,
         conversation_prefix_items: tuple[str, ...] = (),
         post_history_items: tuple[str, ...] = (),
-        notification_center: str = ""
+        notification_center: dict[str, str] | None = None,
     ) -> SystemPromptComposedEvent:
         """Create system prompt composed event with auto-generated metadata."""
         from utils.user_context import get_current_user_id
