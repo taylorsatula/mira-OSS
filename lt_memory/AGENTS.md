@@ -27,7 +27,7 @@
 - `memory_formatter.py` — XML formatting of memories and annotations for prompt inclusion.
 - `batch_result_handlers.py` — `BatchResultProcessor` implementations for extraction, relationship classification, consolidation, and entity GC. `PostProcessingBatchDispatcher` routes by batch type.
 - `__init__.py` — Public re-exports for all shared models and types.
-- `processing/` — Extraction and post-processing pipeline (see `processing/CLAUDE.md`).
+- `processing/` — Extraction and post-processing pipeline (see `processing/AGENTS.md`).
 
 ## Scoring Formula (`scoring_formula.sql`)
 

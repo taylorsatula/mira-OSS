@@ -122,7 +122,7 @@ class ContinuumSearchTool(Tool):
 
     Supports two modes:
     1. search: Find messages matching a query, return truncated previews with confidence
-    2. expand: Retrieve full content of a message plus surrounding context
+    2. expand_message: Retrieve full content of a message plus surrounding context
 
     For ambiguous or low-confidence searches, the tool can trigger agentic deep search
     where an LLM agent reads full continuum segments to find synthesized information.

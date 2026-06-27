@@ -6,11 +6,11 @@ CREATE TABLE IF NOT EXISTS contacts (
     encrypted__name TEXT NOT NULL,
     encrypted__email TEXT,
     encrypted__phone TEXT,
+    encrypted__street TEXT,
+    encrypted__city TEXT,
+    encrypted__state TEXT,
+    encrypted__zip TEXT,
     encrypted__pager_address TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
-
--- Index for case-insensitive name lookups
-CREATE INDEX IF NOT EXISTS idx_contacts_name
-ON contacts(LOWER(encrypted__name));

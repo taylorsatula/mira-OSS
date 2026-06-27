@@ -79,7 +79,7 @@ Don't parameterize what won't vary. Unused parameters confuse maintainers. If yo
 - **Explicit Setting for Administrative Tasks**: For scheduled jobs, batch operations, and cross-user administrative commands, explicitly set context via `set_current_user_id(user_id)` when iterating over users, or use `AdminSession` to bypass RLS entirely when querying across all users.
 
 ### Tool Architecture
-When working with tools, invoke `tool-builder` skill first for comprehensive patterns. Design for single responsibility (extraction tools extract, persistence tools store). Put business logic in system prompts/working_memory, not tools. Use `tools/sample_tool.py` as blueprint. Store tool data in user-specific directories via `self.user_data_path` (JSON for simple data, SQLite for complex, or `self.db` property). Include recovery guidance in error responses. Document tools thoroughly (`docs/TOOL_DEF_BESTPRACTICE.md`). Write tests for success and error paths.
+When working with tools, invoke `tool-builder` skill first for comprehensive patterns and use `tools/HOW_TO_BUILD_A_TOOL.md` plus nearby tools in `tools/implementations/` as references. Design for single responsibility (extraction tools extract, persistence tools store). Put business logic in system prompts/working_memory, not tools. Store tool data in user-specific directories via `self.user_data_path` (JSON for simple data, SQLite for complex, or `self.db` property). Include recovery guidance in error responses. Write tests for success and error paths.
 
 ### LLM Caller Interface Design
 All model-facing prose — system prompts, tool parameter descriptions, agent directives, working memory trinkets — is an interface contract where imprecise language causes real behavioral failures downstream. Every word must constrain behavior: "literal string" not "text," "exact substring" not "pattern," because the reader is a language model that will infer defaults from your word choices. Ground descriptions in actual implementation behavior, not intent. Drop internal jargon the caller has no context for. State co-dependencies inline. If the current wording would cause a caller to misuse the interface, say so flatly and fix it.
@@ -123,10 +123,10 @@ All live LLM transports run through `clients.llm.lifecycle.LLMLifecycle`, which 
 
 **Fallback**: `LLMLifecycle` catches `ProviderStallError` and retryable provider errors and retries once with `claude-high` selected by `ModelResolver`. In the streaming path, a `ProviderSwitchEvent` is yielded to the frontend (type=`provider_switch`) so it can clear partial output and display a persistent "generation hung, retrying…" alert. If the backup also stalls, the timeout fires normally — no double-failover.
 
-When adding new provider transports, implement an adapter under `clients/llm/adapters/` and let `LLMLifecycle` own timeout, fallback, tool execution, and explicit `clients.llm.accounting.UsageAccountingPolicy` finalization. Hosted billing failures are required lifecycle failures; only builds without the billing package disable billing policy.
+When adding new provider transports, implement a dialect under `clients/llm/dialects/` and let `LLMLifecycle` own timeout, fallback, tool execution, and explicit `clients.llm.accounting.UsageAccountingPolicy` finalization. Hosted billing failures are required lifecycle failures; only builds without the billing package disable billing policy.
 
 ### Power-On Self-Test
-MIRA uses POST checks in `utils/power_on_self_test.py`. The pre-server gate (`run_pre_server_post_gate`) is **disabled** as of May 26 (commented out in `main.py`) due to two bugs: (a) report-parse failure in subprocess output extraction, and (b) post-report pool shutdown exceeding deadline. Re-enable after fixing parser + cleanup path. The in-process CLI remains operational: `python -m utils.power_on_self_test pre-server`. The post-server probe at `scripts/post_server_post.py` verifies the already-bound live service through HTTP diagnostics plus direct provider probes. `scripts/__init__.py` exists so operational scripts can run with `python -m scripts.<name>`. POST checks must exercise real infrastructure and must not use mocks.
+MIRA uses POST checks in `utils/power_on_self_test.py`. The pre-server gate (`run_pre_server_post_gate`) runs before Hypercorn binds and launches checks in a subprocess so probe-side singletons cannot leak into the serving process. The in-process CLI remains operational: `python -m utils.power_on_self_test pre-server`. The post-server probe at `scripts/post_server_post.py` verifies the already-bound live service through HTTP diagnostics. `scripts/__init__.py` exists so operational scripts can run with `python -m scripts.<name>`. POST checks must exercise real infrastructure and must not use mocks.
 
 ## ⚡ Performance & Tool Usage
 - **Synchronous Over Async**: Prefer synchronous unless genuine concurrency benefit exists. Only use `async/await` for truly asynchronous operations (network I/O, parallelizable file I/O, external APIs). Async overhead (context switching, event loop, complex calls) hurts performance without actual I/O concurrency. Sync is easier to debug, test, reason about.
@@ -159,8 +159,8 @@ When entering plan mode, invoke the `plan-mode` skill for the concise-plan-vs-AD
 
 ### Documentation References
 - **Tool Creation**: Use the `tool-builder` skill for step-by-step guidance and comprehensive tool development patterns
-- **Tool Documentation**: See `docs/TOOL_DEF_BESTPRACTICE.md` for writing tool descriptions
-- **Reference Implementation**: Use `tools/sample_tool.py` as a blueprint
+- **Tool Documentation**: See `tools/HOW_TO_BUILD_A_TOOL.md` for writing and registering tools
+- **Reference Implementations**: Use nearby tools in `tools/implementations/` as blueprints
 
 ### Pydantic BaseModel Standards
 Use Pydantic BaseModel for structured data (configs, API requests/responses, DTOs, system configs). Always `from pydantic import BaseModel, Field`. Use `Field()` with descriptions and defaults. Complete type annotations required. Add docstrings explaining purpose. Naming: `*Config` for configs, `*Request/*Response` for API models.

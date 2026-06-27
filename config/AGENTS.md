@@ -46,4 +46,4 @@ Algorithm tuning constants were moved from config.py to their consumer modules:
 - `announcement.json` — Active announcement state. Set `id` + `message` to show banner; set both to `null` to suppress. Requires app restart to take effect.
 - `announcement.sample.json` — Reference format for `announcement.json`.
 - `vault.hcl` — Local dev Vault server config (file storage, `127.0.0.1:8200`, no TLS). Consumed by the Vault binary, not Python.
-- `prompts/` — LLM prompt templates for all subsystems. See `prompts/CLAUDE.md`.
+- `prompts/` — LLM prompt templates for all subsystems. See `prompts/AGENTS.md`.

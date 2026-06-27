@@ -92,7 +92,7 @@ The LLM boundary is provider-neutral. Provider-specific request formats, capabil
 ## Beliefs on Open Source Software
 I have been a proponent of OSS since I was a child. My mischievous ass was shoulder surfing the computer lab teachers password so I could install Firefox 2 on every computer in the district. I transfer files using FileZilla. I edit photos with Gimp. I use the foundational technologies that make day-to-day internet usage possible. 
 
-I decided to release MIRA as open source technology because I believe that what I’ve built here has the potential to someday be something more than the sum of its parts and no one man should own that. The MIRA in this repository is effectively identical to the hosted version at [miraos.org](https://miraos.org) except for a web interface and authentication plumbing. I commit to maintaining an open-source version of MIRA for as long as I am in charge of it.
+I decided to release MIRA as open source technology because I believe that what I’ve built here has the potential to someday be something more than the sum of its parts and no one man should own that. The MIRA in this repository includes the local web chat interface and open-source authentication path used by the self-hosted build; the hosted version at [miraos.org](https://miraos.org) adds the managed service experience around it. I commit to maintaining an open-source version of MIRA for as long as I am in charge of it.
 
 ---
 

@@ -276,7 +276,7 @@ async def lifespan(app: FastAPI):
 
     orchestrator = create_cns_orchestrator()
     initialize_orchestrator(orchestrator)
-    logger.info("CNS Orchastrator initialized as global singleton")
+    logger.info("CNS Orchestrator initialized as global singleton")
 
     # Flush Valkey caches on startup except auth sessions and rate limiting
     logger.info("Flushing Valkey caches (preserving sessions and rate limits)...")
@@ -341,7 +341,6 @@ async def lifespan(app: FastAPI):
     logger.info("MIRA startup complete")
     
     yield
-    ## @CLAUDE what is this for? ^^
     
     # Shutdown
     logger.info("Shutting down MIRA...")
@@ -594,12 +593,8 @@ def main():
         else:
             hypercorn_config.workers = config.api_server.workers
 
-        # TEMP 2026-05-26: pre-server POST gate disabled. All individual checks
-        # pass but the gate fails on (a) report-parse and (b) post-report pool
-        # shutdown blowing the deadline. Re-enable after fixing parser + cleanup
-        # path in utils/power_on_self_test.py.
-        # from utils.power_on_self_test import run_pre_server_post_gate
-        # run_pre_server_post_gate()
+        from utils.power_on_self_test import run_pre_server_post_gate
+        run_pre_server_post_gate()
         
         # Run the server — Hypercorn manages SIGTERM/SIGINT natively
         asyncio.run(hypercorn.asyncio.serve(create_app(), hypercorn_config))

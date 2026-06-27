@@ -206,6 +206,21 @@ class PagerTool(Tool):
     """
     
     description = simple_description + implementation_details
+
+    @staticmethod
+    def _pager_name(device_row: Dict[str, Any]) -> Optional[str]:
+        """Return display name from the encrypted schema, with legacy fallback only."""
+        return device_row.get("encrypted__name") or device_row.get("name")
+
+    @staticmethod
+    def _pager_description(device_row: Dict[str, Any]) -> Optional[str]:
+        """Return display description from the encrypted schema, with legacy fallback only."""
+        return device_row.get("encrypted__description") or device_row.get("description")
+
+    @staticmethod
+    def _trusted_name(trust_row: Dict[str, Any]) -> Optional[str]:
+        """Return trusted device display name from the encrypted schema."""
+        return trust_row.get("encrypted__trusted_name") or trust_row.get("trusted_name")
     
     usage_examples = [
         {
@@ -335,6 +350,7 @@ class PagerTool(Tool):
             # Create federated message record
             message_data = {
                 'id': message_id,
+                'user_id': self.user_id,
                 'sender_id': from_address,  # Federated address as sender
                 'recipient_id': pager_id,
                 'encrypted__content': content,
@@ -392,17 +408,32 @@ class PagerTool(Tool):
         """Convert device row to dictionary (UTC timestamps, frontend handles display conversion)."""
         return {
             "id": device_row["id"],
-            "name": device_row["name"],
-            "description": device_row["description"],
+            "name": self._pager_name(device_row),
+            "description": self._pager_description(device_row),
             "created_at": device_row["created_at"],  # UTC timestamp
             "last_active": device_row["last_active"],  # UTC timestamp
             "active": device_row["active"],
             "device_fingerprint": device_row["device_fingerprint"]
         }
+
+    def _decrypt_row_safely(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        """Decrypt encrypted__ fields without failing on rows already decrypted by select()."""
+        decrypted = {}
+        for key, value in row.items():
+            if key.startswith("encrypted__") and value is not None:
+                try:
+                    decrypted[key] = self.db._decrypt_value(value)
+                except Exception:
+                    decrypted[key] = value
+            else:
+                decrypted[key] = value
+        return decrypted
     
     def _message_to_dict(self, message_row: Dict[str, Any], sender_name: str = None, recipient_name: str = None) -> Dict[str, Any]:
         """Convert message row to dictionary (UTC timestamps, frontend handles display conversion)."""
-        decrypted = self.db._decrypt_dict(message_row)
+        decrypted = self._decrypt_row_safely(message_row)
+        sender_name = sender_name if sender_name is not None else decrypted.get("encrypted__sender_name")
+        recipient_name = recipient_name if recipient_name is not None else decrypted.get("encrypted__recipient_name")
         return {
             "id": decrypted["id"],
             "sender_id": decrypted["sender_id"],
@@ -561,6 +592,7 @@ class PagerTool(Tool):
         try:
             device_data = {
                 "id": pager_id,
+                "user_id": self.user_id,
                 "encrypted__name": device_name,
                 "encrypted__description": device_description,
                 "created_at": utc_now().isoformat(),
@@ -971,6 +1003,7 @@ class PagerTool(Tool):
         # Create the message data
         message_data = {
             "id": message_id,
+            "user_id": self.user_id,
             "sender_id": sender_id,
             "recipient_id": recipient_pager_id,
             "encrypted__content": content,
@@ -997,7 +1030,11 @@ class PagerTool(Tool):
             raise RuntimeError(f"Failed to send message: {str(e)}") from e
             
         result = {
-            "message": self._message_to_dict(message_result, sender['name'], recipient_device['name']),
+            "message": self._message_to_dict(
+                message_result,
+                self._pager_name(sender),
+                self._pager_name(recipient_device),
+            ),
             "status": "delivered"
         }
         
@@ -1046,7 +1083,9 @@ class PagerTool(Tool):
         
         # Query messages
         query = """
-        SELECT m.*, s.name as sender_name, r.name as recipient_name
+        SELECT m.*,
+               s.encrypted__name as encrypted__sender_name,
+               r.encrypted__name as encrypted__recipient_name
         FROM pager_messages m
         LEFT JOIN pager_devices s ON m.sender_id = s.id
         LEFT JOIN pager_devices r ON m.recipient_id = r.id
@@ -1068,7 +1107,7 @@ class PagerTool(Tool):
         # Check trust status for each message
         message_list = []
         for msg in messages:
-            msg_dict = self._message_to_dict(msg, msg['sender_name'], msg['recipient_name'])
+            msg_dict = self._message_to_dict(msg)
             
             # Check if we trust this sender
             trust_status = self._check_trust_status(
@@ -1085,7 +1124,7 @@ class PagerTool(Tool):
             "messages": message_list,
             "count": len(message_list),
             "pager_id": pager_id,
-            "pager_name": device['name'],
+            "pager_name": self._pager_name(device),
             "filters": {
                 "unread_only": unread_only
             }
@@ -1123,7 +1162,9 @@ class PagerTool(Tool):
             
         # Query messages
         query = """
-        SELECT m.*, s.name as sender_name, r.name as recipient_name
+        SELECT m.*,
+               s.encrypted__name as encrypted__sender_name,
+               r.encrypted__name as encrypted__recipient_name
         FROM pager_messages m
         LEFT JOIN pager_devices s ON m.sender_id = s.id
         LEFT JOIN pager_devices r ON m.recipient_id = r.id
@@ -1138,13 +1179,13 @@ class PagerTool(Tool):
         query += " ORDER BY m.sent_at DESC"
         
         messages = self.db.execute(query, params)
-        message_list = [self._message_to_dict(msg, msg['sender_name'], msg['recipient_name']) for msg in messages]
+        message_list = [self._message_to_dict(msg) for msg in messages]
             
         return {
             "messages": message_list,
             "count": len(message_list),
             "pager_id": pager_id,
-            "pager_name": device['name'],
+            "pager_name": self._pager_name(device),
             "filters": {
                 "include_expired": include_expired
             }
@@ -1289,7 +1330,11 @@ class PagerTool(Tool):
             updated_device = updated_devices[0]
             return {
                 "device": self._device_to_dict(updated_device),
-                "message": f"Pager device '{updated_device['name']}' deactivated successfully"
+                "message": (
+                    "Pager device "
+                    f"'{self._pager_name(updated_device)}' "
+                    "deactivated successfully"
+                )
             }
         else:
             raise RuntimeError(f"Failed to retrieve updated device: {pager_id}")
@@ -1437,10 +1482,14 @@ Provide ONLY the distilled message, no explanations or meta-text."""
             'id = :trusted_device_id',
             {'trusted_device_id': trusted_device_id}
         )
-        sender_name = senders[0]['name'] if senders else "Unknown"
+        sender_name = (
+            self._pager_name(senders[0])
+            if senders else "Unknown"
+        )
         
         trust_data = {
             'id': f"TRUST-{uuid.uuid4().hex[:8].upper()}",
+            'user_id': self.user_id,
             'trusting_device_id': trusting_device_id,
             'trusted_device_id': trusted_device_id,
             'trusted_fingerprint': trusted_fingerprint,
@@ -1485,7 +1534,7 @@ Provide ONLY the distilled message, no explanations or meta-text."""
         for trust in trusts:
             trust_list.append({
                 "trusted_device_id": trust["trusted_device_id"],
-                "trusted_name": trust["trusted_name"],
+                "trusted_name": self._trusted_name(trust),
                 "trusted_fingerprint": trust["trusted_fingerprint"],
                 "first_seen": format_datetime(trust["first_seen"], "date_time", get_default_timezone()),
                 "last_verified": format_datetime(trust["last_verified"], "date_time", get_default_timezone()),
@@ -1494,7 +1543,7 @@ Provide ONLY the distilled message, no explanations or meta-text."""
         
         return {
             "pager_id": pager_id,
-            "pager_name": device["name"],
+            "pager_name": self._pager_name(device),
             "trusted_devices": trust_list,
             "count": len(trust_list)
         }

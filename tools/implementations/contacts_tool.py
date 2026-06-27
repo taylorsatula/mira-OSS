@@ -53,7 +53,7 @@ class ContactsTool(Tool):
 
     name = "contacts_tool"
     
-    simple_description = "Store and retrieve contact information (name, email, phone). Search by name or view all contacts. Link reminders to a specific person's UUID."
+    simple_description = "Store and retrieve contact information (name, email, phone, address, pager address). Search by name or view all contacts. Link reminders to a specific person's UUID."
     tool_schema = {
         "name": "contacts_tool",
         "description": "Manages personal contacts with basic CRUD operations. Each contact has a unique UUID for linking to other tools.",
@@ -79,19 +79,19 @@ class ContactsTool(Tool):
                     },
                     "street": {
                         "type": "string",
-                        "description": "Street address (optional)"
+                        "description": "Street address (optional for add_contact and update_contact)"
                     },
                     "city": {
                         "type": "string",
-                        "description": "City (optional)"
+                        "description": "City (optional for add_contact and update_contact)"
                     },
                     "state": {
                         "type": "string",
-                        "description": "State (optional)"
+                        "description": "State (optional for add_contact and update_contact)"
                     },
                     "zip": {
                         "type": "string",
-                        "description": "ZIP code (optional)"
+                        "description": "ZIP code (optional for add_contact and update_contact)"
                     },
                     "identifier": {
                         "type": "string",
@@ -111,6 +111,25 @@ class ContactsTool(Tool):
         """Initialize the contacts tool."""
         super().__init__()
         self.logger = logging.getLogger(__name__)
+
+    def _format_contact(self, contact: Dict[str, Any]) -> Dict[str, Any]:
+        """Format a contact using the encrypted field contract."""
+        formatted = {
+            "uuid": contact["id"],
+            "encrypted__name": contact.get("encrypted__name"),
+            "encrypted__email": contact.get("encrypted__email"),
+            "encrypted__phone": contact.get("encrypted__phone"),
+            "encrypted__street": contact.get("encrypted__street"),
+            "encrypted__city": contact.get("encrypted__city"),
+            "encrypted__state": contact.get("encrypted__state"),
+            "encrypted__zip": contact.get("encrypted__zip"),
+            "encrypted__pager_address": contact.get("encrypted__pager_address"),
+        }
+        if "created_at" in contact:
+            formatted["created_at"] = contact["created_at"]
+        if "updated_at" in contact:
+            formatted["updated_at"] = contact["updated_at"]
+        return formatted
 
     def _find_by_identifier(self, identifier: str) -> Dict[str, Any]:
         """Helper to resolve an identifier to a specific contact or candidates.
@@ -144,13 +163,7 @@ class ContactsTool(Tool):
             if len(starts) == 1:
                 return {"contact": starts[0], "matched_by": "partial"}
             # Multiple starts-with matches
-            formatted = [{
-                'uuid': c['id'],
-                'encrypted__name': c.get('encrypted__name'),
-                'encrypted__email': c.get('encrypted__email'),
-                'encrypted__phone': c.get('encrypted__phone'),
-                'encrypted__pager_address': c.get('encrypted__pager_address')
-            } for c in starts[:10]]
+            formatted = [self._format_contact(c) for c in starts[:10]]
             return {"ambiguous": True, "matches": formatted}
 
         # No starts-with matches, check contains
@@ -159,13 +172,7 @@ class ContactsTool(Tool):
         if len(contains) == 1:
             return {"contact": contains[0], "matched_by": "partial"}
         if len(contains) > 1:
-            formatted = [{
-                'uuid': c['id'],
-                'encrypted__name': c.get('encrypted__name'),
-                'encrypted__email': c.get('encrypted__email'),
-                'encrypted__phone': c.get('encrypted__phone'),
-                'encrypted__pager_address': c.get('encrypted__pager_address')
-            } for c in contains[:10]]
+            formatted = [self._format_contact(c) for c in contains[:10]]
             return {"ambiguous": True, "matches": formatted}
 
         return {}
@@ -253,7 +260,7 @@ class ContactsTool(Tool):
                 return {
                     "success": True,
                     "duplicate": True,
-                    "contact": contact,
+                    "contact": self._format_contact(contact),
                     "message": f"Contact '{name}' already exists (returning existing contact)"
                 }
         
@@ -281,19 +288,7 @@ class ContactsTool(Tool):
         # Return formatted response
         return {
             "success": True,
-            "contact": {
-                "uuid": contact_id,
-                "encrypted__name": name,
-                "encrypted__email": email,
-                "encrypted__phone": phone,
-                "encrypted__street": street,
-                "encrypted__city": city,
-                "encrypted__state": state,
-                "encrypted__zip": zip,
-                "encrypted__pager_address": pager_address,
-                "created_at": timestamp,
-                "updated_at": timestamp
-            },
+            "contact": self._format_contact(contact_data),
             "message": f"Added contact {name}"
         }
 
@@ -384,15 +379,7 @@ class ContactsTool(Tool):
         contact = resolved['contact']
         return {
             "success": True,
-            "contact": {
-                "uuid": contact['id'],
-                "encrypted__name": contact['encrypted__name'],
-                "encrypted__email": contact['encrypted__email'],
-                "encrypted__phone": contact['encrypted__phone'],
-                "encrypted__pager_address": contact.get('encrypted__pager_address'),
-                "created_at": contact['created_at'],
-                "updated_at": contact['updated_at']
-            },
+            "contact": self._format_contact(contact),
             "matched_by": resolved.get('matched_by'),
             "message": f"Found contact {contact['encrypted__name']} (matched by {resolved.get('matched_by')})"
         }
@@ -409,15 +396,7 @@ class ContactsTool(Tool):
         # Format contacts for response
         formatted_contacts = []
         for contact in contacts:
-            formatted_contacts.append({
-                "uuid": contact['id'],
-                "encrypted__name": contact['encrypted__name'],
-                "encrypted__email": contact['encrypted__email'],
-                "encrypted__phone": contact['encrypted__phone'],
-                "encrypted__pager_address": contact.get('encrypted__pager_address'),
-                "created_at": contact['created_at'],
-                "updated_at": contact['updated_at']
-            })
+            formatted_contacts.append(self._format_contact(contact))
         
         return {
             "success": True,
@@ -458,9 +437,7 @@ class ContactsTool(Tool):
             return {
                 "success": False,
                 "needs_confirmation": True,
-                "candidate": {
-                    'uuid': c['id'], 'encrypted__name': c.get('encrypted__name'), 'encrypted__email': c.get('encrypted__email'), 'encrypted__phone': c.get('encrypted__phone'), 'encrypted__pager_address': c.get('encrypted__pager_address')
-                },
+                "candidate": self._format_contact(c),
                 "message": f"Delete candidate matched by partial name. Re-run with UUID {c['id']} to confirm."
             }
         contact = resolved['contact']
@@ -474,19 +451,14 @@ class ContactsTool(Tool):
 
         return {
             "success": True,
-            "deleted_contact": {
-                "uuid": contact['id'],
-                "encrypted__name": contact['encrypted__name'],
-                "encrypted__email": contact['encrypted__email'],
-                "encrypted__phone": contact['encrypted__phone'],
-                "encrypted__pager_address": contact.get('encrypted__pager_address'),
-                "created_at": contact['created_at']
-            },
+            "deleted_contact": self._format_contact(contact),
             "message": f"Deleted contact {contact['encrypted__name']}"
         }
     
     def _update_contact(self, identifier: str, name: Optional[str] = None,
                        email: Optional[str] = None, phone: Optional[str] = None,
+                       street: Optional[str] = None, city: Optional[str] = None,
+                       state: Optional[str] = None, zip: Optional[str] = None,
                        pager_address: Optional[str] = None) -> Dict[str, Any]:
         """
         Update an existing contact.
@@ -496,6 +468,10 @@ class ContactsTool(Tool):
             name: New name
             email: New email
             phone: New phone
+            street: New street address
+            city: New city
+            state: New state
+            zip: New ZIP code
             pager_address: New pager address
 
         Returns:
@@ -523,17 +499,21 @@ class ContactsTool(Tool):
             return {
                 "success": False,
                 "needs_confirmation": True,
-                "candidate": {
-                    'uuid': c['id'], 'encrypted__name': c.get('encrypted__name'), 'encrypted__email': c.get('encrypted__email'), 'encrypted__phone': c.get('encrypted__phone'), 'encrypted__pager_address': c.get('encrypted__pager_address')
-                },
+                "candidate": self._format_contact(c),
                 "message": f"Update candidate matched by partial name. Re-run with UUID {c['id']} to confirm."
             }
         contact = resolved['contact']
 
         # Require at least one field to update (beyond timestamp)
-        if name is None and email is None and phone is None and pager_address is None:
+        if all(
+            value is None
+            for value in (name, email, phone, street, city, state, zip, pager_address)
+        ):
             self.logger.error("No update fields provided in update_contact operation")
-            raise ValueError("At least one of name, email, phone, or pager_address must be provided to update")
+            raise ValueError(
+                "At least one of name, email, phone, street, city, state, zip, "
+                "or pager_address must be provided to update"
+            )
 
         # If renaming, prevent duplicates (case-insensitive) to preserve unique names
         if name is not None:
@@ -552,6 +532,14 @@ class ContactsTool(Tool):
             update_data['encrypted__email'] = email
         if phone is not None:
             update_data['encrypted__phone'] = phone
+        if street is not None:
+            update_data['encrypted__street'] = street
+        if city is not None:
+            update_data['encrypted__city'] = city
+        if state is not None:
+            update_data['encrypted__state'] = state
+        if zip is not None:
+            update_data['encrypted__zip'] = zip
         if pager_address is not None:
             update_data['encrypted__pager_address'] = pager_address
         
@@ -574,15 +562,7 @@ class ContactsTool(Tool):
             updated_contact = updated_contacts[0]
             return {
                 "success": True,
-                "contact": {
-                    "uuid": updated_contact['id'],
-                    "encrypted__name": updated_contact['encrypted__name'],
-                    "encrypted__email": updated_contact['encrypted__email'],
-                    "encrypted__phone": updated_contact['encrypted__phone'],
-                    "encrypted__pager_address": updated_contact.get('encrypted__pager_address'),
-                    "created_at": updated_contact['created_at'],
-                    "updated_at": updated_contact['updated_at']
-                },
+                "contact": self._format_contact(updated_contact),
                 "message": f"Updated contact {updated_contact['encrypted__name']}"
             }
         

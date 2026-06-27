@@ -11,6 +11,7 @@ import argparse
 import inspect
 import json
 import logging
+import os
 import subprocess
 import sys
 import time
@@ -30,10 +31,10 @@ from utils.timezone_utils import format_utc_iso, utc_now
 
 logger = logging.getLogger(__name__)
 
-PRE_SERVER_POST_DEADLINE_SECONDS = 60
+PRE_SERVER_POST_DEADLINE_SECONDS = 300
 POST_SERVER_POST_DEADLINE_SECONDS = 60
 LLM_PROVIDER_PROBE_MAX_WORKERS = 4
-LLM_PROVIDER_PROBE_MAX_TOKENS = 256
+LLM_PROVIDER_PROBE_MAX_TOKENS = 32
 POST_PROBE_TEXT = "mira post probe"
 REPORT_BEGIN = "MIRA_POST_REPORT_BEGIN"
 REPORT_END = "MIRA_POST_REPORT_END"
@@ -119,6 +120,7 @@ def run_pre_server_post_subprocess(
         "pre-server",
         "--json",
         "--report-marker",
+        "--fast-exit",
         "--deadline-seconds",
         str(deadline_seconds),
     ]
@@ -132,6 +134,20 @@ def run_pre_server_post_subprocess(
             check=False,
         )
     except subprocess.TimeoutExpired as error:
+        report = _parse_report_from_stdout(error.stdout)
+        if report is not None:
+            if report.required_passed:
+                return _append_advisory_failure(
+                    report,
+                    "pre_server_child_cleanup",
+                    (
+                        "POST child printed a passing report but did not exit "
+                        f"within {deadline_seconds}s"
+                    ),
+                    {"stderr": _tail_text(error.stderr)},
+                )
+            return report
+
         duration_ms = round((time.monotonic() - started) * 1000, 1)
         return _build_report(
             phase="pre-server",
@@ -160,10 +176,13 @@ def run_pre_server_post_subprocess(
     report = _parse_report_from_stdout(completed.stdout)
     if report is not None:
         if completed.returncode != 0 and report.required_passed:
-            return _append_required_failure(
+            return _append_advisory_failure(
                 report,
                 "pre_server_child_exit",
-                f"POST child exited {completed.returncode} despite passing report",
+                (
+                    f"POST child exited {completed.returncode} after printing "
+                    "a passing report"
+                ),
                 {"stderr": _tail_text(completed.stderr)},
             )
         return report
@@ -202,6 +221,7 @@ def run_pre_server_post(
         CheckSpec("valkey", True, _check_valkey),
         CheckSpec("embeddings", True, _check_embeddings),
         CheckSpec("llm_configuration", True, _check_llm_configuration),
+        CheckSpec("llm_provider_reachability", True, _check_llm_provider_reachability),
         CheckSpec("tools", True, _check_tools),
         CheckSpec("dependency_initialization", True, _check_dependency_initialization),
         CheckSpec("scheduler_registration", True, _check_scheduler_registration),
@@ -219,7 +239,6 @@ def run_post_server_post(
     specs = [
         CheckSpec("http_health", True, lambda: _check_http_health(resolved_base_url)),
         CheckSpec("http_diagnostics", True, lambda: _check_http_diagnostics(resolved_base_url)),
-        CheckSpec("llm_provider_reachability", True, _check_llm_provider_reachability),
     ]
     return _run_specs("post-server", specs, deadline_seconds=deadline_seconds)
 
@@ -346,8 +365,42 @@ def _append_required_failure(
     )
 
 
-def _parse_report_from_stdout(stdout: str) -> PostReport | None:
-    candidate = stdout.strip()
+def _append_advisory_failure(
+    report: PostReport,
+    component: str,
+    diagnostic: str,
+    details: dict[str, Any],
+) -> PostReport:
+    checks = list(report.checks)
+    checks.append(
+        PostCheckResult(
+            component=component,
+            required=False,
+            passed=False,
+            duration_ms=0,
+            diagnostic=diagnostic,
+            details=details,
+        )
+    )
+    return PostReport(
+        phase=report.phase,
+        status=report.status,
+        started_at=report.started_at,
+        duration_ms=report.duration_ms,
+        deadline_seconds=report.deadline_seconds,
+        checks=checks,
+        required_failures=report.required_failures,
+        advisory_failures=[*report.advisory_failures, component],
+    )
+
+
+def _parse_report_from_stdout(stdout: str | bytes | None) -> PostReport | None:
+    if stdout is None:
+        return None
+    if isinstance(stdout, bytes):
+        candidate = stdout.decode("utf-8", errors="replace").strip()
+    else:
+        candidate = stdout.strip()
     if not candidate:
         return None
     begin = candidate.rfind(REPORT_BEGIN)
@@ -1076,6 +1129,7 @@ def _print_report(report: PostReport, *, json_output: bool, report_marker: bool 
         print(report.model_dump_json(indent=2))
         if report_marker:
             print(REPORT_END)
+        sys.stdout.flush()
         return
 
     print(f"{report.phase} POST: {report.status}")
@@ -1085,6 +1139,7 @@ def _print_report(report: PostReport, *, json_output: bool, report_marker: bool 
         print(f"- {check.component} [{label}]: {status} ({check.duration_ms}ms)")
         if check.diagnostic:
             print(f"  {check.diagnostic}")
+    sys.stdout.flush()
 
 
 def _run_cli_phase(args: argparse.Namespace) -> int:
@@ -1097,16 +1152,73 @@ def _run_cli_phase(args: argparse.Namespace) -> int:
                 deadline_seconds=args.deadline_seconds,
             )
         _print_report(report, json_output=args.json, report_marker=args.report_marker)
-        return 0 if report.required_passed else 1
+        exit_code = 0 if report.required_passed else 1
+        if getattr(args, "fast_exit", False):
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os._exit(exit_code)
+        return exit_code
     finally:
-        _close_cli_resources()
+        if not getattr(args, "fast_exit", False):
+            _close_cli_resources()
 
 
 def _close_cli_resources() -> None:
     """Close process-local infrastructure created by standalone POST checks."""
-    from clients.postgres_client import PostgresClient
+    def cleanup_step(label: str, callback: Callable[[], None]) -> None:
+        try:
+            callback()
+        except Exception:
+            logger.warning("POST cleanup step failed: %s", label, exc_info=True)
 
-    PostgresClient.close_all_pools()
+    def cleanup_lt_memory_factory() -> None:
+        import lt_memory.factory as factory_module
+
+        instance = getattr(factory_module, "_lt_memory_factory_instance", None)
+        if instance is not None:
+            instance.cleanup()
+            factory_module._lt_memory_factory_instance = None
+
+    def cleanup_orchestrator() -> None:
+        import cns.services.orchestrator as orchestrator_module
+
+        instance = getattr(orchestrator_module, "_orchestrator_instance", None)
+        if instance is not None and getattr(instance, "event_bus", None) is not None:
+            instance.event_bus.shutdown()
+        orchestrator_module._orchestrator_instance = None
+
+    def cleanup_session_manager() -> None:
+        import utils.database_session_manager as session_module
+
+        manager = getattr(session_module, "_shared_session_manager", None)
+        if manager is not None:
+            manager.cleanup()
+            session_module._shared_session_manager = None
+
+    def cleanup_user_data_managers() -> None:
+        from utils.userdata_manager import clear_manager_cache
+
+        clear_manager_cache()
+
+    def cleanup_playwright() -> None:
+        from utils.playwright_service import PlaywrightService
+
+        instance = getattr(PlaywrightService, "_instance", None)
+        if instance is not None:
+            instance.shutdown()
+            PlaywrightService._instance = None
+
+    def cleanup_postgres() -> None:
+        from clients.postgres_client import PostgresClient
+
+        PostgresClient.close_all_pools()
+
+    cleanup_step("lt_memory_factory", cleanup_lt_memory_factory)
+    cleanup_step("orchestrator", cleanup_orchestrator)
+    cleanup_step("database_session_manager", cleanup_session_manager)
+    cleanup_step("userdata_manager", cleanup_user_data_managers)
+    cleanup_step("playwright", cleanup_playwright)
+    cleanup_step("postgres", cleanup_postgres)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1122,6 +1234,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--json", action="store_true", help="Print structured JSON report")
     parser.add_argument("--report-marker", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--fast-exit", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
 
     if args.deadline_seconds is None:

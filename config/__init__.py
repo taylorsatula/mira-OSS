@@ -18,7 +18,7 @@ Usage:
     api_key = config.require("api.key")
     
     # For tool configurations
-    timeout = config.sample_tool.timeout
+    enabled = config.web_tool.enabled
 """
 
 # First, initialize the registry (which has no dependencies)

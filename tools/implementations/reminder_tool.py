@@ -1166,7 +1166,7 @@ class ReminderTool(Tool):
             # Search for contact by name (case-insensitive)
             name_lower = name.lower()
             for contact in contacts:
-                contact_name = contact.get("name", "").lower()
+                contact_name = (contact.get("encrypted__name") or "").lower()
                 if name_lower in contact_name or contact_name in name_lower:
                     return {
                         "contact": contact,

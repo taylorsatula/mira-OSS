@@ -11,6 +11,7 @@ import email.message
 import email.parser
 import email.utils
 import imaplib
+import json
 import re
 import smtplib
 import ssl
@@ -134,27 +135,27 @@ class EmailTool(Tool):
     
     - get_email_content: Get full content of a specific email
       Parameters:
-        email_id (required): UUID of the email to retrieve
+        email_id (required): Email ID in folder:uid format
         folder (optional, default="INBOX"): Email folder containing the email
     
     - mark_as_read: Mark an email as read
       Parameters:
-        email_id (required): UUID of the email to mark
+        email_id (required): Email ID in folder:uid format
         folder (optional, default="INBOX"): Email folder containing the email
     
     - mark_as_unread: Mark an email as unread
       Parameters:
-        email_id (required): UUID of the email to mark
+        email_id (required): Email ID in folder:uid format
         folder (optional, default="INBOX"): Email folder containing the email
     
     - delete_email: Delete an email
       Parameters:
-        email_id (required): UUID of the email to delete
+        email_id (required): Email ID in folder:uid format
         folder (optional, default="INBOX"): Email folder containing the email
     
     - move_email: Move an email to another folder
       Parameters:
-        email_id (required): UUID of the email to move
+        email_id (required): Email ID in folder:uid format
         destination_folder (required): Folder to move the email to
         folder (optional, default="INBOX"): Source folder containing the email
     
@@ -168,7 +169,7 @@ class EmailTool(Tool):
     
     - reply_to_email: Reply to an existing email
       Parameters:
-        email_id (required): UUID of the email to reply to
+        email_id (required): Email ID in folder:uid format
         body (required): Reply content
         folder (optional, default="INBOX"): Email folder containing the email
         cc (optional): CC recipient(s)
@@ -198,7 +199,7 @@ class EmailTool(Tool):
       
     - mark_for_later_reply: Mark an email to be replied to later in the continuum
       Parameters:
-        email_id (required): UUID of the email to mark
+        email_id (required): Email ID in folder:uid format
         
     - get_emails_for_later_reply: Get list of emails marked for later reply
       Parameters: None
@@ -230,7 +231,7 @@ class EmailTool(Tool):
                     },
                     "email_id": {
                         "type": "string",
-                        "description": "UUID of a specific email for operations that work on a single email"
+                        "description": "Email ID in folder:uid format for operations that work on a single email"
                     },
                     "unread_only": {
                         "type": "boolean",
@@ -427,7 +428,6 @@ class EmailTool(Tool):
         # Session state
         self.connection = None
         self.selected_folder = None
-        self.emails_for_later_reply = set()
         self.default_max_emails = 20
 
     def _load_config(self):
@@ -610,6 +610,43 @@ class EmailTool(Tool):
             Email identifier string in format "folder:uid"
         """
         return f"{folder}:{uid}"
+
+    def _later_reply_file(self):
+        """User-scoped persistence for emails marked for later reply."""
+        return self.user_data_path / "later_replies.json"
+
+    def _load_later_reply_ids(self) -> set[str]:
+        """Load persisted later-reply IDs."""
+        path = self._later_reply_file()
+        if not path.exists():
+            return set()
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            if not isinstance(data, list):
+                return set()
+            return {item for item in data if isinstance(item, str)}
+        except Exception as e:
+            self.logger.warning(f"Failed to load later-reply email IDs: {e}")
+            return set()
+
+    def _save_later_reply_ids(self, email_ids: set[str]) -> None:
+        """Persist later-reply IDs in stable order."""
+        path = self._later_reply_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as handle:
+            json.dump(sorted(email_ids), handle, indent=2)
+
+    def _add_later_reply_id(self, email_id: str) -> None:
+        email_ids = self._load_later_reply_ids()
+        email_ids.add(email_id)
+        self._save_later_reply_ids(email_ids)
+
+    def _remove_later_reply_id(self, email_id: str) -> None:
+        email_ids = self._load_later_reply_ids()
+        if email_id in email_ids:
+            email_ids.remove(email_id)
+            self._save_later_reply_ids(email_ids)
 
     def _parse_email_id(self, email_id: str) -> tuple[str, int]:
         """
@@ -1049,7 +1086,7 @@ class EmailTool(Tool):
         Args:
             operation: The operation to perform (get_emails, get_email_content, etc.)
             folder: Email folder to access (default: "INBOX")
-            email_id: UUID of a specific email
+            email_id: Email ID in folder:uid format
             unread_only: Whether to only return unread emails
             load_content: Whether to load full email content
             sender: Sender email address or name to search for
@@ -1289,9 +1326,7 @@ class EmailTool(Tool):
                     # Expunge the message
                     self.connection.expunge()
 
-                    # Remove from later reply set if present
-                    if email_id in self.emails_for_later_reply:
-                        self.emails_for_later_reply.remove(email_id)
+                    self._remove_later_reply_id(email_id)
 
                     self._log_audit("delete_email", f"delete {email_id}", reasoning, "success")
                     return {
@@ -1340,9 +1375,8 @@ class EmailTool(Tool):
                         # Expunge
                         self.connection.expunge()
 
-                    # Remove from later reply set if present (email_id is no longer valid after move)
-                    if email_id in self.emails_for_later_reply:
-                        self.emails_for_later_reply.remove(email_id)
+                    # email_id is no longer valid after move.
+                    self._remove_later_reply_id(email_id)
 
                     self._log_audit("move_email", f"move {email_id} to {destination_folder}", reasoning, "success")
                     return {
@@ -1540,9 +1574,7 @@ class EmailTool(Tool):
                     if not self._set_flag(email_id, "\\Answered", True):
                         self.logger.warning(f"Failed to mark email {email_id} as answered")
 
-                    # Remove from later reply set if present
-                    if email_id in self.emails_for_later_reply:
-                        self.emails_for_later_reply.remove(email_id)
+                    self._remove_later_reply_id(email_id)
 
                     self._log_audit("reply_to_email", f"reply to {email_id}", reasoning, "success")
                     return {
@@ -1716,8 +1748,7 @@ class EmailTool(Tool):
                 except ValueError as e:
                     raise ValueError(f"Invalid email_id format: {e}")
 
-                # Add to later reply set
-                self.emails_for_later_reply.add(email_id)
+                self._add_later_reply_id(email_id)
 
                 return {
                     "success": True,
@@ -1726,7 +1757,7 @@ class EmailTool(Tool):
                 }
 
             elif operation == "get_emails_for_later_reply":
-                email_ids = list(self.emails_for_later_reply)
+                email_ids = sorted(self._load_later_reply_ids())
 
                 # Get details for each email
                 emails = []

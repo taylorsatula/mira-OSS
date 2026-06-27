@@ -84,7 +84,7 @@ class WhileTheCatsAwayTool(Tool):
                     ),
                 },
             },
-            "required": ["topic", "context"],
+            "required": ["topic"],
         },
     }
 

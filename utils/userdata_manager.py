@@ -107,11 +107,9 @@ class UserDataManager:
     def _initialize_tool_schemas(self):
         """Initialize database schemas for all tools.
 
-        TODO: Move schema migrations out of this hot path into standalone
-        scripts (scripts/migrations/) with a version table per user DB.
-        Running migrations on every UserDataManager instantiation is fragile —
-        migration ordering bugs caused a production outage (archived index
-        before column existed).
+        Schema ownership is intentionally inline while migrations are small and
+        additive. If user DB migrations become order-sensitive again, introduce
+        versioned migrations instead of growing this startup path.
         """
         logger.info(f"Initializing tool schemas for user {self.user_id}")
 
@@ -120,6 +118,9 @@ class UserDataManager:
 
         # Initialize Domaindoc schema
         self._init_domaindoc_schema()
+
+        # Initialize ContactsTool schema
+        self._init_contacts_schema()
 
         # Initialize trigger rules schema (sidebar agent trigger filters)
         self._init_trigger_rules_schema()
@@ -138,8 +139,8 @@ class UserDataManager:
         CREATE TABLE IF NOT EXISTS pager_devices (
             id TEXT PRIMARY KEY,
             user_id UUID NOT NULL,
-            name TEXT NOT NULL,
-            description TEXT,
+            encrypted__name TEXT NOT NULL,
+            encrypted__description TEXT,
             created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
             last_active TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
             device_secret TEXT NOT NULL,
@@ -156,7 +157,7 @@ class UserDataManager:
             trusting_device_id TEXT NOT NULL,
             trusted_device_id TEXT NOT NULL,
             trusted_fingerprint TEXT NOT NULL,
-            trusted_name TEXT,
+            encrypted__trusted_name TEXT,
             first_seen TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
             last_verified TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
             trust_status TEXT NOT NULL DEFAULT 'trusted',
@@ -206,10 +207,63 @@ class UserDataManager:
         cursor.execute(trust_sql)
         cursor.execute(messages_sql)
 
+        self._migrate_pager_schema(cursor)
+
         # Create indexes
         for index_sql in indexes_sql:
             cursor.execute(index_sql)
 
+        self.connection.commit()
+
+    def _migrate_pager_schema(self, cursor: sqlite3.Cursor) -> None:
+        """Add encrypted pager columns to existing per-user databases."""
+        cursor.execute("PRAGMA table_info(pager_devices)")
+        device_columns = {row[1] for row in cursor.fetchall()}
+
+        if "encrypted__name" not in device_columns:
+            cursor.execute("ALTER TABLE pager_devices ADD COLUMN encrypted__name TEXT")
+            logger.info("Migrated pager_devices: added encrypted__name column")
+        if "encrypted__description" not in device_columns:
+            cursor.execute("ALTER TABLE pager_devices ADD COLUMN encrypted__description TEXT")
+            logger.info("Migrated pager_devices: added encrypted__description column")
+
+        if "name" in device_columns:
+            rows = cursor.execute(
+                "SELECT id, name FROM pager_devices "
+                "WHERE name IS NOT NULL AND encrypted__name IS NULL"
+            ).fetchall()
+            for row in rows:
+                cursor.execute(
+                    "UPDATE pager_devices SET encrypted__name = :name WHERE id = :id",
+                    {"id": row["id"], "name": self._encrypt_value(row["name"])},
+                )
+        if "description" in device_columns:
+            rows = cursor.execute(
+                "SELECT id, description FROM pager_devices "
+                "WHERE description IS NOT NULL AND encrypted__description IS NULL"
+            ).fetchall()
+            for row in rows:
+                cursor.execute(
+                    "UPDATE pager_devices SET encrypted__description = :description WHERE id = :id",
+                    {"id": row["id"], "description": self._encrypt_value(row["description"])},
+                )
+
+        cursor.execute("PRAGMA table_info(pager_trust)")
+        trust_columns = {row[1] for row in cursor.fetchall()}
+        if "encrypted__trusted_name" not in trust_columns:
+            cursor.execute("ALTER TABLE pager_trust ADD COLUMN encrypted__trusted_name TEXT")
+            logger.info("Migrated pager_trust: added encrypted__trusted_name column")
+
+        if "trusted_name" in trust_columns:
+            rows = cursor.execute(
+                "SELECT id, trusted_name FROM pager_trust "
+                "WHERE trusted_name IS NOT NULL AND encrypted__trusted_name IS NULL"
+            ).fetchall()
+            for row in rows:
+                cursor.execute(
+                    "UPDATE pager_trust SET encrypted__trusted_name = :trusted_name WHERE id = :id",
+                    {"id": row["id"], "trusted_name": self._encrypt_value(row["trusted_name"])},
+                )
         self.connection.commit()
 
     def _init_domaindoc_schema(self):
@@ -323,6 +377,50 @@ class UserDataManager:
             )
             self.connection.commit()
             logger.info("Migrated domaindoc_sections: added pinned column")
+
+        if "encrypted__summary" not in section_columns:
+            cursor.execute(
+                "ALTER TABLE domaindoc_sections ADD COLUMN encrypted__summary TEXT DEFAULT NULL"
+            )
+            self.connection.commit()
+            logger.info("Migrated domaindoc_sections: added encrypted__summary column")
+
+    def _init_contacts_schema(self):
+        """Initialize ContactsTool database schema."""
+        cursor = self.connection.cursor()
+        contacts_sql = """
+        CREATE TABLE IF NOT EXISTS contacts (
+            id TEXT PRIMARY KEY,
+            encrypted__name TEXT NOT NULL,
+            encrypted__email TEXT,
+            encrypted__phone TEXT,
+            encrypted__street TEXT,
+            encrypted__city TEXT,
+            encrypted__state TEXT,
+            encrypted__zip TEXT,
+            encrypted__pager_address TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+        cursor.execute(contacts_sql)
+        self._migrate_contacts_schema(cursor)
+        self.connection.commit()
+
+    def _migrate_contacts_schema(self, cursor: sqlite3.Cursor) -> None:
+        """Add optional contact fields to existing per-user databases."""
+        cursor.execute("PRAGMA table_info(contacts)")
+        contact_columns = {row[1] for row in cursor.fetchall()}
+        for column in (
+            "encrypted__street",
+            "encrypted__city",
+            "encrypted__state",
+            "encrypted__zip",
+            "encrypted__pager_address",
+        ):
+            if column not in contact_columns:
+                cursor.execute(f"ALTER TABLE contacts ADD COLUMN {column} TEXT")
+                logger.info("Migrated contacts: added %s column", column)
 
     def _init_trigger_rules_schema(self):
         """Initialize trigger_rules table for per-user sidebar trigger filters.

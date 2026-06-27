@@ -184,7 +184,9 @@ class WebTool(Tool):
                 "allowed_domains": {"type": "array", "items": {"type": "string"}, "description": "If set, only these domains are allowed (exact match or subdomain). Takes precedence over blocked_domains if both provided. For 'search' and 'http'"},
                 "blocked_domains": {"type": "array", "items": {"type": "string"}, "description": "Domains to exclude (exact match or subdomain). Ignored if allowed_domains is also set. For 'search' and 'http'"},
                 "include_metadata": {"type": "boolean", "description": "When true, adds 'title' and 'metadata' keys (content_type, byte size) to the fetch result. Default false"},
-                "credential_name": {"type": "string", "description": "Name of a user-stored API credential to inject as an auth header. The credential value is retrieved server-side and never returned to you. For 'http' only"}
+                "credential_name": {"type": "string", "description": "Name of a user-stored API credential to inject as an auth header. The credential value is retrieved server-side and never returned to you. For 'http' only"},
+                "credential_header": {"type": "string", "description": "Header name for credential injection. Default Authorization. For 'http' only and only used with credential_name"},
+                "credential_prefix": {"type": "string", "description": "Prefix prepended to the stored credential value. Default 'Bearer '. Use an empty string only for APIs that require the raw credential. For 'http' only and only used with credential_name"}
             },
             "required": ["operation"]
         }

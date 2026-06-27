@@ -623,7 +623,7 @@ class DomaindocTool(Tool):
 
             entry: Dict[str, Any] = {
                 "header": sec["header"],
-                "summary": sec.get("summary") or "(no summary)",
+                "summary": sec.get("encrypted__summary") or "(no summary)",
                 "collapsed": sec.get("collapsed", False),
                 "pinned": sec.get("pinned", False),
             }
@@ -632,7 +632,7 @@ class DomaindocTool(Tool):
             subsections = [
                 {
                     "header": sub["header"],
-                    "summary": sub.get("summary") or "(no summary)",
+                    "summary": sub.get("encrypted__summary") or "(no summary)",
                     "collapsed": sub.get("collapsed", False),
                 }
                 for sub in all_sections

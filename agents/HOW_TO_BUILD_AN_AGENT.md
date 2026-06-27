@@ -236,9 +236,9 @@ INSERT INTO internal_llm (name, model, endpoint_url, api_key_name, max_tokens)
 VALUES ('my_agent', 'claude-sonnet-4-6', NULL, 'anthropic', 4096);
 ```
 
-### Step 7: Update CLAUDE.md
+### Step 7: Update AGENTS.md
 
-Add your agent to `agents/CLAUDE.md`:
+Add your agent to `agents/AGENTS.md`:
 
 ```markdown
 - `implementations/my_agent.py` -- MyAgent: brief description. Tools: `my_tool`.
@@ -422,8 +422,8 @@ The base class `run()` loop (you should not override this):
 - [ ] `internal_llm` DB row for the agent's LLM config
 - [ ] `sentry_llm_key` + `build_sentry_message()` if agent needs a cheap pre-filter (Step 9)
 - [ ] `internal_llm` DB row for the sentry model (if using sentry)
-- [ ] `agents/CLAUDE.md` updated with new files
-- [ ] `tools/implementations/CLAUDE.md` updated if new tools were added
+- [ ] `agents/AGENTS.md` updated with new files
+- [ ] `tools/implementations/AGENTS.md` updated if new tools were added
 
 ## Reference Implementations
 

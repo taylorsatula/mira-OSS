@@ -110,8 +110,8 @@ APPOINTMENT OPERATIONS:
 - search_availability: Find open booking slots
 - create_booking: Book an appointment
 - get_booking: Retrieve booking details
-- update_booking: Modify booking (reschedule, change service)
-- cancel_booking: Cancel with optional reason
+- update_booking: Modify booking start time or customer note
+- cancel_booking: Cancel a booking
 - list_bookings: By date range, customer, or team member
 - get_business_profile: Retrieve booking settings
 
