@@ -9,6 +9,9 @@ __pycache__/
 # IDE/OS files
 .DS_Store
 
+# Local assistant/tooling state
+.claude/
+
 # Project specific
 .env
 

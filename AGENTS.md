@@ -28,7 +28,7 @@ If you skip this, the maps rot and become misleading — worse than having no ma
 - **No Tech-Bro Evangelism**: Avoid hyperbolic framing of routine technical work. Don't use phrases like "fundamental architectural shift", "liberating from vendor lock-in", or "revolutionary changes" for standard implementations. Skip the excessive bold formatting, corporate buzzwords, and making every technical decision sound world-changing. Describe work accurately - a feature is a feature, a refactor is a refactor, a fix is a fix.
 
 ### Security & Reliability
-- **Credential Management**: All sensitive values (API keys, passwords, database URLs) must be stored in HashiCorp Vault via `utils.vault_client` functions. Never use environment variables or hardcoded credentials. Use `UserCredentialService` from `auth.user_credentials` for per-user credential storage. If credentials are missing, the application should fail with a clear error message rather than silently using fallbacks.
+- **Credential Management**: All sensitive values (API keys, passwords, database URLs) must be stored in HashiCorp Vault via `utils.vault_client` functions. Never use environment variables or hardcoded credentials. Use `UserCredentialService` from `utils.user_credentials` for per-user credential storage. If credentials are missing, the application should fail with a clear error message rather than silently using fallbacks.
 - **Fail-Fast Infrastructure**: Required infrastructure failures MUST propagate immediately. Never catch exceptions from Valkey, database, embeddings, or event bus and return None/[]/defaults - this masks outages as normal operation. Use try/except only for: (1) adding context before re-raising, (2) legitimately optional features (telemetry, cache), (3) async event handlers that will retry. Database query returning [] means "no data found", not "query failed". Make infrastructure failures loud so operators fix the root cause instead of users suffering degraded service.
 - **No Optional[X] Hedging**: When a function depends on required infrastructure, return the actual type or raise - never Optional[X] that enables None returns masking failures. `Optional[str]` for subcortical result lets generation silently fail; `str` forces the caller to handle the exception. Reserve Optional for genuine "value may not exist" semantics (user preference unset), not "infrastructure might be broken" scenarios.
 - **Timezone Consistency**: ALWAYS use `utils/timezone_utils.py` functions for datetime operations. Never use `datetime.now()` or `datetime.now(UTC)` directly - use `utc_now()` instead. This ensures UTC-everywhere consistency across the codebase and prevents timezone-related bugs. Import timezone utilities with `from utils.timezone_utils import utc_now, format_utc_iso` and use them consistently.
@@ -42,7 +42,7 @@ If you skip this, the maps rot and become misleading — worse than having no ma
 - **Simple Solutions First**: Consider simpler approaches before adding complexity - often the issue can be solved with a small fix, but never sacrifice correctness for simplicity. Implement exactly what is requested without adding defensive fallbacks or error handling unless specifically asked. Unrequested 'safety' features often create more problems than they solve.
 - **Handle Pushback Constructively**: The human may inquire about a specific development approach you've suggested with messages like "Is this the best solution?" or "Are you sure?". This does implicitly mean the human thinks your approach is wrong. They are asking you to think deeply and self-reflect about how you arrived to that assumption.
 - **Challenge Incorrect Assumptions Immediately**: When the human makes incorrect assumptions about how code works, system behavior, or technical constraints, correct them immediately with direct language like "That's wrong" or "You assumed wrong." Don't soften technical corrections with diplomatic phrasing. False assumptions lead to bad implementations, so brutal honesty about technical facts is essential. After correction, provide the accurate information they need.
-- **Convergent Path Refactoring**: When multiple code paths do the same thing with divergent implementations, that's an architectural defect — not a style issue. Invoke the `convergent-path-refactoring` skill for the map-design-remediate process and refactoring theater detection.
+- **Convergent Path Refactoring**: When multiple code paths do the same thing with divergent implementations, that's an architectural defect — not a style issue. Map the paths, identify the real convergence point, remediate there, and avoid refactoring theater that only moves duplication around.
 
 ### Design Discipline Principles
 
@@ -79,7 +79,7 @@ Don't parameterize what won't vary. Unused parameters confuse maintainers. If yo
 - **Explicit Setting for Administrative Tasks**: For scheduled jobs, batch operations, and cross-user administrative commands, explicitly set context via `set_current_user_id(user_id)` when iterating over users, or use `AdminSession` to bypass RLS entirely when querying across all users.
 
 ### Tool Architecture
-When working with tools, invoke `tool-builder` skill first for comprehensive patterns and use `tools/HOW_TO_BUILD_A_TOOL.md` plus nearby tools in `tools/implementations/` as references. Design for single responsibility (extraction tools extract, persistence tools store). Put business logic in system prompts/working_memory, not tools. Store tool data in user-specific directories via `self.user_data_path` (JSON for simple data, SQLite for complex, or `self.db` property). Include recovery guidance in error responses. Write tests for success and error paths.
+When working with tools, use `tools/HOW_TO_BUILD_A_TOOL.md` plus nearby tools in `tools/implementations/` as references. Design for single responsibility (extraction tools extract, persistence tools store). Put business logic in system prompts/working_memory, not tools. Store tool data in user-specific directories via `self.user_data_path` (JSON for simple data, SQLite for complex, or `self.db` property). Include recovery guidance in error responses. Write tests for success and error paths.
 
 ### LLM Caller Interface Design
 All model-facing prose — system prompts, tool parameter descriptions, agent directives, working memory trinkets — is an interface contract where imprecise language causes real behavioral failures downstream. Every word must constrain behavior: "literal string" not "text," "exact substring" not "pattern," because the reader is a language model that will infer defaults from your word choices. Ground descriptions in actual implementation behavior, not intent. Drop internal jargon the caller has no context for. State co-dependencies inline. If the current wording would cause a caller to misuse the interface, say so flatly and fix it.
@@ -88,12 +88,16 @@ All model-facing prose — system prompts, tool parameter descriptions, agent di
 When calling code misuses an interface, fix the caller — never adapt the interface to accommodate misuse.
 
 ### Dependency Management
-- **Minimal Dependencies**: Prefer stdlib. New external deps require documented justification.
+- **Minimal Dependencies**: Prefer stdlib. New external deps require documented justification. Before adding or removing a dependency, cross-reference Python imports, deploy scripts, Dockerfiles, and optional feature paths. Remove packages only when the repository no longer directly imports, invokes, or operationally installs them.
+
+### Investigation & Mechanical Refactoring
+- **Investigations Need Evidence**: When validating a claim, stale doc, or suspected bug, answer with specific files, functions, and observed behavior. Separate verified facts from inferences. If evidence is inconclusive, say what was checked and why it does not prove the point.
+- **Mechanical Renames Stay Mechanical**: For naming-only work, map old names to new names first, update definitions and references consistently, then verify no old symbol remains. Do not mix behavior changes into a rename unless the caller explicitly asked for both.
 
 ## 🧭 Codebase Patterns
 
 ### User ID Resolution
-All user-scoped code resolves `user_id` via contextvar: `from utils.user_context import get_current_user_id`. It is set once at the API boundary (`cns/api/chat.py`, `websocket_chat.py`) and flows automatically through the entire request. Never pass `user_id` through event context dicts, function parameters, or instance fields as a substitute for the contextvar — redundant channels cause inconsistent resolution patterns. Downstream services that take `user_id` as an explicit parameter (e.g., `ManifestQueryService.get_segments(user_id)`) are acceptable; the caller sources it from the contextvar. For scheduled jobs and batch operations outside HTTP context, explicitly call `set_current_user_id(user_id)`.
+All user-scoped code resolves `user_id` via contextvar: `from utils.user_context import get_current_user_id`. It is set once at the API boundary (`cns/api/chat.py` and other authenticated FastAPI handlers) and flows automatically through the entire request. Never pass `user_id` through event context dicts, function parameters, or instance fields as a substitute for the contextvar — redundant channels cause inconsistent resolution patterns. Downstream services that take `user_id` as an explicit parameter (e.g., `ManifestQueryService.get_segments(user_id)`) are acceptable; the caller sources it from the contextvar. For scheduled jobs and batch operations outside HTTP context, explicitly call `set_current_user_id(user_id)`.
 
 ### Activity Days & Use-Day Scheduling
 MIRA uses **use-day scheduling** — periodic jobs fire based on user activity days, not calendar time. A user who logs in Monday, skips Tuesday, returns Wednesday has their counter tick on Monday and Wednesday only. This prevents wasted work on inactive users and ensures jobs run at consistent engagement intervals.
@@ -118,8 +122,8 @@ To get the current user's activity day count inline: `from utils.user_context im
 ### Provider Stall Detection & Fallback
 All live LLM transports run through `clients.llm.lifecycle.LLMLifecycle`, which wraps provider operations with `config.api.provider_response_timeout` (default 60s). It kills providers that accept the connection but produce no output:
 
-- **Non-streaming**: `LLMLifecycle` wraps the adapter `complete()` call and raises `ProviderStallError` if the call produces no completed response within the timeout.
-- **Streaming**: `LLMLifecycle` wraps each `next()` on the adapter stream iterator and raises `ProviderStallError` if no chunk/event arrives within the timeout.
+- **Non-streaming**: `LLMLifecycle` wraps the dialect `complete()` call and raises `ProviderStallError` if the call produces no completed response within the timeout.
+- **Streaming**: `LLMLifecycle` wraps each `next()` on the dialect stream iterator and raises `ProviderStallError` if no chunk/event arrives within the timeout.
 
 **Fallback**: `LLMLifecycle` catches `ProviderStallError` and retryable provider errors and retries once with `claude-high` selected by `ModelResolver`. In the streaming path, a `ProviderSwitchEvent` is yielded to the frontend (type=`provider_switch`) so it can clear partial output and display a persistent "generation hung, retrying…" alert. If the backup also stalls, the timeout fires normally — no double-failover.
 
@@ -140,7 +144,7 @@ When modifying files, write as if the new code was always the plan. Never refere
 ### Plan Mode
 🚨 **NEVER autonomously enter plan mode.** Do not call `EnterPlanMode` unless the user has explicitly activated plan mode themselves (e.g., via `/plan`). Autonomous plan mode entry is disruptive UX — always wait for the user to opt in.
 
-When entering plan mode, invoke the `plan-mode` skill for the concise-plan-vs-ADR decision tree, ADR requirements, and root cause solution mandate.
+When planning, keep ordinary implementation plans concise. Use an ADR only for durable architecture decisions that need rationale, alternatives, and consequences recorded.
 
 ## 🔄 Continuous Improvement
 - Convert specific feedback into general principles. Consider multiple approaches before implementing.
@@ -152,13 +156,14 @@ When entering plan mode, invoke the `plan-mode` skill for the concise-plan-vs-AD
 - **Database**: Always use `psql -U postgres -h localhost -d mira_service` - postgres is the superuser, mira_service is the primary database
 
 ### Git Workflow
-- **MANDATORY**: Invoke the `git-workflow` skill BEFORE every commit
-- **Skill command**: `Skill(skill: "git-workflow")`
-- **What it provides**: Complete commit message format, staging rules, semantic prefixes, post-commit summary requirements, and critical anti-patterns to avoid
-- **Never skip**: This skill contains mandatory formatting and process requirements for all git operations
+- Commit only when the user explicitly asks.
+- Review `git status --short` before staging.
+- Stage explicit paths. Do not use `git add -A` or `git add .` unless the user explicitly asks to stage everything.
+- Use a semantic prefix (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`) and a concise subject.
+- For non-trivial commits, include body sections for `ROOT CAUSE` and `SOLUTION RATIONALE`.
+- After committing, report the commit hash and the high-level file/change summary.
 
 ### Documentation References
-- **Tool Creation**: Use the `tool-builder` skill for step-by-step guidance and comprehensive tool development patterns
 - **Tool Documentation**: See `tools/HOW_TO_BUILD_A_TOOL.md` for writing and registering tools
 - **Reference Implementations**: Use nearby tools in `tools/implementations/` as blueprints
 
@@ -174,13 +179,13 @@ Use Pydantic BaseModel for structured data (configs, API requests/responses, DTO
 This section documents recurring mistakes. Keep it concise - only the most important lessons.
 
 ## ❌ Git Workflow Violations
-**Critical**: Use `Skill(skill: "git-workflow")` BEFORE every commit to avoid these recurring issues:
+**Critical**: Follow the Git Workflow section before every commit to avoid these recurring issues:
 - Using HEREDOC syntax instead of literal newlines (causes shell EOF errors)
 - Omitting required commit message sections (ROOT CAUSE, SOLUTION RATIONALE)
 - Using `git add -A` or `git add .` without explicit permission
 - Missing post-commit summary with hash and file stats
 
-**Reference**: All git commit format, staging rules, and post-commit requirements are documented in the git-workflow skill
+**Reference**: Commit format, staging rules, and post-commit reporting requirements are documented in the Git Workflow section above.
 
 ## ❌ Over-Engineering Without Need
 **Example**: Adding severity levels to errors when binary worked/failed suffices
