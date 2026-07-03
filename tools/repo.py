@@ -1,5 +1,5 @@
 """
-Tool repository for the botwithmemory system.
+Tool repository for the MIRA system.
 
 This module provides the base Tool class and ToolRepository for managing, 
 discovering, and using tools within the continuum system.
@@ -74,7 +74,7 @@ ESSENTIAL_TOOLS = [
 
 class Tool(ABC):
     """
-    Base class for all tools in the botwithmemory system.
+    Base class for all tools in the MIRA system.
 
     This class defines the standard interface and behavior that all tools
     should implement. It includes metadata, parameter handling, and execution logic.

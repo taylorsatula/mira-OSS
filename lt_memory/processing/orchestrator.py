@@ -20,11 +20,11 @@ from lt_memory.models import ProcessingChunk, MemoryContextSnapshot
 from lt_memory.processing.extraction_engine import ExtractionEngine
 from lt_memory.processing.execution_strategy import ExecutionStrategy, ImmediateExecutionStrategy
 from lt_memory.db_access import LTMemoryDB
-from lt_memory.llm_routing import uses_anthropic_batch_adapter
+from lt_memory.llm_routing import uses_anthropic_batch_dialect
 from utils.user_context import set_current_user_id, get_current_user_id, clear_user_context
 
 if TYPE_CHECKING:
-    from cns.core.continuum_repository import ContinuumRepository
+    from cns.infrastructure.continuum_repository import ContinuumRepository
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +148,7 @@ class ExtractionOrchestrator:
         )
         chunk.memory_context_snapshot = self._build_memory_context(messages, user_id)
 
-        # Step 4: Submit via execution strategy (immediate when forced or batch adapter unavailable)
+        # Step 4: Submit via execution strategy (immediate when forced or batch dialect unavailable)
         strategy = self.execution_strategy
         if force_immediate and self.immediate_strategy is not None:
             strategy = self.immediate_strategy
@@ -156,11 +156,11 @@ class ExtractionOrchestrator:
                 f"Using immediate extraction for segment {segment_id} "
                 f"(manual collapse — skipping batch)"
             )
-        elif self.immediate_strategy is not None and not uses_anthropic_batch_adapter("extraction"):
+        elif self.immediate_strategy is not None and not uses_anthropic_batch_dialect("extraction"):
             strategy = self.immediate_strategy
             logger.info(
                 f"Using immediate extraction for segment {segment_id} "
-                f"(batch adapter unavailable — skipping batch)"
+                f"(batch dialect unavailable — skipping batch)"
             )
         batch_id = strategy.execute_extraction(user_id, [chunk])
 

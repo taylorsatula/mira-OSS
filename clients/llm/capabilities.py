@@ -1,4 +1,4 @@
-"""Capability declarations and validation for LLM adapters."""
+"""Capability declarations and validation for LLM dialects."""
 
 from __future__ import annotations
 

@@ -75,7 +75,7 @@ ENV PYTHONUNBUFFERED=1
 # Labels
 LABEL org.opencontainers.image.title="MIRA Base"
 LABEL org.opencontainers.image.description="MIRA base image - system packages, Python deps, ML models"
-LABEL org.opencontainers.image.source="https://github.com/taylorsatula/botwithmemory"
+LABEL org.opencontainers.image.source="https://github.com/taylorsatula/mira-OSS"
 
 # Install runtime dependencies and services
 RUN apt-get update && apt-get install -y --no-install-recommends \

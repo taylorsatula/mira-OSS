@@ -12,7 +12,7 @@ FROM ${BASE_IMAGE}
 # Labels
 LABEL org.opencontainers.image.title="MIRA"
 LABEL org.opencontainers.image.description="MIRA - Memory-Integrated Reasoning Assistant"
-LABEL org.opencontainers.image.source="https://github.com/taylorsatula/botwithmemory"
+LABEL org.opencontainers.image.source="https://github.com/taylorsatula/mira-OSS"
 
 # Copy application code
 COPY --chown=mira:mira . /opt/mira/app/

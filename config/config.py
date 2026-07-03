@@ -13,12 +13,12 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class ApiConfig(BaseModel):
-    """LLM API and provider adapter configuration."""
+    """LLM API and provider dialect configuration."""
 
     # Feature flags
     analysis_enabled: bool = Field(default=True, description="Enable subcortical layer for retrieval")
     subcortical_prefill_warmup: bool = Field(default=False, description="Pre-warm subcortical KV cache after each turn (vLLM prefix-cache deployments only — wastes billed tokens on cloud providers)")
-    show_openai_compat_thinking: bool = Field(default=True, description="Show thinking blocks from OpenAI-compatible adapters to end user")
+    show_openai_compat_thinking: bool = Field(default=True, description="Show thinking blocks from OpenAI-compatible dialects to end user")
     emergency_fallback_enabled: bool = Field(default=True, description="Enable automatic failover to emergency provider on Anthropic errors")
 
     # Infrastructure coordinates

@@ -21,7 +21,7 @@ from lt_memory.processing.memory_processor import MemoryProcessor
 from lt_memory.vector_ops import VectorOps
 from lt_memory.db_access import LTMemoryDB
 from lt_memory.linking import LinkingService
-from lt_memory.llm_routing import uses_anthropic_batch_adapter
+from lt_memory.llm_routing import uses_anthropic_batch_dialect
 from clients.llm_provider import LLMProvider, build_batch_params
 from lt_memory.processing.batch_coordinator import BATCH_EXPIRY_HOURS
 from utils.timezone_utils import utc_now
@@ -315,7 +315,7 @@ class ImmediateExecutionStrategy(ExecutionStrategy):
     """
     Execute extraction immediately via the live LLM provider.
 
-    Used when Anthropic Batch API is unavailable for the resolved adapter.
+    Used when Anthropic Batch API is unavailable for the resolved dialect.
     Executes synchronously and stores results immediately, including
     entity persistence and relationship classification.
     """
@@ -552,7 +552,7 @@ def create_execution_strategy(
     """
     Factory function to create appropriate execution strategy.
 
-    Automatically selects batch or immediate based on the resolved adapter.
+    Automatically selects batch or immediate based on the resolved dialect.
 
     Args:
         extraction_engine: Extraction engine instance
@@ -566,13 +566,13 @@ def create_execution_strategy(
     Returns:
         Appropriate ExecutionStrategy (Batch or Immediate)
     """
-    if batch_coordinator is None or not uses_anthropic_batch_adapter("extraction"):
+    if batch_coordinator is None or not uses_anthropic_batch_dialect("extraction"):
         if linking_service is None:
             raise ValueError(
                 "ImmediateExecutionStrategy requires linking_service "
                 "for relationship classification"
             )
-        logger.warning("Creating ImmediateExecutionStrategy (batch adapter unavailable)")
+        logger.warning("Creating ImmediateExecutionStrategy (batch dialect unavailable)")
         return ImmediateExecutionStrategy(
             extraction_engine,
             memory_processor,

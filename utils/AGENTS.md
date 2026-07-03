@@ -11,11 +11,11 @@
 
 ## Files
 
-- `user_context.py` — Owns user identity contextvar (`set_current_user_id` / `get_current_user_id`), segment context, `UserPreferences` model + `get_user_preferences()`, `ConversationLLMConfig` / `get_conversation_llms()` with `adapter_name`, and `InternalLLMConfig` / `get_internal_llm()`.
+- `user_context.py` — Owns user identity contextvar (`set_current_user_id` / `get_current_user_id`), segment context, `UserPreferences` model + `get_user_preferences()`, `ConversationLLMConfig` / `get_conversation_llms()` with `dialect_name`, and `InternalLLMConfig` / `get_internal_llm()`.
 - `database_session_manager.py` — Singleton PostgreSQL connection pool (`get_shared_session_manager()`); `LTMemorySession` enforces RLS, `AdminSession` bypasses it.
 - `perf.py` — Performance instrumentation; monkey-patches `execute_*` methods at startup via `install_db_instrumentation()`. Gated by `mira.perf` logger level.
 - `logging_config.py` — TOAST custom log level (60), `UserContextFilter` (injects user_id into all log records), `ColoredFormatter`, `setup_anthropic_sdk_logging()`. `instrument_anthropic_client()` attaches httpx hooks for SDK log correlation and traffic tap.
-- `llm_tap.py` — Debugging firehose for sniffing all LLM request/response traffic. Toggle: `kill -USR1 <pid>`. Output: `llm_requests.jsonl`, `llm_responses.jsonl` (project root, append mode). Request capture via httpx hooks on Anthropic clients; provider adapters log normalized requests and `Result` responses.
+- `llm_tap.py` — Debugging firehose for sniffing all LLM request/response traffic. Toggle: `kill -USR1 <pid>`. Output: `llm_requests.jsonl`, `llm_responses.jsonl` (project root, append mode). Request capture via httpx hooks on Anthropic clients; provider dialects log normalized requests and `Result` responses.
 - `scheduled_tasks.py` — `get_users_due_for_job(interval)` use-day platform function; `initialize_all_scheduled_tasks()` entry point; `register_sidebar_dispatcher_job()` called separately after tool_repo init.
 - `lt_memory_jobs.py` — APScheduler job registration for all LT_Memory periodic work (extraction retry, batch polling, consolidation, score recalc, GC, cleanup).
 - `sidebar_jobs.py` — APScheduler registration for the sidebar dispatcher poll loop. Creates `SidebarDispatcher` and registers it on a configurable interval.

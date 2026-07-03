@@ -1029,11 +1029,11 @@ class ContinuumOrchestrator:
             input_tokens=last_input,
         )
 
-        # Retrieve container_id from Valkey for adapter-owned container reuse.
+        # Retrieve container_id from Valkey for provider-owned container reuse.
         # Container reuse is Anthropic-only (server-side code_execution feature);
         # OpenAI-compatible providers reject container params and capability validation
         # would refuse the request, so the container_id is intentionally not forwarded
-        # for non-Anthropic adapters.
+        # for non-Anthropic dialects.
         if llm_config.dialect_name == "anthropic":
             from clients.valkey_client import get_valkey
             valkey = get_valkey()

@@ -142,7 +142,7 @@ class MessageMetadata(TypedDict, total=False):
     tool_result_original_chars: int
     tool_result_retrieved: bool
     tool_result_source_id: str
-    # Reasoning round-trip fields (Anthropic adapter reads these)
+    # Reasoning round-trip fields (Anthropic dialect reads these)
     thinking_signatures: list[dict[str, object]]
     reasoning_details: list[dict[str, object]]
     # System notification fields

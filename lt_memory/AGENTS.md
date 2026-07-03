@@ -19,7 +19,7 @@
 - `hybrid_search.py` — BM25 + vector hybrid search with reciprocal rank fusion. `HybridSearcher.hybrid_search()` returns `List[Memory]`.
 - `linking.py` — Three-axis candidate discovery (vector similarity, entity co-occurrence with similarity floor, TF-IDF term overlap) and bidirectional link creation. TF-IDF state lazily initialized on `LinkingService`, rebuilt when memory count changes.
 - `proactive.py` — Proactive memory surfacing: merges similarity pool and hub-derived pool, reranks with link traversal. Returns `List[MemoryDict]`.
-- `llm_routing.py` — Resolver-backed helper for LT memory batch-vs-immediate decisions. `uses_anthropic_batch_adapter(purpose)` is the only routing check for Anthropic Batch API eligibility.
+- `llm_routing.py` — Resolver-backed helper for LT memory batch-vs-immediate decisions. `uses_anthropic_batch_dialect(purpose)` is the only routing check for Anthropic Batch API eligibility.
 - `hub_discovery.py` — Entity-driven retrieval: pg_trgm fuzzy entity match → linked memories → expansion-similarity ranking. DB errors propagate from `_match_entities()`.
 - `refinement.py` — Consolidation cluster identification via connected-components and payload building for batch consolidation.
 - `entity_extraction.py` — spaCy NER (en_core_web_lg, parser/lemmatizer disabled) with fuzzy normalization. Returns `List[NamedEntity]`.

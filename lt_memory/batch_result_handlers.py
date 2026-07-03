@@ -18,7 +18,7 @@ from lt_memory.processing.batch_coordinator import BatchResultProcessor
 from lt_memory.processing.memory_processor import MemoryProcessor
 from lt_memory.vector_ops import VectorOps
 from lt_memory.linking import LinkingService
-from lt_memory.llm_routing import uses_anthropic_batch_adapter
+from lt_memory.llm_routing import uses_anthropic_batch_dialect
 from lt_memory.models import ExtractionBatch, PostProcessingBatch, ExtractedMemory, MemoryLink, LinkingPair, ClassificationPair
 from lt_memory.processing.batch_coordinator import BATCH_EXPIRY_HOURS
 from clients.llm_provider import LLMProvider, build_batch_params
@@ -319,7 +319,7 @@ class ExtractionBatchResultHandler(BatchResultProcessor):
         if not all_pairs:
             return
 
-        if not uses_anthropic_batch_adapter("relationship"):
+        if not uses_anthropic_batch_dialect("relationship"):
             logger.warning(
                 f"Bypassing relationship batch for user {user_id} - "
                 f"executing {len(all_pairs)} classifications immediately"

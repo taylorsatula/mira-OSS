@@ -17,7 +17,7 @@ from json_repair import repair_json
 
 from clients.llm_provider import LLMProvider, build_batch_params
 from lt_memory.db_access import LTMemoryDB
-from lt_memory.llm_routing import uses_anthropic_batch_adapter
+from lt_memory.llm_routing import uses_anthropic_batch_dialect
 from lt_memory.models import PostProcessingBatch, ConsolidationCluster
 from lt_memory.processing.batch_coordinator import BatchCoordinator, BATCH_EXPIRY_HOURS
 from lt_memory.processing.consolidation_handler import ConsolidationHandler
@@ -32,7 +32,7 @@ class PostProcessingOrchestrator:
     Orchestrate consolidation batch submission.
 
     Single Responsibility: Submit consolidation work via batch API
-    or execute immediately when the selected adapter cannot use Anthropic batch.
+    or execute immediately when the selected dialect cannot use Anthropic batch.
 
     Parallel to ExtractionOrchestrator (which handles extraction submission).
     """
@@ -73,7 +73,7 @@ class PostProcessingOrchestrator:
             logger.info(f"No consolidation clusters found for user {user_id}")
             return None
 
-        if not uses_anthropic_batch_adapter("consolidation"):
+        if not uses_anthropic_batch_dialect("consolidation"):
             logger.warning(
                 f"Bypassing consolidation batch for user {user_id} - "
                 f"executing {len(clusters)} clusters immediately"

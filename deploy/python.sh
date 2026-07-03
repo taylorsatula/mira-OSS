@@ -214,7 +214,7 @@ else
 fi
 
 # Install sentence-transformers separately to ensure proper dependency resolution
-# (torch, transformers, tokenizers must be installed first from requirements.txt)
+# (torch is installed first so deployments use the CPU wheel)
 echo -ne "${DIM}${ARROW}${RESET} Checking sentence-transformers... "
 if ! check_exists package sentence-transformers; then
     echo ""
