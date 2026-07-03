@@ -9,7 +9,7 @@ from typing import Union, List, Dict, Any
 
 logger = logging.getLogger(__name__)
 
-# Note: Message length is enforced at API layer (chat.py, websocket_chat.py)
+# Note: Message length is enforced at the API layer (chat.py)
 # with user-friendly rejection. Sanitizer no longer truncates.
 
 

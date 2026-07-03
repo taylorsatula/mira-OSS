@@ -2,8 +2,8 @@
 OSS Chat UI — minimal self-contained web interface.
 
 Serves a simple chat page that uses the existing /v0/api/chat and
-/v0/api/data endpoints. Activated only when the full web UI (web/chat/)
-is absent, which happens after makeoss.sh strips the hosted frontend.
+/v0/api/data endpoints. Activated only when the hosted web UI
+(web/chat/) is absent from the OSS build.
 """
 
 from pathlib import Path

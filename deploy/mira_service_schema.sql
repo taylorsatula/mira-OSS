@@ -440,7 +440,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_segment_embedding ON messages
       AND segment_embedding IS NOT NULL;
 
 COMMENT ON TABLE messages IS 'All conversation messages; segments implemented as sentinel messages with is_segment_boundary=true in metadata';
-COMMENT ON COLUMN messages.segment_embedding IS 'mdbr-leaf-ir-asym 768d embedding for segment sentinels. See docs/SystemsOverview/segment_system_overview.md for architecture details.';
+COMMENT ON COLUMN messages.segment_embedding IS 'mdbr-leaf-ir-asym 768d embedding for segment sentinels. See docs/SEGMENT_SYSTEM.md for architecture details.';
 
 -- =====================================================================
 -- MEMORIES TABLE (core long-term memory storage)
@@ -866,8 +866,8 @@ GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO mira_admin;
 -- These are accessed during authentication flow before user context is established
 -- Application code handles access control via token validation
 --
--- Note: Sessions are stored in Valkey (not PostgreSQL) - see auth/session.py
--- Note: User credentials stored via UserDataManager (SQLite) - see auth/user_credentials.py
+-- Note: Sessions are stored in Valkey (not PostgreSQL) by auth/api.py
+-- Note: User credentials are stored via UserDataManager (SQLite) by utils/user_credentials.py
 
 ALTER TABLE user_activity_days ENABLE ROW LEVEL SECURITY;
 CREATE POLICY user_activity_days_user_policy ON user_activity_days

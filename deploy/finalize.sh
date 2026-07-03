@@ -260,7 +260,7 @@ if [ "$CONFIG_OFFLINE_MODE" = "yes" ]; then
         echo -e "  VRAM Target:  ${DIM}Dual RTX 3090 / 48GB total${RESET}"
         echo ""
         print_info "Before first MIRA startup, download models & start servers:"
-        print_info "  scripts/download_models_for_offline_install.sh"
+        print_info "  docs/OFFLINE_MODELS.md"
         print_info ""
         print_info "Models stored at: /opt/mira/models/"
         print_info "Server logs at:   /opt/mira/logs/llama-{main,small}.log"
