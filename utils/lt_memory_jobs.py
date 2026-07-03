@@ -21,10 +21,10 @@ def register_lt_memory_jobs(scheduler_service, lt_memory_factory) -> None:
     - Extraction retry sweep (6-hour intervals, calendar-based)
     - Extraction batch polling (1-minute intervals, calendar-based)
     - Post-processing batch polling (1-minute intervals, calendar-based)
-    - Consolidation (daily tick, use-day gated)
+    - Consolidation (deadheaded pending redesign)
     - Temporal score recalculation (daily tick, use-day gated)
     - Bulk score recalculation (daily tick, use-day gated)
-    - Entity garbage collection (daily tick, use-day gated)
+    - Entity garbage collection (deadheaded pending redesign)
     - Batch cleanup (daily tick, use-day gated)
 
     Args:
@@ -122,14 +122,7 @@ def register_lt_memory_jobs(scheduler_service, lt_memory_factory) -> None:
         logger.info("Consolidation sweep: submitted batches for %d/%d due users", total_submitted, len(users))
         return {"users_processed": total_submitted}
 
-    scheduler_service.register_job(
-        job_id="lt_memory_consolidation",
-        func=run_consolidation_for_due_users,
-        trigger=IntervalTrigger(days=1),
-        component="lt_memory",
-        description=f"Submit consolidation batches (every {jobs_config.consolidation_use_days} use-days)"
-    )
-    logger.info("Registered consolidation job (every %d use-days)", jobs_config.consolidation_use_days)
+    logger.info("Consolidation job is deadheaded pending redesign")
 
     # Temporal score recalculation
     def run_temporal_score_recalculation():
@@ -210,14 +203,7 @@ def register_lt_memory_jobs(scheduler_service, lt_memory_factory) -> None:
         logger.info("Entity GC sweep: submitted batches for %d/%d due users", total_submitted, len(users))
         return {"users_submitted": total_submitted}
 
-    scheduler_service.register_job(
-        job_id="lt_memory_entity_gc",
-        func=submit_entity_gc_for_due_users,
-        trigger=IntervalTrigger(days=1),
-        component="lt_memory",
-        description=f"Submit entity GC batches (every {jobs_config.entity_gc_use_days} use-days)"
-    )
-    logger.info("Registered entity GC (every %d use-days)", jobs_config.entity_gc_use_days)
+    logger.info("Entity GC job is deadheaded pending redesign")
 
     # Batch cleanup
     def run_batch_cleanup_for_due_users():
