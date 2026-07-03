@@ -7,7 +7,6 @@ the user's contacts by storing contact UUID references.
 """
 
 import inspect
-import json
 import logging
 import uuid
 from datetime import datetime, timedelta
@@ -310,15 +309,7 @@ class ReminderTool(Tool):
         try:
             # Ensure reminders table exists on first use
             self._ensure_reminders_table()
-            # Parse kwargs JSON string if provided that way
-            if "kwargs" in kwargs and isinstance(kwargs["kwargs"], str):
-                try:
-                    params = json.loads(kwargs["kwargs"])
-                    kwargs = params
-                except json.JSONDecodeError as e:
-                    self.logger.error(f"Invalid JSON in kwargs for {operation}: {e}")
-                    raise ValueError(f"Invalid JSON in kwargs: {e}")
-            
+
             # Route to the appropriate operation, filtering kwargs to params
             # the target method actually accepts. The repo filters unknown schema
             # properties, but can't filter per-operation — schema-valid params like

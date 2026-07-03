@@ -138,13 +138,12 @@ class PagerTool(Tool):
     
     implementation_details = """
     
-    IMPORTANT: This tool requires parameters to be passed as a JSON string in the "kwargs" field.
     The tool supports these operations:
     
     1. register_device: Create a new virtual pager device.
-       - Required: name (friendly name for the pager)
-       - Optional: description (details about the pager)
-       - Returns the created pager device with unique ID (format: PAGER-XXXX)
+       - Required: device_name (friendly name for the pager)
+       - Optional: device_description (details about the pager)
+       - Returns the created pager device with unique ID (format: dev_XXXXXXXX)
 
     2. register_username: Register a username for federated pager addressing.
        - Required: username (3-20 alphanumeric characters, e.g., "taylor")
@@ -152,7 +151,7 @@ class PagerTool(Tool):
        - Returns the registered username and federated address (username@server)
 
     3. send_message: Send a message from one pager to another.
-       - Required: sender_id, recipient_id, content
+       - Required: sender_id, recipient, content
        - Optional: priority (0=normal, 1=high, 2=urgent), location, expiry_hours
        - Content over 300 chars will be AI-distilled to fit pager constraints
        - Returns the sent message details
@@ -191,8 +190,8 @@ class PagerTool(Tool):
         - Returns confirmation of trust revocation
         
     11. send_location: Send a location pin message from one pager to another.
-        - Required: sender_id, recipient_id
-        - Optional: priority (0=normal, 1=high, 2=urgent), message (brief note), device_secret
+        - Required: sender_id, recipient
+        - Optional: priority (0=normal, 1=high, 2=urgent), note, device_secret
         - Automatically includes current location as a pin
         - Returns the sent location message
        
@@ -209,28 +208,29 @@ class PagerTool(Tool):
 
     @staticmethod
     def _pager_name(device_row: Dict[str, Any]) -> Optional[str]:
-        """Return display name from the encrypted schema, with legacy fallback only."""
-        return device_row.get("encrypted__name") or device_row.get("name")
+        """Return display name from the encrypted schema."""
+        return device_row.get("encrypted__name")
 
     @staticmethod
     def _pager_description(device_row: Dict[str, Any]) -> Optional[str]:
-        """Return display description from the encrypted schema, with legacy fallback only."""
-        return device_row.get("encrypted__description") or device_row.get("description")
+        """Return display description from the encrypted schema."""
+        return device_row.get("encrypted__description")
 
     @staticmethod
     def _trusted_name(trust_row: Dict[str, Any]) -> Optional[str]:
         """Return trusted device display name from the encrypted schema."""
-        return trust_row.get("encrypted__trusted_name") or trust_row.get("trusted_name")
+        return trust_row.get("encrypted__trusted_name")
     
     usage_examples = [
         {
             "input": {
                 "operation": "register_device",
-                "kwargs": "{\"name\": \"Field Unit Alpha\", \"description\": \"Emergency response team leader\"}"
+                "device_name": "Field Unit Alpha",
+                "device_description": "Emergency response team leader"
             },
             "output": {
                 "device": {
-                    "id": "PAGER-A1B2",
+                    "id": "dev_a1b2c3d4",
                     "name": "Field Unit Alpha",
                     "description": "Emergency response team leader",
                     "active": True
@@ -240,13 +240,17 @@ class PagerTool(Tool):
         {
             "input": {
                 "operation": "send_message",
-                "kwargs": "{\"sender_id\": \"PAGER-A1B2\", \"recipient_id\": \"PAGER-C3D4\", \"content\": \"Code 3 response needed at Main St\", \"priority\": 2, \"location\": \"Main St & 5th Ave\"}"
+                "sender_id": "dev_a1b2c3d4",
+                "recipient": "taylor",
+                "content": "Code 3 response needed at Main St",
+                "priority": 2,
+                "location": "Main St & 5th Ave"
             },
             "output": {
                 "message": {
-                    "id": "MSG-12345678",
-                    "sender_id": "PAGER-A1B2",
-                    "recipient_id": "PAGER-C3D4",
+                    "id": "msg_12345678",
+                    "sender_id": "dev_a1b2c3d4",
+                    "recipient_id": "dev_c3d4e5f6",
                     "content": "Code 3 response needed at Main St",
                     "priority": 2,
                     "priority_label": "urgent",
@@ -257,12 +261,15 @@ class PagerTool(Tool):
         {
             "input": {
                 "operation": "send_location",
-                "kwargs": "{\"sender_id\": \"PAGER-A1B2\", \"recipient_id\": \"PAGER-C3D4\", \"message\": \"Stuck in traffic\", \"priority\": 2}"
+                "sender_id": "dev_a1b2c3d4",
+                "recipient": "taylor",
+                "note": "Stuck in traffic",
+                "priority": 2
             },
             "output": {
                 "message": {
-                    "id": "MSG-87654321",
-                    "content": "📍 Location Pin: 1-1 Kitahama, Chuo-ku, Osaka (Near Osaka City Hall)\\nNote: Stuck in traffic\\n[34.6937, 135.5023]",
+                    "id": "msg_87654321",
+                    "content": "Location Pin: 1-1 Kitahama, Chuo-ku, Osaka (Near Osaka City Hall)\\nNote: Stuck in traffic\\n[34.6937, 135.5023]",
                     "priority": 2,
                     "location": "{\"lat\": 34.6937, \"lng\": 135.5023, \"accuracy_meters\": 15}"
                 }
@@ -345,7 +352,7 @@ class PagerTool(Tool):
             pager_id = pager_devices[0]['id']
 
             # Generate message ID
-            message_id = f"MSG-{uuid.uuid4().hex[:8].upper()}"
+            message_id = f"msg_{uuid.uuid4().hex[:8]}"
 
             # Create federated message record
             message_data = {
@@ -472,12 +479,12 @@ class PagerTool(Tool):
         Valid Operations:
 
         1. register_device: Create a new pager device
-           - Required: name
+           - Required: device_name
            - Optional: description
            - Returns: Dict with created device
 
         2. send_message: Send a message between pagers
-           - Required: sender_id, recipient_id, content
+           - Required: sender_id, recipient, content
            - Optional: priority, location, expiry_hours
            - Returns: Dict with sent message
 
@@ -507,15 +514,6 @@ class PagerTool(Tool):
            - Returns: Dict with cleanup stats
         """
         try:
-            # Parse kwargs JSON string if provided that way
-            if "kwargs" in kwargs and isinstance(kwargs["kwargs"], str):
-                try:
-                    params = json.loads(kwargs["kwargs"])
-                    kwargs = params
-                except json.JSONDecodeError as e:
-                    self.logger.error(f"Invalid JSON in kwargs for {operation}: {e}")
-                    raise ValueError(f"Invalid JSON in kwargs: {e}")
-            
             # Route to the appropriate operation
             if operation == "register_device":
                 return self._register_device(**kwargs)
@@ -579,7 +577,7 @@ class PagerTool(Tool):
             raise ValueError("Name is required for registering a pager device")
 
         # Generate a unique pager ID
-        pager_id = f"PAGER-{uuid.uuid4().hex[:4].upper()}"
+        pager_id = f"dev_{uuid.uuid4().hex[:8]}"
 
         # Generate device secret and fingerprint
         device_secret = f"SECRET-{uuid.uuid4().hex[:32].upper()}"
@@ -747,7 +745,7 @@ class PagerTool(Tool):
             recipient_address: Username (e.g., "taylor")
 
         Returns:
-            Pager device UUID
+            Pager device ID
 
         Raises:
             ValueError: If recipient cannot be resolved
@@ -901,7 +899,7 @@ class PagerTool(Tool):
         2. Federated address: "alex@otherserver" - routes through federation
 
         Args:
-            sender_id: ID of the sending pager device (UUID) - internal identifier
+            sender_id: ID of the sending pager device (dev_XXXXXXXX)
             recipient: Recipient username or federated address
             content: Message content (will be distilled if too long)
             priority: Message priority (0=normal, 1=high, 2=urgent)
@@ -993,7 +991,7 @@ class PagerTool(Tool):
         expires_at = utc_now() + timedelta(hours=expiry_hours)
         
         # Generate message ID
-        message_id = f"MSG-{uuid.uuid4().hex[:8].upper()}"
+        message_id = f"msg_{uuid.uuid4().hex[:8]}"
         
         # Create message signature using device secret
         message_signature = hashlib.sha256(
@@ -1488,7 +1486,7 @@ Provide ONLY the distilled message, no explanations or meta-text."""
         )
         
         trust_data = {
-            'id': f"TRUST-{uuid.uuid4().hex[:8].upper()}",
+            'id': f"trust_{uuid.uuid4().hex[:8]}",
             'user_id': self.user_id,
             'trusting_device_id': trusting_device_id,
             'trusted_device_id': trusted_device_id,

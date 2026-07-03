@@ -35,7 +35,7 @@ Every tool needs these core patterns:
 | **Deferred Initialization** | reminder_tool.py:114-145 | has_user_context() check, table creation |
 | **Database Schema** | reminder_tool.py:124-145 | Tables with encrypted__ fields, indexes |
 | | contacts_tool.py:264-279 | Schema with UUID primary keys |
-| **Operation Routing** | reminder_tool.py:179-252 | JSON kwargs parsing, operation dispatch |
+| **Operation Routing** | reminder_tool.py:179-252 | Direct schema parameters, operation dispatch |
 | | contacts_tool.py:173-220 | Clean operation routing pattern |
 | **Input Validation** | contacts_tool.py:242-258 | Validation with clear error messages |
 | | reminder_tool.py:282-294 | Required field validation |

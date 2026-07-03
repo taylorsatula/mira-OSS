@@ -192,15 +192,6 @@ class ContactsTool(Tool):
             ValueError: If operation fails or parameters are invalid
         """
         try:
-            # Parse kwargs JSON string if provided that way
-            if "kwargs" in kwargs and isinstance(kwargs["kwargs"], str):
-                try:
-                    params = json.loads(kwargs["kwargs"])
-                    kwargs = params
-                except json.JSONDecodeError as e:
-                    self.logger.error(f"Invalid JSON in kwargs for contacts_tool: {e}")
-                    raise ValueError(f"Invalid JSON in kwargs: {e}")
-            
             # Handle batch contact operations
             if operation == "add_contact" and "contacts" in kwargs:
                 return self._batch_add_contacts(kwargs.get("contacts"))

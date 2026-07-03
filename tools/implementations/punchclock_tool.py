@@ -221,23 +221,6 @@ class PunchclockTool(Tool):
     # Parameter helpers ----------------------------------------------------------
     def _normalize_params(self, params: Dict[str, Any]) -> Dict[str, Any]:
         payload: Dict[str, Any] = {}
-
-        if "kwargs" in params:
-            raw_kwargs = params.pop("kwargs")
-            if isinstance(raw_kwargs, str):
-                if raw_kwargs.strip():
-                    try:
-                        decoded = json.loads(raw_kwargs)
-                    except json.JSONDecodeError as exc:
-                        raise ValueError("kwargs must be valid JSON") from exc
-                else:
-                    decoded = {}
-            elif isinstance(raw_kwargs, dict):
-                decoded = raw_kwargs
-            else:
-                raise ValueError("kwargs must be a JSON object or mapping")
-            payload.update(decoded)
-
         payload.update(params)
 
         # Accept `time` instead of start_time for punch_in inputs

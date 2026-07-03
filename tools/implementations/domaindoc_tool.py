@@ -646,7 +646,7 @@ class DomaindocTool(Tool):
         return {
             "success": True,
             "label": label,
-            "description": doc.get("encrypted__description") or doc.get("description", ""),
+            "description": doc.get("encrypted__description") or "",
             "enabled": doc.get("enabled", False),
             "section_count": len(all_sections),
             "sections": section_tree
