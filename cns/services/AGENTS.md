@@ -34,6 +34,6 @@
 
 ## Wiring
 
-Memory surfacing pipeline (inside `orchestrator.process_message()`): `subcortical.generate()` → pinned cap (`max_pinned_memories=15`) → fresh budget (`max(min_fresh, max_surfaced - pinned)`) → `memory_relevance_service` embedding search → merge → `UpdateTrinketEvent` to `ProactiveMemoryTrinket`. Linked memories capped at `max_linked_per_primary=2` and rendered as `<context>` annotations. Total bounded by `max_surfaced_memories=20`.
+Memory surfacing pipeline (inside `orchestrator.process_message()`): `subcortical.generate()` (pressure warning at 6 surfaced memories, critical at 8) → pinned cap (`max_pinned_memories=6`) → fresh budget (`max(min_fresh=2, max_surfaced - pinned)`) → `memory_relevance_service` embedding search → merge → **hard cap to `max_surfaced_memories=8`** (pinned-first then fresh-by-score) → `UpdateTrinketEvent` to `ProactiveMemoryTrinket`. Linked memories capped at `max_linked_per_primary=2` and rendered as `<context>` annotations, globally deduped across the surfaced-memory block. The cap also bounds next-turn's retention cache, so subcortical retention only ever sees ≤8 passages.
 
 User model pipeline (triggered in segment collapse chain): `assessment_extractor.extract_signals()` produces `list[AssessmentSignal]` → `user_model_synthesizer.synthesize()` consumes signals → `system_prompt_parser` utilities provide anonymized prompt and section metadata to both steps.

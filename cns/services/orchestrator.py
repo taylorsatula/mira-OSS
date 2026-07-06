@@ -1393,9 +1393,17 @@ class ContinuumOrchestrator:
 
         surfaced_memories = self._merge_memories(pinned_memories, fresh_memories)
 
+        # Hard cap on memories shown to the model/frontend this turn. The merge
+        # above is positional (pinned-first, then fresh by effective score), so
+        # this slice keeps the most relevant: LLM-retained pinned fill first, fresh
+        # fills the remaining slots. This also bounds next-turn's retention cache.
+        if len(surfaced_memories) > max_surfaced:
+            surfaced_memories = surfaced_memories[:max_surfaced]
+
         logger.info(
             f"Memory surfacing: {len(pinned_memories)} pinned + "
-            f"{len(fresh_memories)} fresh = {len(surfaced_memories)} total"
+            f"{len(fresh_memories)} fresh = {len(surfaced_memories)} shown "
+            f"(cap {max_surfaced})"
         )
 
         return MemorySurfacingResult(

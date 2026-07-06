@@ -26,7 +26,7 @@ Portrait injection (`{user_context}`) and `{first_name}` / `{relative time since
 - `trinkets/manifest_trinket.py` — conversation segment manifest (stable, cached content)
 - `trinkets/email_trinket.py` — unread email headers in HUD (`StatefulTrinket`). Thin renderer — receives inbox data from `InboxPollerService` via `UpdateTrinketEvent`, renders `<inbox_status>` XML with nudge instruction. Zero I/O.
 - `trinkets/peanutgallery_trinket.py` — high-salience metacognitive directives with TTL expiry (`StatefulTrinket`). Preserves per-guidance `critical` severity and renders standard vs. critical guidance in separate HUD sections so fourth-wall repair instructions apply only to critical items.
-- `trinkets/proactive_memory_trinket.py` — surfaced long-term memories; exposes `get_cached_memories()` for orchestrator retention evaluation
+- `trinkets/proactive_memory_trinket.py` — surfaced long-term memories; exposes `get_cached_memories()` for orchestrator retention evaluation; globally dedups linked-memory context so a memory already shown as a primary or linked under another primary is not repeated
 - `trinkets/reminder_manager.py` — active reminders fetched and formatted for notification center
 - `trinkets/time_manager.py` — current datetime injection into notification center
 - `trinkets/__init__.py` — package init, no logic

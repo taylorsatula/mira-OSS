@@ -374,9 +374,9 @@ class SubcorticalLayer:
 
         Matches system prompt input format: mem_a1B2c3D4 [●●●○○] - Passage text
 
-        Uses a two-tier graduated pressure system derived from max_pinned_memories:
-        - Warning (at max_pinned - 4): early signal with runway to self-regulate
-        - Critical (at max_pinned): aggressive pruning instruction, force-truncation imminent
+        Uses a two-tier graduated pressure system for the curated memory window:
+        - Warning at MAX_PINNED_MEMORIES (6): budget is tightening; be selective
+        - Critical at MAX_SURFACED_MEMORIES (8): cache is full; force-truncation imminent
 
         Args:
             memories: Surfaced memories to format for retention evaluation
@@ -389,32 +389,36 @@ class SubcorticalLayer:
 
         lines = []
 
-        # Graduated pressure alerts derived from max_pinned_memories
-        from lt_memory.proactive import MAX_PINNED_MEMORIES
-        import math
+        # Graduated pressure alerts for the curated window. MAX_PINNED_MEMORIES
+        # is the warning trigger and hard cap for retained previous memories;
+        # MAX_SURFACED_MEMORIES is the critical/full-cache threshold.
+        from lt_memory.proactive import MAX_PINNED_MEMORIES, MAX_SURFACED_MEMORIES
         max_pinned = MAX_PINNED_MEMORIES
-        warning_threshold = max_pinned - 4
+        critical_threshold = MAX_SURFACED_MEMORIES
+        warning_threshold = MAX_PINNED_MEMORIES
         count = len(memories)
 
-        if count >= max_pinned:
-            # Critical: force-truncation imminent
-            prune_count = math.ceil(count / 2)
+        if count >= critical_threshold:
+            # Critical: surfaced cache is full; retained pins beyond max_pinned will be truncated.
+            prune_count = max(1, count - max_pinned)
             lines.append(
-                f'<mira:system_alert>\U0001f6a8 TOO MANY PINNED MEMORIES ({count}/{max_pinned}). '
-                f'The system WILL force-drop lowest-importance memories after this evaluation. '
+                f'<mira:system_alert>\U0001f6a8 SURFACED MEMORY CACHE FULL ({count}/{critical_threshold}). '
+                f'At most {max_pinned} previous memories may be retained; the system WILL force-drop '
+                f'lowest-importance retained memories beyond that cap after this evaluation. '
                 f'Aggressively prune \u2014 keep only memories that provide necessary context for '
                 f'the active conversation topic. Drop tangential, redundant, or background '
                 f'memories that aren\u2019t actively informing the discussion. You MUST remove at '
-                f'least {prune_count} to avoid forced truncation. \U0001f6a8</mira:system_alert>'
+                f'least {prune_count} to avoid forced truncation and preserve fresh discovery slots. '
+                f'\U0001f6a8</mira:system_alert>'
             )
         elif count >= warning_threshold:
             # Warning: budget tightening
             lines.append(
-                f'<mira:system_alert>\u26a0\ufe0f {count} memories are currently pinned. The system will '
-                f'force-drop lowest-importance memories if pinned count exceeds {max_pinned}. '
-                f'Be selective \u2014 retain memories that support the active topic, but let go of '
-                f'memories from topics the conversation has moved past. Pinning more memories '
-                f'reduces the budget for discovering new relevant ones.</mira:system_alert>'
+                f'<mira:system_alert>\u26a0\ufe0f {count} surfaced memories are available for retention. '
+                f'Only {max_pinned} previous memories can be retained, and retaining too many reduces '
+                f'the budget for discovering fresh relevant memories. Be selective \u2014 retain memories '
+                f'that support the active topic, but let go of memories from topics the conversation '
+                f'has moved past.</mira:system_alert>'
             )
 
         # Truncate passage text to reduce token mass competing with current_message.

@@ -72,14 +72,20 @@ class ProactiveMemoryTrinket(EventAwareTrinket):
             return ""
 
         parts = ["<surfaced_memories>"]
+        primary_ids = {memory.get('id', '') for memory in memories if memory.get('id')}
+        seen_linked_ids = set(primary_ids)
 
         for memory in memories:
-            parts.append(self._format_primary_memory_xml(memory))
+            parts.append(self._format_primary_memory_xml(memory, seen_linked_ids))
 
         parts.append("</surfaced_memories>")
         return "\n".join(parts)
 
-    def _format_primary_memory_xml(self, memory: Dict[str, Any]) -> str:
+    def _format_primary_memory_xml(
+        self,
+        memory: Dict[str, Any],
+        seen_linked_ids: set[str] | None = None,
+    ) -> str:
         """Format a primary memory as XML with nested linked_memories."""
         from utils.timezone_utils import format_relative_time, parse_time_string, format_datetime
 
@@ -138,27 +144,40 @@ class ProactiveMemoryTrinket(EventAwareTrinket):
         # Linked memories as compact inline context
         linked_memories = memory.get('linked_memories', [])
         if linked_memories:
-            parts.append(self._format_linked_context(linked_memories))
+            linked_context = self._format_linked_context(linked_memories, seen_linked_ids)
+            if linked_context:
+                parts.append(linked_context)
 
         parts.append("</memory>")
         return "\n".join(parts)
 
-    def _format_linked_context(self, linked_memories: List[Dict[str, Any]]) -> str:
+    def _format_linked_context(
+        self,
+        linked_memories: List[Dict[str, Any]],
+        seen_linked_ids: set[str] | None = None,
+    ) -> str:
         """
         Format linked memories as compact inline context annotations.
 
-        Deduplicates by target ID (keeps first occurrence per target).
+        Deduplicates by target ID across the full surfaced-memory block. Primary
+        memory IDs are pre-seeded into seen_linked_ids, so a memory already shown
+        as a primary is not repeated as linked context under another primary.
         Renders ~80 chars per line instead of ~200+ chars per full XML block.
         """
         if not linked_memories:
             return ""
 
-        # Dedup by target ID — keep first occurrence per target
+        if seen_linked_ids is None:
+            seen_linked_ids = set()
+
+        # Dedup by target ID — keep first occurrence per target across primaries
         seen_ids: dict = {}
         for linked in linked_memories:
             target_id = linked.get('id', '')
-            if target_id not in seen_ids:
-                seen_ids[target_id] = linked
+            if not target_id or target_id in seen_linked_ids:
+                continue
+            seen_ids[target_id] = linked
+            seen_linked_ids.add(target_id)
 
         lines = []
         for linked in seen_ids.values():

@@ -36,15 +36,27 @@ SEARCH_MAX_WORKERS = 2
 SEARCH_OVERSAMPLE_FACTOR = 2
 
 # Context window caps (cross-module: also imported by orchestrator, subcortical)
-MAX_SURFACED_MEMORIES = 20   # Max total primary memories (pinned + fresh)
-MAX_PINNED_MEMORIES = 15     # Hard cap on retained from previous turn
-MIN_FRESH_MEMORIES = 5       # Guaranteed fresh retrieval slots
+# MAX_SURFACED_MEMORIES is the authoritative hard cap on primary memories shown
+# to the model/frontend each turn. The orchestrator enforces it after the
+# pinned+fresh merge, so the ProactiveMemoryTrinket cache (and thus next-turn's
+# subcortical retention input) is also capped to this count.
+#
+# Tuned for attention, not tokens: 15-20 memories dilute attention so each
+# becomes noise; a small curated subset means each one earns integration into
+# the response. The ranking pipeline (RRF + effective_score + link rerank)
+# already does the curation — this cap just bounds how many survive to the
+# window. 8 keeps the subset small while leaving room for pinned continuity plus
+# fresh discovery. MAX_PINNED is intentionally below MAX_SURFACED so the pinned
+# cap can bind and preserve MIN_FRESH slots.
+MAX_SURFACED_MEMORIES = 8    # Hard cap on primary memories shown per turn
+MAX_PINNED_MEMORIES = 6      # Max retained from the previous cache; also pressure warning trigger
+MIN_FRESH_MEMORIES = 2       # Min fresh fetched; sliding budget = max(this, MAX_SURFACED - pinned)
 MAX_LINKED_PER_PRIMARY = 2
 
 # Assistant message embedding for memory surfacing
 NUM_ASSISTANT_MESSAGES = 2
 ASSISTANT_SIMILARITY_THRESHOLD = 0.75
-MAX_ASSISTANT_MEMORIES = 5
+MAX_ASSISTANT_MEMORIES = 3
 
 # Debut boost: temporary ranking boost for new memories before they build hub connections
 DEBUT_FULL_BOOST_DAYS = 7    # Full boost for days 0-6 (activity days, not calendar)
