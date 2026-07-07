@@ -41,3 +41,11 @@ backups/
 
 # Xcode user data
 xcuserdata/
+
+# CRM integration suite (local-only, references ../crm)
+tools/implementations/_crm_client.py
+tools/implementations/crm_clients_tool.py
+tools/implementations/crm_jobs_tool.py
+tools/implementations/crm_catalog_tool.py
+tools/implementations/crm_records_tool.py
+tools/implementations/crm_billing_tool.py
