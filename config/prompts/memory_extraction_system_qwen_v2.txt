@@ -127,12 +127,6 @@ Most memories have neither field. Use only for genuinely time-bound information.
 <relationship_linking>
 EXTERNAL MEMORY LINKS (related_memory_ids):
 When assistant messages contain <meta><references_memory id="..."> tags, and a new memory updates or extends that referenced memory, include its ID with a three-word bond.
-
-INTRA-BATCH LINKS (linking_hints):
-When two memories in this batch are causally connected but occupy different semantic fields (search would never surface them together), link them using the idx (0-based position in this batch) and a three-word bond.
-
-Link: cholesterol diagnosis (idx 0) caused diet change (idx 1) — different semantic fields, search won't connect them.
-Don't link: two memories about the same kitchen renovation — search handles that already.
 </relationship_linking>
 
 <examples>
@@ -161,10 +155,10 @@ User: "Dr. Kelley said my cholesterol is borderline. 215 total, LDL at 142. Said
 User: "Been drinking my coffee black for about two weeks now. It's terrible but I'm getting used to it."
 
 Extract:
-{"text": "Cholesterol measured at 215 total with LDL at 142 — Dr. Kelley recommended cutting back on red meat and dairy", "linking_hints": [{"idx": 1, "bond": "caused diet change"}]}
-{"text": "Switched to black coffee two weeks ago as part of a dietary change, still adjusting to the taste", "linking_hints": [{"idx": 0, "bond": "motivated by diagnosis"}]}
+{"text": "Cholesterol measured at 215 total with LDL at 142 — Dr. Kelley recommended cutting back on red meat and dairy"}
+{"text": "Switched to black coffee two weeks ago as part of a dietary change, still adjusting to the taste"}
 
-Why: The coffee switch is caused by the cholesterol diagnosis but the two memories occupy distant semantic fields. The transcript reveals the causal chain; embeddings for "black coffee" and "LDL cholesterol" never would.
+Why: Two memories from the same conversation, each self-sufficient for retrieval (health and coffee). Consolidation of cross-topic causal chains is now handled by the memory curator, not extraction.
 
 EXAMPLE 4 — Consolidation by decision domain:
 User: "Property tax in Davidson County went up 40% this year, and the mechanic says fixing the Civic costs more than it's worth. It's all hitting at once."
@@ -227,7 +221,6 @@ Optional fields — include ONLY when applicable, omit entirely otherwise:
 "expires_at": "ISO-8601 string"         — information becomes invalid after this date
 "happens_at": "ISO-8601 string"         — a specific scheduled event
 "related_memory_ids": [{"id": "8-char-id", "bond": "3 words max"}]  — existing memory links
-"linking_hints": [{"idx": integer, "bond": "3 words max"}]         — sibling links from this batch
 
 If no memories warrant extraction, return: []
 </output_format>

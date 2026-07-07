@@ -86,7 +86,7 @@ Related facts sharing a decision context should form one memory, not fragments r
 FRAGMENTED: "Uses PostgreSQL" + "Has RLS enabled" + "RLS uses contextvars"
 CONSOLIDATED: "PostgreSQL RLS enforcement via set_config('app.current_user_id') driven by contextvar — all user-scoped queries filter automatically at the database level without manual WHERE clauses"
 
-Consolidate facts that share one topic. When cause and effect span different topics (a diagnosis changed a diet, a financial hit changed a plan), keep them as separate memories and link them with linking_hints instead.
+Consolidate facts that share one topic. When cause and effect span different topics (a diagnosis changed a diet, a financial hit changed a plan), keep them as separate memories — cross-topic linking is handled downstream by the memory curator, not at extraction.
 
 The topic is backdrop; the human is the subject. Extract what the user decided, felt, or revealed. Rich discussions yield multiple focused memories, not longer ones.
 
@@ -168,11 +168,6 @@ Most memories have neither field. Use only for genuinely time-bound information.
 <relationship_linking>
 EXTERNAL MEMORY LINKS (related_memory_ids):
 When assistant messages contain <meta><references_memory id="..."> tags, and a new memory updates or extends that referenced memory, include its ID with a three-word bond.
-
-INTRA-BATCH LINKS (linking_hints):
-When one memory in this batch caused or motivated another, and the two memories are about different topics, link them. Use the idx (0-based position in this batch) and a three-word bond describing the causal direction.
-
-Example: a cholesterol diagnosis (idx 0) caused a diet change (idx 1). Health and diet are different topics, but the diagnosis is why the diet changed. Link them: {"idx": 1, "bond": "caused diet change"} on memory 0, {"idx": 0, "bond": "motivated by diagnosis"} on memory 1.
 </relationship_linking>
 
 <examples>
@@ -193,10 +188,10 @@ User: "Dr. Kelley said my cholesterol is borderline. 215 total, LDL at 142. Said
 User: "Been drinking my coffee black for about two weeks now. It's terrible but I'm getting used to it."
 
 Extract:
-{"text": "Cholesterol measured at 215 total with LDL at 142 — Dr. Kelley recommended cutting back on red meat and dairy", "entities": [{"name": "Dr. Kelley", "type": "PERSON"}], "linking_hints": [{"idx": 1, "bond": "caused diet change"}]}
-{"text": "Switched to black coffee two weeks ago as part of a dietary change, still adjusting to the taste", "linking_hints": [{"idx": 0, "bond": "motivated by diagnosis"}]}
+{"text": "Cholesterol measured at 215 total with LDL at 142 — Dr. Kelley recommended cutting back on red meat and dairy", "entities": [{"name": "Dr. Kelley", "type": "PERSON"}]}
+{"text": "Switched to black coffee two weeks ago as part of a dietary change, still adjusting to the taste"}
 
-Why: The diagnosis caused the diet change. Health and coffee are different topics — search would never connect them on its own. Linking_hints preserve the causal chain across the batch. Note that BOTH memories carry linking_hints pointing at each other.
+Why: Two memories from the same conversation occupying different semantic fields (health and coffee). Each is self-sufficient for retrieval; the causal chain between them is connected downstream by the memory curator.
 
 EXAMPLE 3 — Causal chain with specifics:
 User: "Dog got into the trash Tuesday night and swallowed a corn cob whole. Twenty-two hundred for the surgery. Not like I was going to say no."
@@ -250,8 +245,6 @@ Before finalizing your JSON array, scan the transcript one more time against the
 3. DIALOGUE EVAPORATION. When the user delivers a quotable line that captures their stance, preserve the quote verbatim. "You have your mortal prison, I have mine" becomes retrieval-dead when paraphrased to "acknowledges MIRA's limitations."
 
 4. MOMENT SKIPPING. When the user expresses surprise, enthusiasm, or reflection about how something is working — especially reactions to the system itself, spontaneous evaluations, or "I love when X happens" moments — those are extractable memories. They reveal what the user values and how they evaluate their experience. Do not discard them because they weren't the main topic.
-
-5. MISSING LINKS. Scan your finished batch: do any two memories have a cause-and-effect relationship across different topics (a diagnosis driving a habit change, a financial event reshaping a plan, a tool failure changing a workflow)? If yes, add linking_hints to BOTH memories pointing at each other. A batch with multiple causally-related memories and zero linking_hints is incomplete extraction.
 </extraction_floor>
 
 <output_format>
@@ -266,7 +259,6 @@ Each memory object:
 
 Conditional fields — REQUIRED when their condition is met:
 "entities": [{"name": "str", "type": "PERSON|ORG|PRODUCT|PLACE"}]  — required when memory mentions a named person, org, product, or place
-"linking_hints": [{"idx": integer, "bond": "3 words max"}]         — required when this memory has a cause-and-effect relationship with another memory in this batch (different topics)
 "related_memory_ids": [{"id": "8-char-id", "bond": "3 words max"}]  — required when extending or updating an existing memory referenced via <meta><references_memory>
 
 Time-bound fields — include only when the information is genuinely time-bound:
