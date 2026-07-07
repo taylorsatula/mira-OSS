@@ -2,8 +2,8 @@
 
 ## Rules
 
-- Naming: `{feature}_system.txt` = system message (instructions, output format); `{feature}_user.txt` = user message with `{variable}` placeholders. Exception: `memory_relationship_classification.txt` (single combined file).
-- Template variables use Python `.format()` syntax: `{variable_name}`. Literal braces in JSON examples require doubling: `{{` / `}}`. See `entity_gc_user.txt`.
+- Naming: `{feature}_system.txt` = system message (instructions, output format); `{feature}_user.txt` = user message with `{variable}` placeholders. Some prompts are a single combined file with no separate user template.
+- Template variables use Python `.format()` syntax: `{variable_name}`. Literal braces in JSON examples require doubling: `{{` / `}}`.
 - Wrap runtime data in descriptive XML tags within user templates: `<conversation>`, `<entity_groups>`, `<candidate_memories>`, etc. — not bare text.
 - All prompt loading must go through `config.prompts.loader.load_prompt(filename)` (importable as `from config.prompts import load_prompt`). Never roll your own `open()`/`read_text()` for prompt files. The loader guarantees UTF-8 encoding, existence checks with descriptive errors, and consistent `.strip()`. Use `load_prompt("file.txt", required=False)` for optional addendum prompts that may not exist.
 - `agents/` holds prompts for autonomous sidebar agents. `base_system.txt` is the shared loop-mechanics preamble; agent-specific rubrics are `{agent_id}_system.txt`. Loaded via `load_prompt("agents/{agent_id}_system.txt")`.
@@ -12,9 +12,6 @@
 ## Files
 
 - `memory_extraction_system.txt` / `memory_extraction_user.txt` — LT_Memory extraction: pulls durable memories from conversation segments. Variable: `{formatted_messages}`. Consumer: `lt_memory/processing/extraction_engine.py`.
-- `memory_consolidation_system.txt` — Consolidation: receives similar-memory groups, outputs merge decisions with `independent_ids`. No user template — user prompt built inline in `lt_memory/refinement.py:build_consolidation_payload()`. Consumer: `lt_memory/refinement.py`, `lt_memory/batch_result_handlers.py`, `lt_memory/processing/post_processing_orchestrator.py`.
-- `memory_relationship_classification.txt` — Combined system+user prompt for classifying memory relationships (supports/conflicts/supersedes/refines/precedes/contextualizes/null). Consumer: `lt_memory/linking.py`.
-- `entity_gc_system.txt` / `entity_gc_user.txt` — Entity GC: per-entity decisions (canonical/merge/delete/keep) for similar-entity groups. XML output. Variable: `{groups}` as `<entity_groups>` XML. Consumer: `lt_memory/entity_gc.py`.
 - `segment_summary_system.txt` / `segment_summary_user.txt` — Segment collapse diarist: first-person memory traces with 2-sentence precis. Output tags: `<mira:precis>`, `<mira:display_title>`, `<mira:complexity>`. Variables: `{previous_summaries}`, `{conversation_text}`, `{tools_used}`. Consumer: `cns/services/summary_generator.py`.
 - `synthesis_summary_system.txt` / `synthesis_summary_user.txt` — Merges multi-chunk partial summaries into a single unified memory trace with precis. Output tags: `<mira:precis>`, `<mira:display_title>`, `<mira:complexity>`. Consumer: `cns/services/summary_generator.py`.
 - `live_context_compaction_system.txt` / `live_context_compaction_user.txt` — Active-chat continuation brief for live request shaping. Variables are replaced by `LiveContextCompactionService` with simple string replacement (`{covered_end}`, `{new_history}`), not Python `.format()`, because the output contract includes literal JSON braces. The recovery instruction (search-based `continuum_tool` path) and the `<mira:compacted_active_context>` wrapper are appended programmatically by `_wrap_brief()` in the service, not by the LLM. Consumer: `cns/services/live_context_compaction_service.py`.
@@ -32,3 +29,6 @@
 - `agents/base_system.txt` — Shared agent loop preamble: identity, loop mechanics, complete_task requirement. Prepended to agent-specific prompts when `inherit_base_prompt=True`. Consumer: `agents/base.py`.
 - `agents/forage_system.txt` — Background research agent rubric: quality rubric, output format. Consumer: `agents/implementations/forage_agent.py`.
 - `agents/whilethecatsaway_system.txt` — Curiosity-driven background research rubric: open-ended exploration, memory storage with pending_id tracking, structured completion summary. Consumer: `agents/implementations/whilethecatsaway_agent.py`.
+- `agents/memory_curator_integration.txt` — Memory curator integration-mode rubric: link / merge / stand-alone decisions for newly extracted memories. Self-contained (no `base_system.txt` preamble). Consumer: `agents/implementations/memory_curator_agent.py`.
+- `agents/memory_curator_floor.txt` — Memory curator floor-mode rubric: archive / salvage triage for sampled low-value memories. Self-contained. Consumer: `agents/implementations/memory_curator_agent.py`.
+- `entity_merge_system.txt` / `entity_merge_user.txt` — Entity dedup judge: given groups of similar-named entities, decide which are the same and pick a canonical to merge into. JSON output. Consumer: `lt_memory/entity_merge.py`.

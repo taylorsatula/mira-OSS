@@ -8,7 +8,7 @@
 - The `config` singleton is module-level state created at import time: `config = initialize_config()` in `config_manager.py`. Import it as `from config import config`. Never instantiate `AppConfig` directly in application code.
 - `__init__.py` imports `tools.registry` before `config_manager` — this import order is load-bearing for circular dependency avoidance. Do not reorder.
 - `config.<tool_name>_tool` triggers `AppConfig.__getattr__` → `get_tool_config()` → `registry.get_or_create()`. This is the only correct way to access tool configs.
-- `ScheduledJobsConfig` fields ending in `_use_days` are modular activity-day intervals, not calendar intervals. `consolidation_use_days=7` means "run when `MOD(cumulative_activity_days, 7) = 0`", not "run every 7 calendar days".
+- `ScheduledJobsConfig` fields ending in `_use_days` are modular activity-day intervals, not calendar intervals. `floor_use_days=7` means "run when `MOD(cumulative_activity_days, 7) = 0`", not "run every 7 calendar days".
 - `system_prompt.txt` is loaded once at startup by `AppConfig._load_system_prompt()`. Template variables `{first_name}`, `{user_context}`, and `{relative time since account creation}` are substituted by `working_memory/core.py`, not by config.
 
 ## Config Models (6 total)
@@ -25,10 +25,8 @@ Algorithm tuning constants were moved from config.py to their consumer modules:
 - `lt_memory/proactive.py` — surfacing thresholds, link weights, debut boost, context window caps
 - `lt_memory/hybrid_search.py` — intent weights, RRF k, search defaults
 - `lt_memory/linking.py` — link discovery thresholds, TF-IDF settings
-- `lt_memory/refinement.py` — consolidation thresholds
 - `lt_memory/processing/batch_coordinator.py` — batch processing limits
 - `lt_memory/processing/memory_processor.py` — dedup thresholds
-- `lt_memory/entity_gc.py` — pg_trgm similarity threshold
 - `cns/services/orchestrator.py` — context overflow, topic drift, tool result limits
 - `cns/services/peanutgallery_service.py` — trigger interval, seed count, TTL
 - `cns/services/peanutgallery_model.py` — prerunner tokens, message window

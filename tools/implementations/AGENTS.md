@@ -29,12 +29,11 @@ Every `tool_schema` parameter description is an LLM caller contract. Use exact t
 - `inbox_tool.py` — Local file drop-off dropbox. User drops files into a configured filesystem path (default `/tmp/mira-dropbox`); tool exposes `list` / `read` (paginated text extraction for TXT/CSV/JSON/DOCX/XLSX) / `archive` (moves to `dropbox/archive/` with a `.meta.json` sidecar). Does not write to domain docs or memory itself — model composes with `domaindoc_tool` or `memory_tool` between `read` and `archive`. PDFs and images are archive-only. Disabled by default (`InboxToolConfig.enabled=False`); not in `ESSENTIAL_TOOLS` — opt in via config to load
 - `invokeother_tool.py` — Meta-tool for on-demand loading of non-essential tools at runtime
 - `maps_tool.py` — Google Maps geocoding, places, and distance; lazy client init
-- `memory_tool.py` — LT_Memory search, pin, touch, and manual create; `create_memory` queues to Valkey for deferred processing at segment collapse (no spaCy at init time)
+- `memory_tool.py` — LT_Memory search, create, link, annotate, touch, archive, and merge; `create_memory` queues to Valkey for deferred processing at segment collapse (no spaCy at init time). `archive` soft-deletes a memory; `merge_memories` consolidates 2+ memories via `ConsolidationHandler.execute_consolidation` (sources archived, links transferred, new memory stamped `last_tended_at`). `link_memories` carries an optional 3-word `bond` (the extraction bond from candidate hints), persisted on the link as `extraction_bond` and surfaced when a memory is referenced via `proactive_memory_trinket`. `CURATOR_MEMORY_SCHEMA` module constant excludes `create_memory` for the `MemoryCuratorAgent` (anti-silt).
 - `pager_tool.py` — Lattice federation messaging
 - `phoneafriend_tool.py` — Synchronous outside-model consultation; tool choices `claude`/`gemini` map to dedicated `internal_llm` keys `phoneafriend_claude`/`phoneafriend_gemini`; disables provider stall fallback so the requested outside voice cannot silently swap to `claude-high`; stores user-bound, segment-scoped subagent transcripts in Valkey under `phoneafriend:{user_id}:{segment_id}:{thread_id}` with TTL cleanup
 - `punchclock_tool.py` — Time tracking
 - `reminder_tool.py` — Reminder scheduling and management
-- `square_tool.py` — Square payment and POS integration
 - `weather_tool.py` — Weather data retrieval
 - `web_tool.py` — Web search (Kagi primary, DuckDuckGo fallback), page content extraction (trafilatura; HTTP first, Playwright escalation for JS-heavy pages), and HTTP requests
 - `sidebar_tool.py` — Sidebar agent lifecycle: scratchpad (write/read/clear notes) and `complete_task` (writes to `sidebar_activity` SQLite). Disabled (`enabled: False`) — sidebar agents only, not main conversation
