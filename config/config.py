@@ -108,10 +108,6 @@ class ScheduledJobsConfig(BaseModel):
         default=120,
         description="Timeout for batch polling job monitors"
     )
-    consolidation_use_days: int = Field(
-        default=7,
-        description="Use-days between consolidation"
-    )
     temporal_score_recalc_use_days: int = Field(
         default=1,
         description="Use-days between temporal score recalculations"
@@ -120,10 +116,6 @@ class ScheduledJobsConfig(BaseModel):
         default=1,
         description="Use-days between bulk score recalculations"
     )
-    entity_gc_use_days: int = Field(
-        default=7,
-        description="Use-days between entity garbage collection"
-    )
     batch_cleanup_use_days: int = Field(
         default=1,
         description="Use-days between batch cleanup"
@@ -131,6 +123,49 @@ class ScheduledJobsConfig(BaseModel):
     portrait_synthesis_use_days: int = Field(
         default=10,
         description="Use-days between portrait synthesis (runs in segment collapse chain)"
+    )
+    entity_merge_use_days: int = Field(
+        default=7,
+        ge=1,
+        description="Use-day cadence for background entity dedup/merge (pg_trgm candidates → LLM judge)"
+    )
+
+
+class MemoryCuratorConfig(BaseModel):
+    """Memory-graph curation agent (integration + floor modes).
+
+    The MemoryCuratorAgent tends new memories at segment collapse (integration)
+    and triages a random sample of low-value unseen memories on a use-day
+    cadence (floor). Floor sampling is deterministic SQL heuristics over
+    importance_score + last_tended_at staleness; the agent makes all judgment
+    decisions (link / merge / archive / salvage).
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description="Enable the memory curator (integration spawn + floor trigger)"
+    )
+    floor_threshold: float = Field(
+        default=0.1,
+        ge=0.0,
+        le=1.0,
+        description="importance_score strictly below this value makes a memory floor-eligible"
+    )
+    floor_unseen_days: int = Field(
+        default=14,
+        ge=1,
+        description="Wall-clock days a memory must be un-tended before it is floor-eligible "
+                    "(applied to last_tended_at, or to created_at when last_tended_at is NULL)"
+    )
+    floor_sample_size: int = Field(
+        default=8,
+        ge=1,
+        description="Maximum memories sampled per floor cycle (bounds agent cost)"
+    )
+    floor_use_days: int = Field(
+        default=7,
+        ge=1,
+        description="Use-day cadence for the floor trigger (get_users_due_for_job interval)"
     )
 
 

@@ -16,6 +16,7 @@ from config.config import (
     ApiServerConfig,
     SystemConfig,
     ScheduledJobsConfig,
+    MemoryCuratorConfig,
     LatticeConfig,
     SidebarDispatcherConfig,
 )
@@ -33,6 +34,7 @@ class AppConfig(BaseModel):
     scheduled_jobs: ScheduledJobsConfig = Field(default_factory=ScheduledJobsConfig)
     lattice: LatticeConfig = Field(default_factory=LatticeConfig)
     sidebar_dispatcher: SidebarDispatcherConfig = Field(default_factory=SidebarDispatcherConfig)
+    memory_curator: MemoryCuratorConfig = Field(default_factory=MemoryCuratorConfig)
 
 
     # System prompt loaded once at startup

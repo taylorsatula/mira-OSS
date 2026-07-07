@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from lt_memory.models import Memory
     from lt_memory.db_access import LTMemoryDB
     from cns.infrastructure.continuum_pool import ContinuumPool
+    from tools.repo import ToolRepository
 
 from cns.core.events import SegmentTimeoutEvent, SegmentCollapsedEvent, ManifestUpdatedEvent
 from cns.core.message import Message
@@ -59,6 +60,7 @@ class SegmentCollapseHandler:
         event_bus: EventBus,
         continuum_pool: ContinuumPool,
         lt_memory_factory: LTMemoryFactory,
+        tool_repo: 'ToolRepository',
     ):
         """
         Initialize collapse handler.
@@ -70,6 +72,7 @@ class SegmentCollapseHandler:
             event_bus: Event bus for publishing events
             continuum_pool: Continuum pool for cache invalidation
             lt_memory_factory: LT_Memory factory for extraction
+            tool_repo: Tool repository for spawning the MemoryCuratorAgent
         """
         self.continuum_repo = continuum_repo
         self.summary_generator = summary_generator
@@ -77,6 +80,17 @@ class SegmentCollapseHandler:
         self.event_bus = event_bus
         self.continuum_pool = continuum_pool
         self.lt_memory_factory = lt_memory_factory
+        self.tool_repo = tool_repo
+
+        # Late-register the integration-curator spawn callback on the
+        # lt_memory factory. The factory was created before tool_repo existed,
+        # so this is the seam: lt_memory storage calls on_memories_stored();
+        # this handler (which owns tool_repo + event_bus) spawns the agent.
+        # lt_memory never imports from agents/ — the callback is the boundary.
+        try:
+            self.lt_memory_factory.on_memories_stored = self._on_memories_stored
+        except Exception:
+            logger.warning("Could not register on_memories_stored callback", exc_info=True)
 
         # Initialize feedback loop components (lazy - may not be available yet)
         self._assessment_extractor = None
@@ -585,6 +599,10 @@ class SegmentCollapseHandler:
         session_manager = get_shared_session_manager()
         db = LTMemoryDB(session_manager)
 
+        # Collect stored manual memories so the integration curator can tend
+        # them after the loop (preserving their user-specified attributes).
+        stored_manual = []  # list[tuple[str, str]] of (full_uuid_str, text)
+
         for mem in all_pending:
             try:
                 # Generate embedding (768d deep encoder)
@@ -637,10 +655,117 @@ class SegmentCollapseHandler:
                     f"Processed manual memory {memory_id} "
                     f"(pending_id: {mem.pending_id})"
                 )
+                stored_manual.append((str(memory_id), mem.text))
 
             except Exception:
                 # Log but don't fail segment collapse on individual memory failures
                 logger.exception("Failed to process pending memory %s", mem.pending_id)
+
+        # Tend the manually-created memories via the integration curator too.
+        # They were stored immediately with user-specified attributes (score,
+        # happens_at, expires_at, supersedes) — preserved as-is; the curator
+        # only decides link/merge/stand-alone on the neighborhood.
+        if stored_manual:
+            self._tend_manual_memories(user_id, segment_id, stored_manual)
+
+    def _on_memories_stored(
+        self,
+        *,
+        user_id: str,
+        segment_id: Optional[str],
+        memory_ids: list,
+        memories: list,
+        candidate_hints: dict,
+    ) -> None:
+        """Factory callback: spawn the integration curator for newly stored memories.
+
+        Registered on lt_memory_factory.on_memories_stored in __init__. Called by
+        store_and_tend_extraction (both execution paths) after memories land.
+        """
+        new_memories = [
+            {"memory_id": str(mid), "text": getattr(mem, "text", "")}
+            for mid, mem in zip(memory_ids, memories)
+        ]
+        self._spawn_integration_curator(user_id, segment_id, new_memories, candidate_hints)
+
+    def _tend_manual_memories(
+        self,
+        user_id: str,
+        segment_id: str,
+        stored_manual: list,
+    ) -> None:
+        """Build candidate hints for manual memories and spawn the curator.
+
+        Manual memories carry user-specified attributes (score, happens_at,
+        expires_at, supersedes) and skip entity extraction, so candidate hints
+        come from discovery axes only (no extraction-time bonds).
+        """
+        candidate_hints: dict[str, list[dict]] = {}
+        linking = self.lt_memory_factory.linking
+        for memory_id_str, _text in stored_manual:
+            try:
+                hints = linking.find_candidate_hints(UUID(memory_id_str))
+                if hints:
+                    candidate_hints[memory_id_str] = hints
+            except Exception:
+                logger.warning("find_candidate_hints failed for manual memory %s", memory_id_str, exc_info=True)
+        new_memories = [{"memory_id": mid, "text": text} for mid, text in stored_manual]
+        self._spawn_integration_curator(user_id, segment_id, new_memories, candidate_hints)
+
+    def _spawn_integration_curator(
+        self,
+        user_id: str,
+        segment_id: Optional[str],
+        new_memories: list[dict],
+        candidate_hints: dict[str, list[dict]],
+    ) -> None:
+        """Spawn MemoryCuratorAgent integration mode (forage-style background thread).
+
+        The agent tends each new memory: link / merge / stand-alone, using the
+        pre-computed candidate hints (deterministic discovery + extraction
+        bonds). Runs in a daemon thread with copied user context so the
+        collapse chain doesn't block on curation.
+        """
+        if not new_memories:
+            return
+        if self.tool_repo is None:
+            logger.warning("tool_repo unavailable; skipping integration curator spawn")
+            return
+
+        from agents.implementations.memory_curator_agent import MemoryCuratorAgent
+        from agents.sidebar import WorkItem
+        from contextvars import copy_context
+        import threading
+
+        seg_id = str(segment_id) if segment_id else "unknown"
+        work_item = WorkItem(
+            item_id=f"integrate_{seg_id}_{user_id}",
+            interface_name="memory_curator_integration",
+            context={
+                "mode": "integration",
+                "segment_id": seg_id,
+                "new_memories": new_memories,
+                "candidate_hints": candidate_hints,
+            },
+        )
+
+        try:
+            agent = MemoryCuratorAgent(tool_repo=self.tool_repo)
+            ctx = copy_context()
+            thread = threading.Thread(
+                target=ctx.run,
+                args=(agent.run, work_item, self.event_bus),
+                name=f"curator-integrate-{work_item.item_id[:24]}",
+                daemon=True,
+            )
+            thread.start()
+            logger.info(
+                "Spawned MemoryCuratorAgent (integration) for segment %s, %d memories",
+                seg_id, len(new_memories),
+            )
+        except Exception:
+            # Curation is best-effort — never fail the collapse chain.
+            logger.exception("Failed to spawn MemoryCuratorAgent (integration)")
 
     def _find_memory_by_short_id(self, short_id: str, db: LTMemoryDB) -> Memory | None:
         """

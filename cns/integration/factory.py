@@ -195,6 +195,7 @@ class CNSIntegrationFactory:
             from working_memory.trinkets.location_trinket import LocationTrinket
             from working_memory.trinkets.asyncactivity_trinket import AsyncActivityTrinket
             from working_memory.trinkets.live_context_compaction_trinket import LiveContextCompactionTrinket
+            from working_memory.trinkets.memory_curator_trinket import MemoryCuratorTrinket
 
             # @CODEX: I feel like we could do away with these manual registrations if they're all going to do identical asks for ```event_bus, self._working_memory```. Thoughts?
             # Trinkets self-register with working memory
@@ -212,6 +213,7 @@ class CNSIntegrationFactory:
             LoraTrinket(event_bus, self._working_memory)
             LocationTrinket(event_bus, self._working_memory)
             AsyncActivityTrinket(event_bus, self._working_memory)
+            MemoryCuratorTrinket(event_bus, self._working_memory)
 
             logger.info("Event-driven working memory initialized with trinkets")
         return self._working_memory
@@ -381,7 +383,8 @@ class CNSIntegrationFactory:
             embeddings_provider=embeddings_provider,
             event_bus=event_bus,
             continuum_pool=continuum_pool,
-            lt_memory_factory=lt_memory_factory
+            lt_memory_factory=lt_memory_factory,
+            tool_repo=self._tool_repo,
         )
 
         # Store singleton for API access

@@ -11,12 +11,13 @@ processing at segment collapse. This keeps tool initialization lightweight
 entity extraction) to the existing extraction pipeline.
 """
 
+import copy
 import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from typing import Dict, Any, Optional, List
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
 
@@ -47,12 +48,6 @@ class MemoryToolConfig(BaseModel):
         default=10,
         description="Minimum characters for memory text"
     )
-    manual_link_confidence: float = Field(
-        default=1.0,
-        ge=0.0,
-        le=1.0,
-        description="Confidence score for manually created links"
-    )
     default_importance_user_requested: float = Field(
         default=0.7,
         ge=0.0,
@@ -64,12 +59,6 @@ class MemoryToolConfig(BaseModel):
         ge=0.0,
         le=1.0,
         description="Default importance for MIRA-initiated memories"
-    )
-    confidence_cluster_threshold: float = Field(
-        default=0.15,
-        ge=0.0,
-        le=0.5,
-        description="Score threshold for clustering similar results"
     )
     max_search_results: int = Field(
         default=20,
@@ -119,8 +108,8 @@ class MemoryTool(Tool):
             "properties": {
                 "operation": {
                     "type": "string",
-                    "enum": ["search", "create_memory", "link_memories", "annotate_memory", "touch"],
-                    "description": "Operation to perform"
+                    "enum": ["search", "create_memory", "link_memories", "annotate_memory", "touch", "archive", "merge_memories"],
+                    "description": "Operation to perform: search (find memories), create_memory (queue a new memory), link_memories (write a typed relationship), annotate_memory (add a note), touch (record memories used in your response), archive (soft-delete a memory), merge_memories (consolidate 2+ memories into one)"
                 },
                 # Search parameters
                 "query": {
@@ -178,6 +167,10 @@ class MemoryTool(Tool):
                     "type": "string",
                     "description": "Explanation for why this link exists. Min 5 chars. Stored with the link for future reference. Required for 'link_memories'"
                 },
+                "bond": {
+                    "type": "string",
+                    "description": "Optional 3-word relationship descriptor carried from extraction (e.g. 'annoyance became comfort'). Preserved on the link and surfaced when the memory is referenced elsewhere. Omit or empty when no extraction bond exists."
+                },
                 # Annotate memory parameters
                 "memory_id": {
                     "type": "string",
@@ -191,7 +184,16 @@ class MemoryTool(Tool):
                 "memory_ids": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "List of mem_XXXXXXXX IDs that were actually used in your response. Must be non-empty. Required for 'touch'"
+                    "description": "List of mem_XXXXXXXX IDs. Required for 'touch' (memories referenced in your response) and 'merge_memories' (memories to consolidate into one)"
+                },
+                # Merge memories parameters (curator)
+                "consolidated_text": {
+                    "type": "string",
+                    "description": "The unified memory text that replaces the merged memories. Captures what was preserved across the sources. Required for 'merge_memories'"
+                },
+                "merge_note": {
+                    "type": "string",
+                    "description": "Optional note on what the merge preserved or elided. Stored as a provenance annotation on the new memory. For 'merge_memories'"
                 }
             },
             "required": ["operation"]
@@ -260,10 +262,14 @@ class MemoryTool(Tool):
                 return self._annotate_memory(**kwargs)
             elif operation == "touch":
                 return self._touch(**kwargs)
+            elif operation == "archive":
+                return self._archive(**kwargs)
+            elif operation == "merge_memories":
+                return self._merge_memories(**kwargs)
             else:
                 raise ValueError(
                     f"Unknown operation: {operation}. "
-                    f"Valid operations are: search, create_memory, link_memories, annotate_memory, touch"
+                    f"Valid operations are: search, create_memory, link_memories, annotate_memory, touch, archive, merge_memories"
                 )
         except Exception as e:
             self.logger.error(f"Error executing {operation} in memory_tool: {e}")
@@ -358,7 +364,6 @@ class MemoryTool(Tool):
         if not paginated_results:
             return {
                 "status": "no_results",
-                "confidence": 0.0,
                 "query": query,
                 "results": [],
                 "result_count": 0,
@@ -384,7 +389,7 @@ class MemoryTool(Tool):
                 for i, linked in enumerate(memory.linked_memories):
                     linked.link_metadata = {
                         "link_type": related[i]["link_type"],
-                        "confidence": related[i]["confidence"],
+                        "bond": related[i].get("bond", ""),
                         "reasoning": related[i]["reasoning"],
                         "depth": related[i]["depth"],
                         "linked_from_id": related[i]["linked_from_id"]
@@ -401,18 +406,8 @@ class MemoryTool(Tool):
                 ]
             formatted_results.append(result)
 
-        # Calculate confidence from top result
-        top_score = paginated_results[0].importance_score if paginated_results else 0.0
-        if top_score >= 0.7:
-            status = "high_confidence"
-        elif top_score >= 0.4:
-            status = "medium_confidence"
-        else:
-            status = "low_confidence"
-
         return {
-            "status": status,
-            "confidence": round(top_score, 3),
+            "status": "results",
             "query": query,
             "results": formatted_results,
             "result_count": len(formatted_results),
@@ -578,6 +573,7 @@ class MemoryTool(Tool):
         target_memory_id: str,
         link_type: str,
         reasoning: str,
+        bond: str = "",
         **kwargs  # Accept extra params gracefully
     ) -> Dict[str, Any]:
         """
@@ -588,6 +584,8 @@ class MemoryTool(Tool):
             target_memory_id: 8-char ID of target memory
             link_type: Relationship type (supports, conflicts, supersedes, refines, precedes, contextualizes)
             reasoning: Explanation for the link (min 5 chars)
+            bond: Optional 3-word relationship descriptor carried from extraction
+                (preserved on the link and surfaced when the memory is referenced)
 
         Returns:
             Link creation confirmation
@@ -601,6 +599,7 @@ class MemoryTool(Tool):
         if not reasoning or len(reasoning.strip()) < 5:
             raise ValueError("Reasoning must be at least 5 characters")
         reasoning = reasoning.strip()
+        bond = bond.strip() if bond else ""
 
         # Resolve short IDs to full UUIDs
         source = self._find_memory_by_short_id(source_memory_id)
@@ -613,13 +612,14 @@ class MemoryTool(Tool):
         if source.id == target.id:
             raise ValueError("Cannot link memory to itself")
 
-        # Create MemoryLink with confidence=1.0 (manual = high confidence)
+        # Create the typed link. The 3-word extraction bond is carried onto the
+        # link as extraction_bond so it survives and surfaces on reference.
         link = MemoryLink(
             source_id=source.id,
             target_id=target.id,
             link_type=link_type,
-            confidence=self._config.manual_link_confidence,
             reasoning=reasoning,
+            extraction_bond=bond,
             created_at=utc_now()
         )
 
@@ -633,7 +633,6 @@ class MemoryTool(Tool):
             "source_memory_id": format_memory_id(str(source.id)),
             "target_memory_id": format_memory_id(str(target.id)),
             "link_type": link_type,
-            "confidence": self._config.manual_link_confidence,
             "message": f"Created '{link_type}' link between {format_memory_id(str(source.id))} and {format_memory_id(str(target.id))}"
         }
 
@@ -685,6 +684,107 @@ class MemoryTool(Tool):
             "annotation_count": len(updated),
             "annotation": annotation,
             "message": f"Added annotation to {format_memory_id(str(memory.id))} ({len(updated)} total annotations)"
+        }
+
+    def _archive(
+        self,
+        memory_id: str,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Archive (soft-delete) a memory.
+
+        Used by the MemoryCuratorAgent floor mode to retire low-value, redundant,
+        or stale memories. Archives the memory and prunes its dead links.
+
+        Args:
+            memory_id: 8-char ID of the memory to archive
+
+        Returns:
+            Archive confirmation
+        """
+        memory = self._find_memory_by_short_id(memory_id)
+        if not memory:
+            raise ValueError(f"Memory '{memory_id}' not found (or already archived)")
+
+        self._memory_db.archive_memory(memory.id, user_id=self.user_id)
+
+        self.logger.info(f"Archived memory {memory.id}")
+
+        return {
+            "status": "archived",
+            "memory_id": format_memory_id(str(memory.id)),
+            "message": f"Archived {format_memory_id(str(memory.id))}"
+        }
+
+    def _merge_memories(
+        self,
+        memory_ids: List[str],
+        consolidated_text: str,
+        merge_note: Optional[str] = None,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Merge multiple memories into one, preserving links.
+
+        Delegates to ConsolidationHandler.execute_consolidation: creates a new
+        memory with median importance from the sources, transfers all link
+        bundles (inbound, outbound, entity), rewrites source references to point
+        to the new memory, and archives the source memories. The new memory is
+        stamped last_tended_at (a freshly merged memory is by definition just
+        tended).
+
+        Args:
+            memory_ids: 8-char IDs of 2+ memories to merge (must be distinct, non-archived)
+            consolidated_text: Unified text capturing what was preserved (min 10 chars)
+            merge_note: Optional note on what the merge preserved/elided (provenance)
+
+        Returns:
+            Merge confirmation with the new memory's ID
+        """
+        if not memory_ids or len(memory_ids) < 2:
+            raise ValueError("merge_memories requires at least 2 memory IDs")
+        if not consolidated_text or len(consolidated_text.strip()) < self._config.min_text_length:
+            raise ValueError(
+                f"consolidated_text must be at least {self._config.min_text_length} characters"
+            )
+        consolidated_text = consolidated_text.strip()
+        merge_note = merge_note.strip() if merge_note else None
+
+        # Resolve short IDs to full UUIDs (excludes archived memories)
+        resolved: List[UUID] = []
+        for short_id in memory_ids:
+            memory = self._find_memory_by_short_id(short_id)
+            if not memory:
+                raise ValueError(f"Memory '{short_id}' not found (or already archived)")
+            resolved.append(memory.id)
+
+        if len(set(resolved)) < 2:
+            raise ValueError("merge_memories requires 2 distinct memories")
+
+        # Lazy-load the consolidation handler from the factory singleton
+        # (initialized at app startup; no construction cost here)
+        from lt_memory.factory import get_lt_memory_factory
+        consolidation_handler = get_lt_memory_factory().consolidation_handler
+
+        new_id = consolidation_handler.execute_consolidation(
+            old_memory_ids=resolved,
+            consolidated_text=consolidated_text,
+            user_id=self.user_id,
+            merge_note=merge_note,
+        )
+
+        # A freshly merged memory is by definition just tended; stamp it so the
+        # floor trigger's unseen sampling won't re-tread it immediately.
+        self._memory_db.update_last_tended([new_id], user_id=self.user_id)
+
+        self.logger.info(f"Merged {len(resolved)} memories into {new_id}")
+
+        return {
+            "status": "merged",
+            "new_memory_id": format_memory_id(str(new_id)),
+            "source_count": len(resolved),
+            "message": f"Merged {len(resolved)} memories into {format_memory_id(str(new_id))}"
         }
 
     def _find_memory_by_short_id(self, short_id: str):
@@ -761,3 +861,40 @@ class MemoryTool(Tool):
             "boosted_count": len(resolved_uuids),
             "failed_ids": failed_ids,
         }
+
+
+# ============================================================================
+# Curator-restricted memory tool schema
+# ============================================================================
+# The MemoryCuratorAgent operates on existing memories only: it may search the
+# graph, write typed links, annotate, touch, archive, and merge — but it must
+# NEVER create new memories (that would let it manufacture silt, defeating its
+# purpose). This schema is the full MemoryTool.tool_schema surface with
+# create_memory removed from the operation enum and the descriptions scoped to
+# the curator's role. It is consumed by MemoryCuratorAgent.tool_schema_overrides
+# (see agents/base.py:_get_tool_schemas — an override replaces the entire
+# tool_schema dict handed to the LLM).
+
+_CURATOR_OPERATIONS = [
+    "search", "link_memories", "annotate_memory", "touch",
+    "archive", "merge_memories",
+]
+
+CURATOR_MEMORY_SCHEMA = copy.deepcopy(MemoryTool.tool_schema)
+CURATOR_MEMORY_SCHEMA["description"] = (
+    "Memory curation tool for the MemoryCuratorAgent. Search the memory graph, "
+    "write typed relationship links, add provenance annotations, record use via "
+    "touch, archive low-value memories, or merge redundant memories into one. "
+    "Cannot create new memories — new memories arrive only via extraction at "
+    "segment collapse."
+)
+_CURATOR_OP_PROPS = CURATOR_MEMORY_SCHEMA["input_schema"]["properties"]
+_CURATOR_OP_PROPS["operation"]["enum"] = _CURATOR_OPERATIONS
+_CURATOR_OP_PROPS["operation"]["description"] = (
+    "Curator operation. 'search' finds memories by similarity/keyword/hub; "
+    "'link_memories' writes a directional typed relationship; 'annotate_memory' "
+    "adds a provenance note; 'touch' records that memories were used; 'archive' "
+    "soft-deletes a low-value/redundant/stale memory; 'merge_memories' consolidates "
+    "2+ redundant memories into one (sources archived, links transferred). "
+    "create_memory is intentionally unavailable."
+)

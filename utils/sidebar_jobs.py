@@ -20,6 +20,7 @@ def register_sidebar_jobs(scheduler_service, tool_repo, event_bus) -> None:
         return
 
     from agents.sidebar import SidebarDispatcher
+    from agents.triggers import MemoryFloorTrigger
 
     dispatcher = SidebarDispatcher(
         tool_repo=tool_repo,
@@ -27,6 +28,9 @@ def register_sidebar_jobs(scheduler_service, tool_repo, event_bus) -> None:
         max_concurrent_agents=sidebar_config.max_concurrent_agents,
         max_concurrent_batch_agents=sidebar_config.max_concurrent_batch_agents,
     )
+
+    # Register sidebar triggers (pure discovery — the dispatcher owns dedup).
+    dispatcher.register_trigger(MemoryFloorTrigger())
 
     scheduler_service.register_job(
         job_id="sidebar_dispatcher_poll",

@@ -186,7 +186,9 @@ class ProactiveMemoryTrinket(EventAwareTrinket):
             text = linked.get('text', '')
             link_meta = linked.get('link_metadata', {})
             link_type = link_meta.get('link_type', '')
+            bond = link_meta.get('bond', '')
             id_suffix = f", {formatted_id}" if formatted_id else ""
-            lines.append(f"Also: {text} ({link_type}{id_suffix})")
+            bond_suffix = f" — {bond}" if bond else ""
+            lines.append(f"Also: {text} ({link_type}{id_suffix}{bond_suffix})")
 
         return "<context>\n" + "\n".join(lines) + "\n</context>"
