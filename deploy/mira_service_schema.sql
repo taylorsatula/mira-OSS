@@ -138,10 +138,7 @@ INSERT INTO internal_llm (name, tier, model, endpoint_url, api_key_name, descrip
     ('assessment', 'cof', 'claude-opus-4-6', 'https://api.anthropic.com/v1/messages', 'anthropic_key', 'Assessment extraction', 10000, NULL, 'anthropic'),
     ('synthesis', 'cof', 'claude-opus-4-6', 'https://api.anthropic.com/v1/messages', 'anthropic_key', 'User model synthesis', 10000, NULL, 'anthropic'),
     ('extraction', 'cof', 'claude-sonnet-4-6', 'https://api.anthropic.com/v1/messages', 'anthropic_batch_key', 'Memory extraction', 16000, 'high', 'anthropic'),
-    ('consolidation', 'cof', 'claude-sonnet-4-6', 'https://api.anthropic.com/v1/messages', 'anthropic_batch_key', 'Memory consolidation', 4096, NULL, 'anthropic'),
     ('tidyup', 'cof', 'claude-sonnet-4-6', 'https://api.anthropic.com/v1/messages', 'anthropic_batch_key', 'Context tidyup', 10000, NULL, 'anthropic'),
-    ('relationship', 'cof', 'claude-haiku-4-5-20251001', 'https://api.anthropic.com/v1/messages', 'anthropic_batch_key', 'Relationship classification', 500, NULL, 'anthropic'),
-    ('entity_gc', 'cof', 'claude-haiku-4-5', 'https://api.anthropic.com/v1/messages', 'anthropic_batch_key', 'Entity garbage collection', 2048, 'high', 'anthropic'),
     ('critic', 'cof', 'claude-sonnet-4-6', 'https://api.anthropic.com/v1/messages', 'anthropic_key', 'User model critic', 10000, NULL, 'anthropic'),
     -- Subcortical: same model for both tiers via Groq
     ('analysis', 'cof', 'qwen/qwen3.6-27b', 'https://api.groq.com/openai/v1/chat/completions', 'subcortical_key', 'Subcortical analysis', 3072, NULL, 'groq'),
@@ -154,6 +151,9 @@ INSERT INTO internal_llm (name, tier, model, endpoint_url, api_key_name, descrip
     ('phoneafriend_gemini', 'cof', 'google/gemini-3.1-pro-preview', 'https://openrouter.ai/api/v1/chat/completions', 'provider_key', 'Phone-a-friend outside voice with broad world knowledge', 10000, NULL, 'openrouter'),
     -- Repulsion feedback rewriter: register-aware rewrite pass for captured AI-tells
     ('rewriter', 'cof', 'openai/gpt-5.5', 'https://openrouter.ai/api/v1/chat/completions', 'provider_key', 'Repulsion feedback rewrite generation', 10000, 'high', 'openrouter')
+    -- memory_curator reuses the 'summary' internal_llm row (system summary model);
+    -- relationship / consolidation / entity_gc internal_llm rows were removed when
+    -- their batch-judgment handlers were deleted (curation moved to MemoryCuratorAgent).
 ON CONFLICT (name, tier) DO NOTHING;
 
 GRANT SELECT ON internal_llm TO mira_dbuser;
@@ -174,13 +174,10 @@ INSERT INTO usage_pricing (name) VALUES
     ('primary'),
     -- Internal LLM configs (tier-qualified: different models per free/cof)
     ('analysis:cof'), ('analysis:free'),
-    ('consolidation:cof'), ('consolidation:free'),
-    ('entity_gc:cof'), ('entity_gc:free'),
     ('extraction:cof'), ('extraction:free'),
     ('forage:cof'), ('forage:free'),
     ('phoneafriend_claude:cof'), ('phoneafriend_claude:free'),
     ('phoneafriend_gemini:cof'), ('phoneafriend_gemini:free'),
-    ('relationship:cof'), ('relationship:free'),
     ('rewriter:cof'), ('rewriter:free'),
     ('summary:cof'), ('summary:free'),
     ('tidyup:cof'), ('tidyup:free')
@@ -470,7 +467,8 @@ CREATE TABLE IF NOT EXISTS memories (
     is_archived BOOLEAN DEFAULT FALSE,
     archived_at TIMESTAMP WITH TIME ZONE,
 
-    consolidation_rejection_count INTEGER DEFAULT 0,
+    -- Last tended by MemoryCuratorAgent (floor trigger samples unseen memories)
+    last_tended_at TIMESTAMP WITH TIME ZONE,
 
     -- Activity day snapshots for vacation-proof scoring
     activity_days_at_creation INT,
@@ -496,6 +494,7 @@ COMMENT ON COLUMN memories.activity_days_at_creation IS 'User cumulative_activit
 COMMENT ON COLUMN memories.activity_days_at_last_access IS 'User cumulative_activity_days when memory was last accessed (snapshot for recency calculation)';
 COMMENT ON COLUMN memories.annotations IS 'Contextual notes: [{text, created_at, source}]';
 COMMENT ON COLUMN memories.source_segment_id IS 'Segment this memory was extracted from (enables context exploration via continuum_tool search_within_segment)';
+COMMENT ON COLUMN memories.last_tended_at IS 'Last timestamp the MemoryCuratorAgent tended this memory (linked/merged/archived/salvaged). NULL = never tended (integration not yet run). Backfilled to created_at for pre-curation memories via migration.';
 
 -- Set LZ4 compression for large text columns
 ALTER TABLE memories ALTER COLUMN text SET COMPRESSION lz4;
@@ -522,10 +521,17 @@ CREATE INDEX IF NOT EXISTS idx_memories_source_segment_id
     ON memories(source_segment_id)
     WHERE source_segment_id IS NOT NULL;
 
+-- Partial index for floor-trigger candidate sampling: low-importance,
+-- non-archived memories filtered by last_tended_at staleness.
+CREATE INDEX IF NOT EXISTS idx_memories_floor_candidates
+    ON memories (importance_score, last_tended_at)
+    WHERE is_archived = FALSE;
+
 COMMENT ON INDEX idx_memories_user_id IS 'B-tree index for RLS policy filtering - essential for multi-user performance';
 COMMENT ON INDEX idx_memories_search_vector IS 'GIN index for full-text search operations';
 COMMENT ON INDEX idx_memories_embedding_ivfflat IS 'IVFFlat index for fast cosine similarity search - prevents O(n) sequential scans during deduplication and retrieval';
 COMMENT ON INDEX idx_memories_source_segment_id IS 'Partial B-tree index for tracing memories back to source segments';
+COMMENT ON INDEX idx_memories_floor_candidates IS 'Partial btree index supporting the curator floor trigger random-among-unseen sample over (importance_score, last_tended_at)';
 
 -- Trigger function to maintain search vectors
 CREATE OR REPLACE FUNCTION update_memories_search_vector() RETURNS trigger AS $$
@@ -670,43 +676,6 @@ COMMENT ON COLUMN extraction_batches.status IS 'Batch processing status';
 COMMENT ON COLUMN extraction_batches.extracted_memories IS 'JSON array of extracted memories from batch response';
 
 -- =====================================================================
--- POST-PROCESSING BATCHES (relationship classification & consolidation)
--- =====================================================================
-
-CREATE TABLE IF NOT EXISTS post_processing_batches (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    batch_id TEXT NOT NULL,  -- Anthropic batch API ID
-    batch_type TEXT NOT NULL CHECK (batch_type IN ('relationship_classification', 'consolidation')),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    request_payload JSONB NOT NULL,
-    input_data JSONB NOT NULL,
-    items_submitted INTEGER NOT NULL,
-    items_completed INTEGER DEFAULT 0,
-    items_failed INTEGER DEFAULT 0,
-    status TEXT NOT NULL CHECK (status IN ('submitted', 'processing', 'result_processing', 'completed', 'failed', 'expired', 'cancelled')),
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-    submitted_at TIMESTAMP WITH TIME ZONE NOT NULL,
-    completed_at TIMESTAMP WITH TIME ZONE,
-    expires_at TIMESTAMP WITH TIME ZONE,
-    result_payload JSONB,
-    error_message TEXT,
-    retry_count INTEGER DEFAULT 0,
-    processing_time_ms INTEGER,
-    tokens_used INTEGER,
-    links_created INTEGER DEFAULT 0,
-    conflicts_flagged INTEGER DEFAULT 0,
-    memories_consolidated INTEGER DEFAULT 0
-);
-
-COMMENT ON TABLE post_processing_batches IS 'Post-processing batch tracking for relationship classification and memory consolidation';
-COMMENT ON COLUMN post_processing_batches.batch_type IS 'Type of post-processing: relationship_classification or consolidation';
-COMMENT ON COLUMN post_processing_batches.input_data IS 'Input data for batch processing (memory pairs, clusters, etc.)';
-COMMENT ON COLUMN post_processing_batches.items_submitted IS 'Number of items in batch';
-COMMENT ON COLUMN post_processing_batches.links_created IS 'Number of memory links created from batch results';
-COMMENT ON COLUMN post_processing_batches.conflicts_flagged IS 'Number of conflicting memories detected';
-COMMENT ON COLUMN post_processing_batches.memories_consolidated IS 'Number of memories consolidated from batch';
-
--- =====================================================================
 -- TRIGGERS
 -- =====================================================================
 
@@ -836,7 +805,7 @@ BEGIN
             user_activity_days, domain_knowledge_blocks, domain_knowledge_block_content,
             domaindoc_shares,
             continuums, messages,
-            memories, entities, extraction_batches, post_processing_batches,
+            memories, entities, extraction_batches,
             feedback_signals, feedback_synthesis_tracking,
             billing_transactions
         TO mira_dbuser;
@@ -938,6 +907,28 @@ CREATE POLICY domaindoc_shares_collaborator_update ON domaindoc_shares
     USING (collaborator_user_id = current_setting('app.current_user_id')::uuid)
     WITH CHECK (collaborator_user_id = current_setting('app.current_user_id')::uuid);
 
--- Note: extraction_batches and post_processing_batches do NOT have RLS
--- These are system tracking tables accessed by admin polling jobs
--- They contain no user data, only batch job metadata
+-- Note: extraction_batches does NOT have RLS
+-- This is a system tracking table accessed by admin polling jobs
+-- It contains no user data, only batch job metadata
+
+-- ============================================================
+-- Lattice federation: global username registry
+-- ============================================================
+-- Maps federated usernames to user_ids so the Lattice discovery daemon
+-- can resolve inbound `username@server` addresses to a local recipient.
+-- No RLS: this is a global routing/lookup table (same category as `users`),
+-- queried contextlessly by the federation username resolver registered in
+-- main.py (mira_resolve_username), which runs outside any user context.
+-- Application logic in pager_tool._register_username only ever inserts the
+-- current user's own row (via self.user_id), and the UNIQUE(username) constraint
+-- prevents duplicate registrations.
+
+CREATE TABLE IF NOT EXISTS global_usernames (
+    username VARCHAR(20) UNIQUE NOT NULL,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    active BOOLEAN NOT NULL DEFAULT TRUE
+);
+
+CREATE INDEX IF NOT EXISTS idx_global_usernames_username_active
+    ON global_usernames (username) WHERE active = TRUE;

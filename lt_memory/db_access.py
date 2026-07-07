@@ -17,24 +17,13 @@ from lt_memory.models import (
     ExtractedMemory,
     MemoryLink,
     ExtractionBatch,
-    PostProcessingBatch,
     BatchStatus,
-    BatchKind,
     MemoryLinkEntry,
-    EntityPairRow,
     UserMemorySettings,
     MemoryPageResult,
+    EntityPairRow,
 )
 
-# Table and model mappings for generic batch operations
-_BATCH_TABLES: dict[BatchKind, str] = {
-    "extraction": "extraction_batches",
-    "post_processing": "post_processing_batches",
-}
-_BATCH_MODELS: dict[BatchKind, type] = {
-    "extraction": ExtractionBatch,
-    "post_processing": PostProcessingBatch,
-}
 from utils.timezone_utils import utc_now, format_utc_iso
 from utils.user_context import get_current_user_id
 from utils.tag_parser import parse_memory_id
@@ -378,6 +367,88 @@ class LTMemoryDB:
         self.remove_dead_links([memory_id], user_id=resolved_user_id)
 
         logger.info(f"Archived memory {memory_id} and cleaned up dead links")
+
+    # ==================== CURATOR (last_tended_at) ====================
+
+    def update_last_tended(
+        self,
+        memory_ids: List[UUID],
+        user_id: Optional[str] = None
+    ) -> None:
+        """
+        Mark memories as tended by the curator at the current time.
+
+        Called by MemoryCuratorAgent.on_completion after a curation run so the
+        floor trigger's 'random among unseen' sampling can exclude recently-
+        tended memories. RLS-scoped via the session manager.
+
+        Args:
+            memory_ids: Memory UUIDs tended in this run
+            user_id: User ID (uses ambient context if None)
+        """
+        if not memory_ids:
+            return
+
+        resolved_user_id = self._resolve_user_id(user_id)
+
+        with self.session_manager.get_session(resolved_user_id) as session:
+            session.execute_update("""
+                UPDATE memories
+                SET last_tended_at = NOW()
+                WHERE id = ANY(%(memory_ids)s::uuid[])
+            """, {'memory_ids': list(memory_ids)})
+
+        logger.info(f"Updated last_tended_at for {len(memory_ids)} memories")
+
+    def get_floor_candidates(
+        self,
+        floor_threshold: float,
+        unseen_days: int,
+        sample_size: int,
+        user_id: Optional[str] = None
+    ) -> List[UUID]:
+        """
+        Random sample of low-value memories not tended recently.
+
+        The floor trigger's bounded surface: deterministic, no LLM. A memory is
+        eligible when it is below the importance threshold AND either it was
+        tended before the cutoff OR it was never tended (NULL) but was created
+        before the cutoff (integration never ran for it). Random ordering caps
+        cost by giving coverage without a full sweep. RLS-scoped via the
+        session manager.
+
+        Args:
+            floor_threshold: importance_score strictly below this value
+            unseen_days: wall-clock staleness window (days)
+            sample_size: maximum number of memories to return
+            user_id: User ID (uses ambient context if None)
+
+        Returns:
+            Up to sample_size memory UUIDs, randomly ordered.
+        """
+        resolved_user_id = self._resolve_user_id(user_id)
+
+        with self.session_manager.get_session(resolved_user_id) as session:
+            query = """
+                SELECT id
+                FROM memories
+                WHERE is_archived = FALSE
+                  AND importance_score < %(floor_threshold)s
+                  AND (
+                        last_tended_at < NOW() - make_interval(days => %(unseen_days)s)
+                     OR (last_tended_at IS NULL
+                         AND created_at < NOW() - make_interval(days => %(unseen_days)s))
+                  )
+                ORDER BY random()
+                LIMIT %(sample_size)s
+            """
+            results = session.execute_query(query, {
+                'floor_threshold': floor_threshold,
+                'unseen_days': unseen_days,
+                'sample_size': sample_size,
+            })
+
+            return [row['id'] for row in results]
 
     # ==================== SEARCH & RETRIEVAL ====================
 
@@ -1024,36 +1095,36 @@ class LTMemoryDB:
 
             return updated_count
 
-    def increment_consolidation_rejection_count(
+    # ==================== ENTITY OPERATIONS ====================
+
+    def find_similar_entity_pairs(
         self,
-        memory_id: UUID,
+        similarity_threshold: float,
         user_id: Optional[str] = None
-    ) -> None:
-        """
-        Increment consolidation rejection count for memory the LLM kept independent.
+    ) -> List[EntityPairRow]:
+        """Find pairs of entities with similar names via pg_trgm self-join.
 
-        After 3 rejections, the memory is excluded from future consolidation candidates.
-
-        Args:
-            memory_id: Memory UUID to update
-            user_id: User ID (uses ambient context if None)
+        Returns deduplicated pairs (a.id < b.id) over non-archived entities,
+        ordered by trigram similarity. Used by the entity-merge service to
+        surface candidate duplicates for LLM review.
         """
         resolved_user_id = self._resolve_user_id(user_id)
 
         with self.session_manager.get_session(resolved_user_id) as session:
-            session.execute_update(
-                """
-                UPDATE memories
-                SET consolidation_rejection_count = consolidation_rejection_count + 1,
-                    updated_at = NOW()
-                WHERE id = %(memory_id)s
-                """,
-                {"memory_id": memory_id}
-            )
-
-        logger.debug(f"Incremented consolidation rejection count for memory {memory_id}")
-
-    # ==================== ENTITY OPERATIONS ====================
+            query = """
+            SELECT a.id AS id_a, a.name AS name_a, a.entity_type AS type_a,
+                   a.link_count AS links_a,
+                   b.id AS id_b, b.name AS name_b, b.entity_type AS type_b,
+                   b.link_count AS links_b,
+                   similarity(a.name, b.name) AS sim
+            FROM entities a
+            JOIN entities b ON a.id < b.id
+            WHERE a.is_archived = FALSE AND b.is_archived = FALSE
+              AND similarity(a.name, b.name) > %(threshold)s
+            ORDER BY sim DESC
+            LIMIT 500
+            """
+            return session.execute_query(query, {'threshold': similarity_threshold})
 
     def get_or_create_entity(
         self,
@@ -1156,105 +1227,6 @@ class LTMemoryDB:
 
             return Entity(**result)
 
-    def get_entity(
-        self,
-        entity_id: UUID,
-        user_id: Optional[str] = None
-    ) -> Optional['Entity']:
-        """
-        Fetch entity by ID.
-
-        Args:
-            entity_id: Entity UUID
-            user_id: User ID (uses ambient context if None)
-
-        Returns:
-            Entity model or None if not found
-        """
-        from lt_memory.models import Entity
-
-        resolved_user_id = self._resolve_user_id(user_id)
-
-        with self.session_manager.get_session(resolved_user_id) as session:
-            query = """
-            SELECT * FROM entities
-            WHERE id = %(entity_id)s
-            LIMIT 1
-            """
-
-            result = session.execute_single(query, {'entity_id': entity_id})
-            return Entity(**result) if result else None
-
-    def get_entities_by_ids(
-        self,
-        entity_ids: List[UUID],
-        user_id: Optional[str] = None
-    ) -> List['Entity']:
-        """
-        Fetch multiple entities by IDs.
-
-        Args:
-            entity_ids: List of entity UUIDs
-            user_id: User ID (uses ambient context if None)
-
-        Returns:
-            List of Entity models
-        """
-        from lt_memory.models import Entity
-
-        if not entity_ids:
-            return []
-
-        resolved_user_id = self._resolve_user_id(user_id)
-
-        with self.session_manager.get_session(resolved_user_id) as session:
-            query = """
-            SELECT * FROM entities
-            WHERE id = ANY(%s::uuid[])
-            ORDER BY link_count DESC
-            """
-
-            results = session.execute_query(query, (
-                list(entity_ids),
-            ))
-
-            return [Entity(**row) for row in results]
-
-    def get_active_entities(
-        self,
-        limit: int = 100,
-        user_id: Optional[str] = None
-    ) -> List['Entity']:
-        """
-        Fetch active (non-archived) entities for a user, ordered by importance.
-
-        Used for fuzzy entity matching fallback in retrieval priming.
-        Returns top entities by link_count since exact matching handles
-        most cases via targeted DB query.
-
-        Args:
-            limit: Maximum entities to return (default 100 - top entities only)
-            user_id: User ID (uses ambient context if None)
-
-        Returns:
-            List of Entity models ordered by link_count (most referenced first)
-        """
-        from lt_memory.models import Entity
-
-        resolved_user_id = self._resolve_user_id(user_id)
-
-        with self.session_manager.get_session(resolved_user_id) as session:
-            query = """
-            SELECT * FROM entities
-            WHERE is_archived = FALSE
-            ORDER BY link_count DESC
-            LIMIT %(limit)s
-            """
-
-            results = session.execute_query(query, {'limit': limit})
-
-            return [Entity(**row) for row in results]
-
     def link_memory_to_entity(
         self,
         memory_id: UUID,
@@ -1308,46 +1280,6 @@ class LTMemoryDB:
                     'entity_id': entity_id
                 })
 
-    def find_similar_entity_pairs(
-        self,
-        similarity_threshold: float,
-        user_id: Optional[str] = None
-    ) -> List[EntityPairRow]:
-        """
-        Find pairs of entities with similar names via pg_trgm self-join.
-
-        Returns deduplicated pairs (a.id < b.id) with entity info and
-        trigram similarity score.
-
-        Args:
-            similarity_threshold: pg_trgm similarity threshold (0.0-1.0)
-            user_id: User ID (uses ambient context if None)
-
-        Returns:
-            List of dicts with keys: id_a, name_a, type_a, links_a,
-            id_b, name_b, type_b, links_b, sim
-        """
-        resolved_user_id = self._resolve_user_id(user_id)
-
-        with self.session_manager.get_session(resolved_user_id) as session:
-            query = """
-            SELECT a.id AS id_a, a.name AS name_a, a.entity_type AS type_a,
-                   a.link_count AS links_a,
-                   b.id AS id_b, b.name AS name_b, b.entity_type AS type_b,
-                   b.link_count AS links_b,
-                   similarity(a.name, b.name) AS sim
-            FROM entities a
-            JOIN entities b ON a.id < b.id
-            WHERE a.is_archived = FALSE AND b.is_archived = FALSE
-              AND similarity(a.name, b.name) > %(threshold)s
-            ORDER BY sim DESC
-            LIMIT 500
-            """
-
-            return session.execute_query(query, {
-                'threshold': similarity_threshold
-            })
-
     def get_memories_for_entity(
         self,
         entity_id: UUID,
@@ -1381,35 +1313,44 @@ class LTMemoryDB:
             results = session.execute_query(query, (entity_filter,))
             return [Memory(**row) for row in results]
 
+    def get_entity(
+        self,
+        entity_id: UUID,
+        user_id: Optional[str] = None
+    ) -> Optional['Entity']:
+        """Fetch an entity by ID (None if not found)."""
+        from lt_memory.models import Entity
+
+        resolved_user_id = self._resolve_user_id(user_id)
+
+        with self.session_manager.get_session(resolved_user_id) as session:
+            result = session.execute_single(
+                "SELECT * FROM entities WHERE id = %(entity_id)s LIMIT 1",
+                {'entity_id': entity_id}
+            )
+            return Entity(**result) if result else None
+
     def merge_entities(
         self,
         source_id: UUID,
         target_id: UUID,
         user_id: Optional[str] = None
     ) -> None:
-        """
-        Merge source entity into target entity.
+        """Merge the source entity into the target entity.
 
-        Updates all memories linking to source to point to target instead,
-        updates target's link_count, and archives source entity.
-
-        Args:
-            source_id: Source entity UUID (will be archived)
-            target_id: Target entity UUID (will receive links)
-            user_id: User ID (uses ambient context if None)
+        Rewrites every memory's entity_links entry pointing at source to point
+        at target instead (deduplicating any memory already linked to both),
+        bumps target's link_count by the affected count, and archives the
+        source entity. The target keeps its name/type; the source is soft-deleted.
         """
         resolved_user_id = self._resolve_user_id(user_id)
 
         with self.session_manager.get_session(resolved_user_id) as session:
             with session.transaction():
-                # Get target entity info for replacement
                 target = self.get_entity(target_id, user_id=resolved_user_id)
                 if not target:
                     raise ValueError(f"Target entity {target_id} not found")
 
-                # Update memories: replace source UUID with target UUID in entity_links.
-                # Uses DISTINCT ON uuid to deduplicate — if a memory already links to
-                # both source and target, the replacement would create two target entries.
                 update_query = """
                 UPDATE memories
                 SET entity_links = (
@@ -1442,103 +1383,28 @@ class LTMemoryDB:
                     'source_filter': json.dumps([{"uuid": str(source_id)}])
                 })
 
-                # Update target entity link_count
                 session.execute_update("""
                     UPDATE entities
                     SET link_count = link_count + %(affected_count)s,
                         last_linked_at = NOW(),
                         updated_at = NOW()
                     WHERE id = %(target_id)s
-                """, {
-                    'affected_count': affected_count,
-                    'target_id': target_id
-                })
+                """, {'affected_count': affected_count, 'target_id': target_id})
 
-                # Archive source entity
                 session.execute_update("""
                     UPDATE entities
                     SET is_archived = TRUE,
                         archived_at = NOW(),
                         updated_at = NOW()
                     WHERE id = %(source_id)s
-                """, {
-                    'source_id': source_id
-                })
+                """, {'source_id': source_id})
 
                 logger.info(
                     f"Merged entity {source_id} into {target_id}: "
                     f"updated {affected_count} memories"
                 )
 
-    def delete_entity(
-        self,
-        entity_id: UUID,
-        user_id: Optional[str] = None
-    ) -> None:
-        """
-        Delete entity and remove from all memory entity_links.
-
-        Args:
-            entity_id: Entity UUID to delete
-            user_id: User ID (uses ambient context if None)
-        """
-        resolved_user_id = self._resolve_user_id(user_id)
-
-        with self.session_manager.get_session(resolved_user_id) as session:
-            with session.transaction():
-                # Remove entity from memory entity_links
-                remove_query = """
-                UPDATE memories
-                SET entity_links = (
-                    SELECT COALESCE(jsonb_agg(elem), '[]'::jsonb)
-                    FROM jsonb_array_elements(entity_links) AS elem
-                    WHERE elem->>'uuid' != %(entity_id)s
-                ),
-                updated_at = NOW()
-                WHERE entity_links @> %(entity_filter)s::jsonb
-                """
-
-                session.execute_update(remove_query, {
-                    'entity_id': str(entity_id),
-                    'entity_filter': json.dumps([{"uuid": str(entity_id)}])
-                })
-
-                # Delete entity record
-                session.execute_update("""
-                    DELETE FROM entities
-                    WHERE id = %(entity_id)s
-                """, {
-                    'entity_id': entity_id
-                })
-
-                logger.info(f"Deleted entity {entity_id}")
-
-    def archive_entity(
-        self,
-        entity_id: UUID,
-        user_id: Optional[str] = None
-    ) -> None:
-        """
-        Archive entity (soft delete).
-
-        Args:
-            entity_id: Entity UUID
-            user_id: User ID (uses ambient context if None)
-        """
-        resolved_user_id = self._resolve_user_id(user_id)
-
-        with self.session_manager.get_session(resolved_user_id) as session:
-            session.execute_update("""
-                UPDATE entities
-                SET is_archived = TRUE,
-                    archived_at = NOW(),
-                    updated_at = NOW()
-                WHERE id = %(entity_id)s
-            """, {'entity_id': entity_id})
-
-        logger.info(f"Archived entity {entity_id}")
-
-    # ==================== BATCH TRACKING ====================
+    # ==================== BATCH TRACKING =====================
 
     def create_extraction_batch(
         self,
@@ -1587,77 +1453,21 @@ class LTMemoryDB:
 
                 return result['id']
 
-    # ==================== POST-PROCESSING BATCH CREATION ====================
+    # ==================== EXTRACTION BATCH OPERATIONS ====================
 
-    def create_post_processing_batch(
-        self,
-        batch: PostProcessingBatch,
-        user_id: Optional[str] = None
-    ) -> UUID:
+    def get_users_with_pending_batches(self) -> List[str]:
         """
-        Create post-processing batch tracking record.
-
-        Covers all post-processing batch types: relationship_classification,
-        consolidation, entity_gc.
-
-        Args:
-            batch: PostProcessingBatch model
-            user_id: User ID (uses ambient context if None)
-
-        Returns:
-            Created batch UUID
-        """
-        resolved_user_id = self._resolve_user_id(user_id)
-
-        with self.session_manager.get_session(resolved_user_id) as session:
-            with session.transaction():
-                insert_sql = """
-                INSERT INTO post_processing_batches (
-                    batch_id, batch_type, user_id, request_payload,
-                    input_data, items_submitted, status, created_at,
-                    submitted_at, expires_at
-                ) VALUES (
-                    %(batch_id)s, %(batch_type)s, %(user_id)s, %(request_payload)s,
-                    %(input_data)s, %(items_submitted)s, %(status)s, %(created_at)s,
-                    %(submitted_at)s, %(expires_at)s
-                ) RETURNING id
-                """
-
-                result = session.execute_single(insert_sql, {
-                    'batch_id': batch.batch_id,
-                    'batch_type': batch.batch_type,
-                    'user_id': resolved_user_id,
-                    'request_payload': json.dumps(batch.request_payload),
-                    'input_data': json.dumps(batch.input_data) if batch.input_data else None,
-                    'items_submitted': batch.items_submitted,
-                    'status': batch.status,
-                    'created_at': batch.created_at,
-                    'submitted_at': batch.submitted_at,
-                    'expires_at': batch.expires_at
-                })
-
-                return result['id']
-
-    # ==================== GENERIC BATCH OPERATIONS ====================
-
-    def get_users_with_pending_batches(self, kind: BatchKind) -> List[str]:
-        """
-        Get user IDs with pending batches of the given kind.
+        Get user IDs with pending extraction batches.
 
         Uses admin session to query across users.
-
-        Args:
-            kind: Batch kind ("extraction" or "post_processing")
 
         Returns:
             List of user_id strings with batches in submitted/processing state
         """
-        table = _BATCH_TABLES[kind]
-
         with self.session_manager.get_admin_session() as session:
-            query = f"""
+            query = """
             SELECT DISTINCT user_id
-            FROM {table}
+            FROM extraction_batches
             WHERE status IN ('submitted', 'processing')
             ORDER BY user_id
             """
@@ -1666,35 +1476,30 @@ class LTMemoryDB:
 
     def get_pending_batches_for_user(
         self,
-        kind: BatchKind,
         user_id: str
-    ) -> list[ExtractionBatch] | list[PostProcessingBatch]:
+    ) -> list[ExtractionBatch]:
         """
-        Get pending batches for a specific user.
+        Get pending extraction batches for a specific user.
 
         Args:
-            kind: Batch kind ("extraction" or "post_processing")
             user_id: User ID to check
 
         Returns:
-            List of batch models with status 'submitted', 'processing', or 'result_processing'
+            List of ExtractionBatch models with status 'submitted', 'processing', or 'result_processing'
         """
-        table = _BATCH_TABLES[kind]
-        model_cls = _BATCH_MODELS[kind]
-
         with self.session_manager.get_session(user_id) as session:
-            query = f"""
-            SELECT * FROM {table}
+            query = """
+            SELECT * FROM extraction_batches
             WHERE user_id = %(user_id)s
             AND status IN ('submitted', 'processing', 'result_processing')
             ORDER BY created_at ASC
             """
 
             results = session.execute_query(query, {'user_id': user_id})
-            return [model_cls(**row) for row in results]
+            return [ExtractionBatch(**row) for row in results]
 
-    def claim_batch(self, kind: BatchKind, batch_id: UUID, user_id: str) -> bool:
-        """Atomically claim a batch for result processing.
+    def claim_batch(self, batch_id: UUID, user_id: str) -> bool:
+        """Atomically claim an extraction batch for result processing.
 
         Transitions status to 'result_processing' only if the batch is
         currently 'submitted' or 'processing'. The atomic UPDATE...RETURNING
@@ -1702,28 +1507,25 @@ class LTMemoryDB:
         duplicate processing when poll cycles overlap due to timeouts.
 
         Args:
-            kind: Batch kind ("extraction" or "post_processing")
             batch_id: Batch UUID to claim
             user_id: User ID
 
         Returns:
             True if this caller claimed the batch, False if already claimed
         """
-        table = _BATCH_TABLES[kind]
         resolved_user_id = self._resolve_user_id(user_id)
 
         with self.session_manager.get_session(resolved_user_id) as session:
             result = session.execute_single(
-                f"UPDATE {table} SET status = 'result_processing' "
-                f"WHERE id = %(id)s AND status IN ('submitted', 'processing') "
-                f"RETURNING id",
+                "UPDATE extraction_batches SET status = 'result_processing' "
+                "WHERE id = %(id)s AND status IN ('submitted', 'processing') "
+                "RETURNING id",
                 {'id': batch_id}
             )
             return bool(result)
 
     def update_batch_status(
         self,
-        kind: BatchKind,
         batch_id: UUID,
         status: BatchStatus,
         error_message: Optional[str] = None,
@@ -1732,10 +1534,9 @@ class LTMemoryDB:
         **extra_fields: Any
     ) -> None:
         """
-        Update batch status with optional extra fields.
+        Update extraction batch status with optional extra fields.
 
         Args:
-            kind: Batch kind ("extraction" or "post_processing")
             batch_id: Batch UUID
             status: New status
             error_message: Optional error message for failed batches
@@ -1743,7 +1544,6 @@ class LTMemoryDB:
             user_id: User ID (uses ambient context if None)
             **extra_fields: Additional column updates (e.g., items_completed)
         """
-        table = _BATCH_TABLES[kind]
         resolved_user_id = self._resolve_user_id(user_id)
 
         with self.session_manager.get_session(resolved_user_id) as session:
@@ -1759,7 +1559,7 @@ class LTMemoryDB:
             set_clause = ", ".join(set_clauses)
 
             query = f"""
-            UPDATE {table}
+            UPDATE extraction_batches
             SET {set_clause}
             WHERE id = %(batch_id)s
             """
@@ -1769,24 +1569,21 @@ class LTMemoryDB:
 
     def increment_batch_retry(
         self,
-        kind: BatchKind,
         batch_id: UUID,
         user_id: Optional[str] = None
     ) -> None:
         """
-        Increment retry counter for a batch.
+        Increment retry counter for an extraction batch.
 
         Args:
-            kind: Batch kind ("extraction" or "post_processing")
             batch_id: Batch UUID
             user_id: User ID (uses ambient context if None)
         """
-        table = _BATCH_TABLES[kind]
         resolved_user_id = self._resolve_user_id(user_id)
 
         with self.session_manager.get_session(resolved_user_id) as session:
-            query = f"""
-            UPDATE {table}
+            query = """
+            UPDATE extraction_batches
             SET retry_count = retry_count + 1
             WHERE id = %(batch_id)s
             """
@@ -1794,55 +1591,49 @@ class LTMemoryDB:
 
     def delete_batch(
         self,
-        kind: BatchKind,
         batch_id: UUID,
         user_id: Optional[str] = None
     ) -> None:
         """
-        Delete batch record after processing complete.
+        Delete an extraction batch record after processing completes.
 
         Args:
-            kind: Batch kind ("extraction" or "post_processing")
             batch_id: Batch UUID to delete
             user_id: User ID (uses ambient context if None)
         """
-        table = _BATCH_TABLES[kind]
         resolved_user_id = self._resolve_user_id(user_id)
 
         with self.session_manager.get_session(resolved_user_id) as session:
             with session.transaction():
-                query = f"""
-                DELETE FROM {table}
+                query = """
+                DELETE FROM extraction_batches
                 WHERE id = %(batch_id)s
                 """
                 session.execute_update(query, {'batch_id': batch_id})
 
     def cleanup_old_batches(
         self,
-        kind: BatchKind,
         retention_hours: int,
         user_id: Optional[str] = None
     ) -> int:
         """
-        Delete batches in terminal states older than retention period.
+        Delete extraction batches in terminal states older than retention period.
 
         Terminal states: failed, expired, cancelled
 
         Args:
-            kind: Batch kind ("extraction" or "post_processing")
             retention_hours: Hours to retain terminal-state batches
             user_id: User ID (uses ambient context if None)
 
         Returns:
             Number of batches deleted
         """
-        table = _BATCH_TABLES[kind]
         resolved_user_id = self._resolve_user_id(user_id)
 
         with self.session_manager.get_session(resolved_user_id) as session:
             with session.transaction():
-                query = f"""
-                DELETE FROM {table}
+                query = """
+                DELETE FROM extraction_batches
                 WHERE user_id = %(user_id)s
                   AND status IN ('failed', 'expired', 'cancelled')
                   AND created_at < NOW() - INTERVAL '%(retention_hours)s hours'

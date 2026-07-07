@@ -1,0 +1,3 @@
+Below are groups of entities with similar names. For each group, decide whether the members are the same entity (merge) or distinct (keep separate). Reply with the JSON object only.
+
+{groups}

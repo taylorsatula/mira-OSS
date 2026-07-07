@@ -890,12 +890,10 @@ def _check_scheduler_registration() -> dict[str, Any]:
         "account_garbage_collection",
         "lt_memory_extract_unprocessed_segments",
         "lt_memory_extraction_batch_polling",
-        "lt_memory_post_processing_batch_polling",
-        "lt_memory_consolidation",
         "lt_memory_temporal_score_recalculation",
         "lt_memory_bulk_score_recalculation",
-        "lt_memory_entity_gc",
         "lt_memory_batch_cleanup",
+        "lt_memory_entity_merge",
         "segment_timeout_detection",
     }
     missing = sorted(required - registered)
@@ -962,7 +960,6 @@ def _check_http_diagnostics(base_url: str) -> dict[str, Any]:
         "account_garbage_collection",
         "lt_memory_extract_unprocessed_segments",
         "lt_memory_extraction_batch_polling",
-        "lt_memory_post_processing_batch_polling",
         "segment_timeout_detection",
     }
     missing = sorted(required - registered)
