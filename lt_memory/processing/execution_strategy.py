@@ -15,7 +15,7 @@ from datetime import timedelta
 from typing import List, Dict, Any, Optional, Tuple
 from uuid import UUID, uuid4
 
-from lt_memory.models import ProcessingChunk, ExtractedMemory, ExtractionBatch, MemoryLink, LinkingPair
+from lt_memory.models import ProcessingChunk, ExtractedMemory, ExtractionBatch, MemoryLink
 from lt_memory.processing.extraction_engine import ExtractionEngine, ExtractionPayload
 from lt_memory.processing.memory_processor import MemoryProcessor
 from lt_memory.vector_ops import VectorOps
@@ -27,6 +27,148 @@ from lt_memory.processing.batch_coordinator import BATCH_EXPIRY_HOURS
 from utils.timezone_utils import utc_now
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Consolidated extraction storage (shared by ImmediateExecutionStrategy and
+# ExtractionBatchResultHandler). Stores memories with embeddings, persists
+# entities, builds typeless candidate hints, and notifies the integration
+# curator to spawn via the factory's on_memories_stored callback.
+# ============================================================================
+
+def _persist_llm_entities(
+    user_id: str,
+    memories: List[ExtractedMemory],
+    memory_ids: List[UUID],
+    db: LTMemoryDB,
+) -> int:
+    """Persist LLM-extracted entities via pg_trgm fuzzy matching.
+
+    Free function so both execution paths share one implementation. Uses
+    get_or_create_entity to resolve name variations before creating new ones.
+    Non-critical: failures log a warning and return partial counts.
+    """
+    if len(memories) != len(memory_ids):
+        logger.error(
+            f"Memory/ID length mismatch: {len(memories)} memories vs {len(memory_ids)} IDs"
+        )
+        return 0
+
+    total_links = 0
+    try:
+        for memory, memory_id in zip(memories, memory_ids):
+            if not memory.entities:
+                continue
+            seen_names = set()
+            for entity_dict in memory.entities:
+                entity_name = entity_dict['name']
+                entity_type = entity_dict.get('type', 'UNKNOWN')
+                if entity_name in seen_names:
+                    continue
+                seen_names.add(entity_name)
+                entity = db.get_or_create_entity(
+                    name=entity_name, entity_type=entity_type, user_id=user_id
+                )
+                db.link_memory_to_entity(
+                    memory_id=memory_id, entity_id=entity.id,
+                    entity_name=entity_name, entity_type=entity.entity_type,
+                    user_id=user_id,
+                )
+                total_links += 1
+        if total_links:
+            logger.info(f"Persisted LLM entities: {total_links} links for {len(memories)} memories")
+    except Exception as e:
+        logger.warning(f"Entity persistence failed for user {user_id} (non-critical): {e}", exc_info=True)
+    return total_links
+
+
+def _build_candidate_hints(
+    memories: List[ExtractedMemory],
+    memory_ids: List[UUID],
+    linking: LinkingService,
+) -> Dict[str, List[dict]]:
+    """Assemble typeless candidate hints for the integration curator.
+
+    Merges deterministic discovery (LinkingService.find_candidate_hints:
+    vector/entity/tfidf axes) with extraction-time related_memory_ids + bonds.
+    Keyed by the new memory's full UUID string; each value is a list of
+    CandidateRef dicts (short memory_id + bond + discovery_signal +
+    similarity). No links written — discovery finds that memories touch;
+    the agent classifies how they relate.
+    """
+    from utils.tag_parser import format_memory_id
+    hints: Dict[str, List[dict]] = {}
+    if len(memories) != len(memory_ids):
+        logger.error(
+            f"Candidate-hints length mismatch: {len(memories)} vs {len(memory_ids)}"
+        )
+        return hints
+    for memory, mem_id in zip(memories, memory_ids):
+        full_id = str(mem_id)
+        refs: List[dict] = []
+        try:
+            refs.extend(linking.find_candidate_hints(mem_id))
+        except Exception:
+            logger.warning("find_candidate_hints failed for %s", mem_id, exc_info=True)
+        if memory.related_memory_ids:
+            for ref in memory.related_memory_ids:
+                try:
+                    related_id = ref["id"]
+                    refs.append({
+                        "memory_id": format_memory_id(related_id),
+                        "bond": ref.get("bond", ""),
+                        "discovery_signal": "extraction",
+                        "similarity": None,
+                    })
+                except (KeyError, TypeError):
+                    continue
+        if refs:
+            hints[full_id] = refs
+    return hints
+
+
+def store_and_tend_extraction(
+    *,
+    user_id: str,
+    segment_id: Optional[str],
+    memories: List[ExtractedMemory],
+    vector_ops: VectorOps,
+    db: LTMemoryDB,
+    linking: LinkingService,
+) -> List[UUID]:
+    """Single source of truth for extraction storage.
+
+    Called by both ImmediateExecutionStrategy and ExtractionBatchResultHandler.
+    Stores memories with embeddings, persists LLM-extracted entities, builds
+    candidate hints, and notifies the integration curator to spawn (via the
+    factory's on_memories_stored callback). No links are written here —
+    relationship typing is the MemoryCuratorAgent's job.
+    """
+    memory_ids = vector_ops.store_memories_with_embeddings(memories)
+    logger.info(f"Stored {len(memory_ids)} memories for user {user_id}")
+
+    _persist_llm_entities(user_id, memories, memory_ids, db)
+
+    candidate_hints = _build_candidate_hints(memories, memory_ids, linking)
+
+    # Notify the integration curator (CNS-layer callback, late-registered on
+    # the factory). None until the SegmentCollapseHandler registers it.
+    # Best-effort: never let a spawn failure break the storage path.
+    try:
+        from lt_memory.factory import get_lt_memory_factory
+        callback = get_lt_memory_factory().on_memories_stored
+        if callback:
+            callback(
+                user_id=user_id,
+                segment_id=segment_id,
+                memory_ids=memory_ids,
+                memories=memories,
+                candidate_hints=candidate_hints,
+            )
+    except Exception:
+        logger.warning("Integration curator notify failed", exc_info=True)
+
+    return memory_ids
 
 
 class ExecutionStrategy(ABC):
@@ -84,20 +226,25 @@ class ExecutionStrategy(ABC):
         self,
         user_id: str,
         response_text: str,
-        payload: ExtractionPayload
-    ) -> Tuple[List[UUID], List[LinkingPair]]:
+        payload: ExtractionPayload,
+        segment_id: Optional[str] = None,
+    ) -> List[UUID]:
         """
-        Shared business logic: process LLM response and store memories.
+        Shared business logic: parse, store, and tend extracted memories.
 
-        This is the IDENTICAL logic that was duplicated in both batch and immediate paths.
+        Delegates storage + entity persistence + candidate-hint assembly +
+        curator spawn to store_and_tend_extraction (shared with the batch
+        result handler). Related-memory bonds flow to the MemoryCuratorAgent
+        as typeless candidate hints, not typed links.
 
         Args:
             user_id: User ID
             response_text: LLM response text
             payload: Extraction payload (for UUID mapping and context)
+            segment_id: Segment UUID string (for the integration curator work-item)
 
         Returns:
-            Tuple of (memory_ids, linking_pairs)
+            List of stored memory UUIDs
         """
         # Parse and validate using MemoryProcessor
         result = self.memory_processor.process_extraction_response(
@@ -107,39 +254,19 @@ class ExecutionStrategy(ABC):
         )
 
         memories = result.memories
-        linking_pairs = result.linking_pairs
 
-        # Store memories with embeddings
-        memory_ids = []
+        memory_ids: List[UUID] = []
         if memories:
-            memory_ids = self.vector_ops.store_memories_with_embeddings(memories)
-            logger.info(f"Stored {len(memory_ids)} memories for user {user_id}")
+            memory_ids = store_and_tend_extraction(
+                user_id=user_id,
+                segment_id=segment_id,
+                memories=memories,
+                vector_ops=self.vector_ops,
+                db=self.db,
+                linking=self.linking,
+            )
 
-            # Persist LLM-extracted entities via fuzzy matching
-            self._persist_llm_entities(user_id, memories, memory_ids)
-
-            # Persist extraction-time links to existing memories (related_memory_ids)
-            extraction_links = []
-            for idx, memory in enumerate(memories):
-                if idx < len(memory_ids) and memory.related_memory_ids:
-                    new_id = memory_ids[idx]
-                    for ref in memory.related_memory_ids:
-                        related_id = UUID(ref["id"])
-                        bond = ref.get("bond", "")
-                        extraction_links.append(MemoryLink(
-                            source_id=new_id,
-                            target_id=related_id,
-                            link_type="extraction_ref",
-                            reasoning=bond if bond else "Referenced during conversation",
-                            extraction_bond=bond,
-                            created_at=utc_now()
-                        ))
-
-            if extraction_links:
-                self.db.create_links(extraction_links)
-                logger.info(f"Created {len(extraction_links)} extraction_ref links for user {user_id}")
-
-        return memory_ids, linking_pairs
+        return memory_ids
 
     def _persist_llm_entities(
         self,
@@ -147,65 +274,8 @@ class ExecutionStrategy(ABC):
         memories: List[ExtractedMemory],
         memory_ids: List[UUID]
     ) -> int:
-        """
-        Persist entities extracted by LLM during memory extraction.
-
-        Uses pg_trgm fuzzy matching via get_or_create_entity to resolve
-        name variations to existing entities before creating new ones.
-
-        Args:
-            user_id: User ID
-            memories: ExtractedMemory objects (with entities field populated)
-            memory_ids: Parallel list of stored memory UUIDs
-
-        Returns:
-            Number of entity links created
-        """
-        if len(memories) != len(memory_ids):
-            logger.error(
-                f"Memory/ID length mismatch: {len(memories)} memories vs {len(memory_ids)} IDs"
-            )
-            return 0
-
-        total_links = 0
-
-        try:
-            for memory, memory_id in zip(memories, memory_ids):
-                if not memory.entities:
-                    continue
-
-                # Deduplicate entities by name within this memory
-                seen_names = set()
-                for entity_dict in memory.entities:
-                    entity_name = entity_dict['name']
-                    entity_type = entity_dict.get('type', 'UNKNOWN')
-
-                    if entity_name in seen_names:
-                        continue
-                    seen_names.add(entity_name)
-
-                    entity = self.db.get_or_create_entity(
-                        name=entity_name,
-                        entity_type=entity_type,
-                        user_id=user_id
-                    )
-
-                    self.db.link_memory_to_entity(
-                        memory_id=memory_id,
-                        entity_id=entity.id,
-                        entity_name=entity_name,
-                        entity_type=entity.entity_type,
-                        user_id=user_id
-                    )
-                    total_links += 1
-
-            if total_links:
-                logger.info(f"Persisted LLM entities: {total_links} links for {len(memories)} memories")
-
-        except Exception as e:
-            logger.warning(f"Entity persistence failed for user {user_id} (non-critical): {e}", exc_info=True)
-
-        return total_links
+        """Delegates to the module-level free function (consolidation)."""
+        return _persist_llm_entities(user_id, memories, memory_ids, self.db)
 
 
 class BatchExecutionStrategy(ExecutionStrategy):
@@ -281,7 +351,6 @@ class BatchExecutionStrategy(ExecutionStrategy):
         # Submit via BatchCoordinator (single submission path)
         batch_id = self.batch_coordinator.submit_batch(
             requests=requests,
-            batch_type="extraction",
             user_id=user_id,
         )
         expires_at = utc_now() + timedelta(hours=BATCH_EXPIRY_HOURS)
@@ -355,8 +424,6 @@ class ImmediateExecutionStrategy(ExecutionStrategy):
             Exception: If LLM call or result processing fails
         """
         total_memories_stored = 0
-        all_memory_ids: List[UUID] = []
-        all_linking_pairs: List[LinkingPair] = []
 
         for chunk in chunks:
             # Build extraction payload
@@ -380,25 +447,19 @@ class ImmediateExecutionStrategy(ExecutionStrategy):
             response_text = self.llm_provider.extract_text_content(response)
 
             # Process and store memories (shared business logic)
-            memory_ids, linking_pairs = self._process_and_store_memories(
+            memory_ids = self._process_and_store_memories(
                 user_id,
                 response_text,
-                payload
+                payload,
+                segment_id=str(chunk.segment_id) if chunk.segment_id else None,
             )
 
             total_memories_stored += len(memory_ids)
-            all_memory_ids.extend(memory_ids)
-            all_linking_pairs.extend(linking_pairs)
 
             logger.info(
                 f"Immediate extraction chunk {chunk.chunk_index}: "
                 f"{len(memory_ids)} memories stored"
             )
-
-        # Post-storage processing: relationships
-        if all_memory_ids:
-            # Trigger relationship classification
-            self._trigger_relationship_classification(user_id, all_memory_ids, all_linking_pairs)
 
         if total_memories_stored > 0:
             logger.info(
@@ -407,137 +468,6 @@ class ImmediateExecutionStrategy(ExecutionStrategy):
             )
 
         return f"bypass_{uuid4()}"
-
-    def _trigger_relationship_classification(
-        self,
-        user_id: str,
-        memory_ids: List[UUID],
-        linking_hints: List[LinkingPair]
-    ) -> None:
-        """
-        Execute relationship classification immediately for new memories.
-
-        ImmediateExecutionStrategy executes classifications synchronously via
-        the LLM provider.
-        """
-        if not memory_ids:
-            return
-
-        all_pairs = []
-
-        # Process extraction hints first
-        if linking_hints:
-            new_memories = {m.id: m for m in self.db.get_memories_by_ids(memory_ids, user_id=user_id)}
-
-            for pair in linking_hints:
-                src_idx = pair["source_idx"]
-                tgt_idx = pair["target_idx"]
-                bond = pair.get("bond", "")
-
-                if src_idx < len(memory_ids) and tgt_idx < len(memory_ids):
-                    src_id = memory_ids[src_idx]
-                    tgt_id = memory_ids[tgt_idx]
-
-                    if src_id in new_memories and tgt_id in new_memories:
-                        all_pairs.append({
-                            "new_memory_id": src_id,
-                            "similar_memory_id": tgt_id,
-                            "new_memory": new_memories[src_id],
-                            "similar_memory": new_memories[tgt_id],
-                            "from_extraction_hint": True,
-                            "bond": bond
-                        })
-
-            logger.info(f"Added {len(all_pairs)} pairs from extraction hints for user {user_id}")
-
-        # Find similar existing memories
-        for mem_id in memory_ids:
-            candidates = self.linking.find_similar_candidates(mem_id)
-            for candidate in candidates:
-                all_pairs.append({
-                    "new_memory_id": mem_id,
-                    "similar_memory_id": candidate.id,
-                    "new_memory": self.db.get_memory(mem_id, user_id=user_id),
-                    "similar_memory": candidate,
-                    "from_extraction_hint": False
-                })
-
-        if not all_pairs:
-            return
-
-        # Execute classifications immediately.
-        # Circuit breaker: if the model returns garbage N times in a row,
-        # stop wasting LLM calls — the endpoint is broken.
-        MAX_CONSECUTIVE_FAILURES = 5
-
-        links_created = 0
-        consecutive_failures = 0
-        for pair in all_pairs:
-            try:
-                # Build classification payload
-                payload = self.linking.build_classification_payload(
-                    pair["new_memory"],
-                    pair["similar_memory"],
-                    bond=pair.get("bond", "")
-                )
-
-                # Call LLM directly using relationship internal LLM config
-                response = self.llm_provider.generate_response(
-                    messages=[{"role": "user", "content": payload["user_prompt"]}],
-                    system_prompt=payload["system_prompt"],
-                    internal_llm='relationship',
-                    allow_negative=True,  # System task — segment already paid for
-                )
-
-                # Extract text from response
-                response_text = self.llm_provider.extract_text_content(response)
-
-                # Parse classification result
-                import json
-                classification = json.loads(response_text)
-                rel_type = classification.get("relationship_type")
-
-                consecutive_failures = 0  # Reset on successful parse
-
-                if rel_type and rel_type != "null":
-                    # Create bidirectional link
-                    if self.linking.create_bidirectional_link(
-                        source_id=pair["new_memory_id"],
-                        target_id=pair["similar_memory_id"],
-                        link_type=rel_type,
-                        reasoning=classification.get("reasoning", ""),
-                        extraction_bond=pair.get("bond", "")
-                    ):
-                        links_created += 1
-
-            except json.JSONDecodeError:
-                consecutive_failures += 1
-                logger.error(
-                    f"Invalid JSON in relationship classification response "
-                    f"({consecutive_failures}/{MAX_CONSECUTIVE_FAILURES}): "
-                    f"{response_text[:200]}"
-                )
-                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-                    logger.error(
-                        f"Circuit breaker tripped: {MAX_CONSECUTIVE_FAILURES} consecutive "
-                        f"JSON failures — aborting relationship classification for user {user_id}. "
-                        f"The relationship LLM endpoint is likely returning non-JSON responses."
-                    )
-                    break
-            except Exception as e:
-                consecutive_failures += 1
-                logger.warning(f"Relationship classification failed for pair: {e}")
-                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-                    logger.error(
-                        f"Circuit breaker tripped: {MAX_CONSECUTIVE_FAILURES} consecutive "
-                        f"failures — aborting relationship classification for user {user_id}."
-                    )
-                    break
-
-        logger.info(
-            f"Immediate: relationship classification complete for {len(all_pairs)} pairs, "
-            f"{links_created} links created"
-        )
 
 
 def create_execution_strategy(

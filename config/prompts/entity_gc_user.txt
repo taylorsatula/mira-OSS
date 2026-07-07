@@ -1,3 +1,0 @@
-<entity_groups>
-{groups}
-</entity_groups>

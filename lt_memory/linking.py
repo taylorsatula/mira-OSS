@@ -10,15 +10,14 @@ Discovery uses three axes:
 2. Entity co-occurrence — shared entities filtered by embedding similarity floor
 3. TF-IDF term overlap — catches orphan memories the embedding model smooths over
 """
-import json
 import logging
-from typing import List, Optional, Union
+from typing import List, Optional
 from uuid import UUID
 
-from lt_memory.models import Memory, MemoryLink, ClassificationPayload, ClassificationResult, TraversalResult, VALID_RELATIONSHIP_TYPES
+from lt_memory.models import Memory, TraversalResult
 from lt_memory.vector_ops import VectorOps
 from lt_memory.db_access import LTMemoryDB
-from utils.timezone_utils import utc_now, format_utc_iso
+from utils.tag_parser import format_memory_id
 from utils.user_context import get_current_user_id
 
 logger = logging.getLogger(__name__)
@@ -69,73 +68,79 @@ class LinkingService:
     ):
         self.vector_ops = vector_ops
         self.db = db
-        self._load_prompts()
 
         self._tfidf_states: dict[str, _TfidfState] = {}
 
-    def _load_prompts(self) -> None:
-        """
-        Load relationship classification prompt.
-
-        Raises:
-            FileNotFoundError: If prompt file not found (prompts are required configuration)
-        """
-        from config.prompts.loader import load_prompt
-        self.relationship_system_prompt = load_prompt("memory_relationship_classification.txt")
-        logger.info("Loaded relationship classification prompt")
-
-    def find_similar_candidates(
+    def find_candidate_hints(
         self,
         memory_id: UUID
-    ) -> List[Memory]:
+    ) -> List[dict]:
         """
-        Find candidate memories for relationship classification.
+        Typeless candidate discovery for the MemoryCuratorAgent.
 
-        Uses three discovery axes:
-        1. Vector similarity — finds memories with similar embedding content
-        2. Entity co-occurrence — finds memories sharing entities, filtered by
-           embedding similarity floor to suppress O(N²) noise from common entities
-        3. TF-IDF term overlap — rescues orphan memories (no entities) via rare
-           shared terms the embedding model smooths over
+        Runs three discovery axes (vector similarity, entity co-occurrence,
+        TF-IDF term overlap) and returns CandidateRef-shaped dicts (short id + discovery_signal +
+        similarity) with NO typed relationship classification. The agent
+        decides how — or whether — each candidate relates.
 
-        The union of all axes feeds the classifier, which decides whether
-        each candidate pair has a meaningful relationship.
+        This is the programmatic half of the curation delineation:
+        deterministic code finds *that* memories touch; the agent classifies
+        *how*. No links are written here.
 
         Args:
             memory_id: Source memory UUID
 
         Returns:
-            List of candidate Memory objects (excludes source memory)
+            List of candidate dicts: {memory_id, bond, discovery_signal,
+            similarity}. bond is always "" here (extraction bonds are merged
+            in by the caller, not discovered by this service).
         """
-        # Axis 1: Vector similarity
         vector_candidates = self.vector_ops.find_similar_to_memory(
             memory_id=memory_id,
             limit=MAX_CANDIDATES_PER_MEMORY,
             similarity_threshold=SIMILARITY_THRESHOLD_FOR_LINKING,
-            min_importance=0.001  # Filter cold storage (0.0) memories
+            min_importance=0.001
         )
-
-        # Axis 2: Entity co-occurrence (filtered by similarity floor)
         entity_candidates = self._find_entity_candidates(memory_id)
-
-        # Axis 3: TF-IDF term overlap
         tfidf_candidates = self._find_tfidf_candidates(memory_id)
 
-        # Union and deduplicate
         seen_ids = set()
-        combined = []
-        for mem in vector_candidates + entity_candidates + tfidf_candidates:
+        hints: List[dict] = []
+
+        for mem in vector_candidates:
             if mem.id not in seen_ids and mem.id != memory_id:
                 seen_ids.add(mem.id)
-                combined.append(mem)
+                hints.append({
+                    "memory_id": format_memory_id(str(mem.id)),
+                    "bond": "",
+                    "discovery_signal": "vector",
+                    "similarity": getattr(mem, "similarity_score", None),
+                })
+        for mem in entity_candidates:
+            if mem.id not in seen_ids and mem.id != memory_id:
+                seen_ids.add(mem.id)
+                hints.append({
+                    "memory_id": format_memory_id(str(mem.id)),
+                    "bond": "",
+                    "discovery_signal": "entity",
+                    "similarity": None,
+                })
+        for mem in tfidf_candidates:
+            if mem.id not in seen_ids and mem.id != memory_id:
+                seen_ids.add(mem.id)
+                hints.append({
+                    "memory_id": format_memory_id(str(mem.id)),
+                    "bond": "",
+                    "discovery_signal": "tfidf",
+                    "similarity": None,
+                })
 
         logger.debug(
-            f"Found {len(combined)} candidates for memory {memory_id} "
-            f"(vector={len(vector_candidates)}, entity={len(entity_candidates)}, "
-            f"tfidf={len(tfidf_candidates)}, unique={len(combined)})"
+            f"find_candidate_hints: {len(hints)} candidates for memory "
+            f"{memory_id} (vector={len(vector_candidates)}, "
+            f"entity={len(entity_candidates)}, tfidf={len(tfidf_candidates)})"
         )
-
-        return combined
+        return hints
 
     def _find_entity_candidates(
         self,
@@ -285,171 +290,6 @@ class LinkingService:
         # Batch-fetch Memory objects (RLS-filtered by user context)
         return self.db.get_memories_by_ids(top_ids)
 
-    def build_classification_payload(
-        self,
-        source_memory: Memory,
-        target_memory: Memory,
-        bond: str = ""
-    ) -> ClassificationPayload:
-        """
-        Build relationship classification request payload for batch API.
-
-        Creates the prompt and parameters needed for LLM classification
-        without making the actual call.
-
-        Args:
-            source_memory: Source memory
-            target_memory: Target memory for comparison
-            bond: Extraction-time bond descriptor (3-word hint from extraction LLM)
-
-        Returns:
-            Dictionary with prompt and classification parameters
-        """
-        # Build user prompt
-        user_prompt = self._build_relationship_prompt(source_memory, target_memory, bond=bond)
-
-        return {
-            "source_id": str(source_memory.id),
-            "target_id": str(target_memory.id),
-            "system_prompt": self.relationship_system_prompt,
-            "user_prompt": user_prompt
-        }
-
-    def _format_temporal_fields(self, memory: Memory) -> str:
-        """
-        Format temporal fields for prompt display.
-
-        Args:
-            memory: Memory object
-
-        Returns:
-            Formatted temporal info string
-        """
-        parts = []
-
-        if memory.happens_at:
-            parts.append(f"happens_at: {format_utc_iso(memory.happens_at)}")
-
-        if memory.expires_at:
-            parts.append(f"expires_at: {format_utc_iso(memory.expires_at)}")
-
-        return " | ".join(parts) if parts else "no temporal constraints"
-
-    def _build_relationship_prompt(
-        self,
-        source_memory: Memory,
-        target_memory: Memory,
-        bond: str = ""
-    ) -> str:
-        """
-        Build user prompt for relationship classification.
-
-        Args:
-            source_memory: Source memory
-            target_memory: Target memory
-            bond: Extraction-time bond descriptor (optional context hint)
-
-        Returns:
-            Formatted prompt text
-        """
-        source_temporal = self._format_temporal_fields(source_memory)
-        target_temporal = self._format_temporal_fields(target_memory)
-
-        extraction_context = ""
-        if bond:
-            extraction_context = f"\nExtraction context: \"{bond}\"\n"
-
-        prompt = f"""/nothink
-Classify the relationship between these two memories. Output ONLY a raw JSON object — no markdown, no code fences, no explanation outside the JSON.
-
-NEW MEMORY:
-Text: "{source_memory.text}"
-Temporal: {source_temporal}
-Importance: {source_memory.importance_score:.3f}
-
-EXISTING MEMORY:
-Text: "{target_memory.text}"
-Temporal: {target_temporal}
-Importance: {target_memory.importance_score:.3f}
-{extraction_context}
-Would knowing one of these memories change how you'd act on the other? If yes, pick exactly one relationship type. If no meaningful connection, use "null".
-
-Relationship types: corroborates, conflicts, supersedes, refines, precedes, contextualizes, exemplifies, null
-
-{{"relationship_type": "<exactly one type from above>", "reasoning": "<one sentence>"}}"""
-
-        return prompt
-
-    def create_bidirectional_link(
-        self,
-        source_id: UUID,
-        target_id: UUID,
-        link_type: str,
-        reasoning: str,
-        extraction_bond: str = ""
-    ) -> bool:
-        """
-        Create single bidirectional link between memories.
-
-        Convenience method for creating one link. For batch operations,
-        use create_bidirectional_links() instead.
-
-        Args:
-            source_id: Source memory UUID
-            target_id: Target memory UUID
-            link_type: Relationship type (conflicts, supports, supersedes, related)
-            reasoning: Explanation of relationship
-            extraction_bond: 3-word bond from extraction LLM (preserved as-is)
-
-        Returns:
-            True if link created successfully
-
-        Raises:
-            Exception: If database operation fails
-        """
-        link = MemoryLink(
-            source_id=source_id,
-            target_id=target_id,
-            link_type=link_type,
-            reasoning=reasoning,
-            extraction_bond=extraction_bond,
-            created_at=utc_now()
-        )
-
-        self.db.create_links([link])
-        logger.info(f"Created {link_type} link: {source_id} <-> {target_id}")
-        return True
-
-    def create_bidirectional_links(
-        self,
-        links: Union[MemoryLink, List[MemoryLink]]
-    ) -> None:
-        """
-        Create bidirectional link(s) between memories.
-
-        Updates both source and target memory link arrays.
-
-        Args:
-            links: Single MemoryLink or list of MemoryLink objects
-        """
-        # Normalize to list
-        if isinstance(links, MemoryLink):
-            links = [links]
-
-        if not links:
-            return
-
-        self.db.create_links(links)
-
-        if len(links) == 1:
-            link = links[0]
-            logger.info(
-                f"Created bidirectional {link.link_type} link: "
-                f"{link.source_id} <-> {link.target_id}"
-            )
-        else:
-            logger.info(f"Created {len(links)} bidirectional links")
-
     def traverse_related(
         self,
         memory_id: UUID,
@@ -525,6 +365,7 @@ Relationship types: corroborates, conflicts, supersedes, refines, precedes, cont
                         "memory": memory,
                         "link_type": link_meta.get("type") if link_meta else None,
                         "reasoning": link_meta.get("reasoning") if link_meta else None,
+                        "bond": link_meta.get("bond") if link_meta else None,
                         "depth": depth_level,
                         "linked_from_id": link_meta.get("source_id") if link_meta else None
                     })
@@ -540,6 +381,7 @@ Relationship types: corroborates, conflicts, supersedes, refines, precedes, cont
                             {
                                 "type": link.get("type"),
                                 "reasoning": link.get("reasoning"),
+                                "bond": link.get("extraction_bond"),
                                 "source_id": uuid
                             },
                             current_depth

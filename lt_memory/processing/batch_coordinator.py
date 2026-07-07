@@ -1,8 +1,5 @@
 """
-Batch coordinator - generic Anthropic Batch API orchestration.
-
-Eliminates duplication between extraction and relationship batch polling
-(poll_extraction_batches and poll_linking_batches were 90% identical).
+Batch coordinator - Anthropic Batch API orchestration for extraction.
 
 Provides generic polling infrastructure with pluggable result processors.
 """
@@ -15,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 import anthropic
 
 from lt_memory.db_access import LTMemoryDB
-from lt_memory.models import ExtractionBatch, PostProcessingBatch
+from lt_memory.models import ExtractionBatch
 from utils.timezone_utils import utc_now
 
 logger = logging.getLogger(__name__)
@@ -34,8 +31,6 @@ class BatchResultProcessor(ABC):
 
     Concrete implementations handle specific batch types:
     - ExtractionResultProcessor: Process memory extraction results
-    - RelationshipResultProcessor: Process relationship classification results
-    - ConsolidationResultProcessor: Process consolidation results
     """
 
     @abstractmethod
@@ -52,16 +47,6 @@ class BatchResultProcessor(ABC):
         """
         pass
 
-    def finalize_batch(self, batch_id: str, user_id: str) -> None:
-        """
-        Called once after all records for a batch_id have been processed.
-
-        Override to trigger downstream work that should happen once per Anthropic
-        batch rather than once per DB record (e.g., relationship classification
-        after all extraction chunks complete).
-        """
-        pass
-
 
 class BatchCoordinator:
     """
@@ -74,8 +59,6 @@ class BatchCoordinator:
     2. Poll for completion
     3. Handle expiry, retries, failures
     4. Delegate result processing to specialized processors
-
-    Eliminates 90% duplication between extraction and relationship polling.
     """
 
     def __init__(
@@ -89,18 +72,13 @@ class BatchCoordinator:
     def submit_batch(
         self,
         requests: List[Dict[str, Any]],
-        batch_type: str,
         user_id: str,
     ) -> str:
         """
-        Submit batch to Anthropic API.
-
-        Generic submission that works for any batch type
-        (extraction, relationship, consolidation, etc.).
+        Submit extraction batch to Anthropic API.
 
         Args:
             requests: List of Anthropic batch request dicts
-            batch_type: Type of batch ("extraction", "relationship_classification", etc.)
             user_id: User ID
 
         Returns:
@@ -116,7 +94,7 @@ class BatchCoordinator:
         batch = self.anthropic_client.beta.messages.batches.create(requests=requests)
 
         logger.info(
-            f"Submitted {batch_type} batch {batch.id} for user {user_id}: "
+            f"Submitted extraction batch {batch.id} for user {user_id}: "
             f"{len(requests)} requests"
         )
 
@@ -124,7 +102,6 @@ class BatchCoordinator:
 
     def poll_batches(
         self,
-        batch_type: str,
         get_pending_batches_fn: Callable[[], List[Any]],
         result_processor: BatchResultProcessor,
         update_status_fn: Callable[..., None],
@@ -133,15 +110,11 @@ class BatchCoordinator:
         claim_batch_fn: Callable[[Any, str], bool] = None
     ) -> Dict[str, int]:
         """
-        Generic batch polling loop.
+        Extraction batch polling loop.
 
         Polls Anthropic for batch completion and delegates result processing.
 
-        This method eliminates the duplication between poll_extraction_batches
-        and poll_linking_batches (which were 90% identical).
-
         Args:
-            batch_type: Type of batch being polled
             get_pending_batches_fn: Function to get pending batches from DB
             result_processor: Processor for completed batch results
             update_status_fn: Function to update batch status.
@@ -162,7 +135,7 @@ class BatchCoordinator:
         if not pending_batches:
             return stats
 
-        logger.info(f"Polling {batch_type} batches: {len(pending_batches)} pending")
+        logger.info(f"Polling extraction batches: {len(pending_batches)} pending")
 
         # Filter out batches older than max age (Anthropic results expire after 24h)
         batch_age_cutoff = utc_now() - timedelta(hours=BATCH_MAX_AGE_HOURS)
@@ -242,7 +215,6 @@ class BatchCoordinator:
 
             # Handle batch status
             if batch_info.processing_status == "ended":
-                any_succeeded = False
                 for b in batches:
                     # Atomically claim batch before processing to prevent
                     # concurrent threads from processing the same batch
@@ -260,7 +232,6 @@ class BatchCoordinator:
                         try:
                             if future.result(timeout=BATCH_PROCESSING_TIMEOUT_SECONDS):
                                 stats["completed"] += 1
-                                any_succeeded = True
                                 delete_batch_fn(b.id, b.user_id)
                             else:
                                 raise RuntimeError("Processing returned False")
@@ -297,13 +268,6 @@ class BatchCoordinator:
                             )
                         stats["failed"] += 1
 
-                # Trigger downstream work once for the entire Anthropic batch
-                if any_succeeded:
-                    try:
-                        result_processor.finalize_batch(batch_id, batches[0].user_id)
-                    except Exception as e:
-                        logger.error(f"Error finalizing batch {batch_id}: {e}", exc_info=True)
-
             elif batch_info.processing_status == "in_progress":
                 for b in batches:
                     if b.status != "processing":
@@ -315,7 +279,7 @@ class BatchCoordinator:
                 stats["failed"] += len(batches)
 
         logger.info(
-            f"{batch_type} polling: {stats['completed']} completed, "
+            f"Extraction polling: {stats['completed']} completed, "
             f"{stats['failed']} failed, {stats['expired']} expired"
         )
         return stats
@@ -333,52 +297,18 @@ class BatchCoordinator:
         Returns:
             Polling statistics
         """
-        users_with_pending = self.db.get_users_with_pending_batches("extraction")
+        users_with_pending = self.db.get_users_with_pending_batches()
 
         all_stats = {"checked": 0, "completed": 0, "failed": 0, "expired": 0}
 
         for user_id in users_with_pending:
             stats = self.poll_batches(
-                batch_type="extraction",
-                get_pending_batches_fn=lambda uid=user_id: self.db.get_pending_batches_for_user("extraction", uid),
+                get_pending_batches_fn=lambda uid=user_id: self.db.get_pending_batches_for_user(uid),
                 result_processor=result_processor,
-                update_status_fn=lambda bid, status, **kw: self.db.update_batch_status("extraction", bid, status, **kw),
-                increment_retry_fn=lambda bid, uid: self.db.increment_batch_retry("extraction", bid, uid),
-                delete_batch_fn=lambda bid, uid: self.db.delete_batch("extraction", bid, uid),
-                claim_batch_fn=lambda bid, uid: self.db.claim_batch("extraction", bid, uid)
-            )
-
-            for key in all_stats:
-                all_stats[key] += stats[key]
-
-        return all_stats
-
-    def poll_post_processing_batches(
-        self,
-        result_processor: BatchResultProcessor
-    ) -> Dict[str, int]:
-        """
-        Poll post-processing batches (convenience wrapper).
-
-        Args:
-            result_processor: Processor for post-processing results
-
-        Returns:
-            Polling statistics
-        """
-        users_with_pending = self.db.get_users_with_pending_batches("post_processing")
-
-        all_stats = {"checked": 0, "completed": 0, "failed": 0, "expired": 0}
-
-        for user_id in users_with_pending:
-            stats = self.poll_batches(
-                batch_type="post_processing",
-                get_pending_batches_fn=lambda uid=user_id: self.db.get_pending_batches_for_user("post_processing", uid),
-                result_processor=result_processor,
-                update_status_fn=lambda bid, status, **kw: self.db.update_batch_status("post_processing", bid, status, **kw),
-                increment_retry_fn=lambda bid, uid: self.db.increment_batch_retry("post_processing", bid, uid),
-                delete_batch_fn=lambda bid, uid: self.db.delete_batch("post_processing", bid, uid),
-                claim_batch_fn=lambda bid, uid: self.db.claim_batch("post_processing", bid, uid)
+                update_status_fn=lambda bid, status, **kw: self.db.update_batch_status(bid, status, **kw),
+                increment_retry_fn=lambda bid, uid: self.db.increment_batch_retry(bid, uid),
+                delete_batch_fn=lambda bid, uid: self.db.delete_batch(bid, uid),
+                claim_batch_fn=lambda bid, uid: self.db.claim_batch(bid, uid)
             )
 
             for key in all_stats:

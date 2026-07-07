@@ -206,7 +206,7 @@ class ExtractionOrchestrator:
             uid = str(user["id"])
             try:
                 # Safety valve: skip users with pending batches
-                pending_batches = self.db.get_pending_batches_for_user("extraction", uid)
+                pending_batches = self.db.get_pending_batches_for_user(uid)
                 if pending_batches:
                     logger.info(
                         f"Skipping user {uid}: {len(pending_batches)} pending extraction batches"

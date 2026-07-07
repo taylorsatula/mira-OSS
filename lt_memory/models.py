@@ -12,18 +12,17 @@ from uuid import UUID
 # Used across extraction, linking, and processing modules
 VALID_RELATIONSHIP_TYPES = frozenset({
     "corroborates", "conflicts", "supersedes", "refines",
-    "precedes", "contextualizes", "exemplifies", "extraction_ref", "null"
+    "precedes", "contextualizes", "exemplifies", "null"
 })
 
 # Type aliases for Literal-validated fields
 RelationshipType = Literal[
     "corroborates", "conflicts", "supersedes", "refines",
-    "precedes", "contextualizes", "exemplifies", "extraction_ref", "null"
+    "precedes", "contextualizes", "exemplifies", "null"
 ]
 BatchStatus = Literal[
     "submitted", "processing", "result_processing", "completed", "failed", "expired", "cancelled"
 ]
-BatchKind = Literal["extraction", "post_processing"]
 
 
 # ============================================================================
@@ -38,6 +37,7 @@ class MemoryLinkEntry(TypedDict):
     reasoning: str
     created_at: str
     extraction_bond: NotRequired[str]
+
 
 
 class EntityLinkEntry(TypedDict):
@@ -71,51 +71,6 @@ class TraversalResult(TypedDict):
     reasoning: str | None
     depth: int
     linked_from_id: UUID | None
-
-
-class ClassificationPayload(TypedDict):
-    """Payload for relationship classification batch request."""
-    source_id: str
-    target_id: str
-    system_prompt: str
-    user_prompt: str
-
-
-class ClassificationResult(TypedDict):
-    """Parsed result from relationship classification LLM response."""
-    relationship_type: str
-    reasoning: str
-
-
-class ClassificationPair(TypedDict):
-    """Memory pair for relationship classification with extraction context."""
-    new_memory_id: UUID
-    similar_memory_id: UUID
-    new_memory: 'Memory'
-    similar_memory: 'Memory'
-    from_extraction_hint: bool
-    bond: NotRequired[str]
-
-
-class EntityPairRow(TypedDict):
-    """Row from find_similar_entity_pairs() pg_trgm self-join."""
-    id_a: UUID
-    name_a: str
-    type_a: str
-    links_a: int
-    id_b: UUID
-    name_b: str
-    type_b: str
-    links_b: int
-    sim: float
-
-
-class GCStats(TypedDict):
-    """Statistics returned by entity GC operations."""
-    merged: int
-    deleted: int
-    kept: int
-    errors: int
 
 
 class UserMemorySettings(TypedDict):
@@ -157,6 +112,19 @@ class MemoryContextSnapshot(TypedDict):
     pinned_short_ids: list[str]
 
 
+class EntityPairRow(TypedDict):
+    """Row from find_similar_entity_pairs() pg_trgm self-join."""
+    id_a: UUID
+    name_a: str
+    type_a: str
+    links_a: int
+    id_b: UUID
+    name_b: str
+    type_b: str
+    links_b: int
+    sim: float
+
+
 class ChunkMetadata(TypedDict):
     """Metadata stored with ExtractionBatch for result processing."""
     message_count: int
@@ -184,14 +152,6 @@ class MemoryDict(TypedDict):
     linked_memories: NotRequired[list['MemoryDict']]
 
 
-class ConsolidationPayload(TypedDict):
-    """Payload for consolidation batch request."""
-    cluster_id: str
-    memory_ids: list[str]
-    system_prompt: str
-    user_prompt: str
-
-
 class Memory(BaseModel):
     """
     Represents a stored memory from database.
@@ -216,7 +176,11 @@ class Memory(BaseModel):
     entity_links: List[EntityLinkEntry] = Field(default_factory=list)
     is_archived: bool = False
     archived_at: Optional[datetime] = None
-    consolidation_rejection_count: int = 0
+
+    # Last timestamp the MemoryCuratorAgent tended this memory (linked/merged/
+    # archived/salvaged). NULL = never tended (integration not yet run).
+    # The floor trigger samples "memories not tended in N days" via this field.
+    last_tended_at: Optional[datetime] = None
 
     # Activity day snapshots for vacation-proof scoring
     activity_days_at_creation: Optional[int] = None
@@ -249,19 +213,6 @@ class ExtractionRef(TypedDict):
     bond: str     # 3-word relationship descriptor
 
 
-class LinkingHint(TypedDict):
-    """Intra-batch relationship hint with bond descriptor."""
-    idx: int      # Target memory index in extraction batch
-    bond: str     # 3-word relationship descriptor
-
-
-class LinkingPair(TypedDict):
-    """Memory pair for relationship classification with extraction context."""
-    source_idx: int
-    target_idx: int
-    bond: str     # 3-word descriptor from extraction LLM
-
-
 class ExtractedMemory(BaseModel):
     """
     Memory extracted from continuum chunk.
@@ -272,13 +223,7 @@ class ExtractedMemory(BaseModel):
     importance_score: float = Field(ge=0.0, le=1.0, default=0.5)
     expires_at: Optional[datetime] = None
     happens_at: Optional[datetime] = None
-    relationship_type: Optional[RelationshipType] = None
     related_memory_ids: List[ExtractionRef] = Field(default_factory=list)
-    consolidates_memory_ids: List[UUID] = Field(default_factory=list)
-    linking_hints: List[LinkingHint] = Field(
-        default_factory=list,
-        description="Intra-batch linking hints with bond descriptors: [{'idx': int, 'bond': str}]"
-    )
     entities: List[Dict[str, str]] = Field(
         default_factory=list,
         description="Entities extracted by LLM: [{'name': str, 'type': PERSON|ORG|PRODUCT|PLACE}]"
@@ -317,16 +262,9 @@ class ExtractedMemory(BaseModel):
 
 class ExtractionResult(BaseModel):
     """
-    Result of memory extraction containing memories and linking hints.
-
-    Used to pass both extracted memories and intra-batch linking hints
-    through the extraction pipeline.
+    Result of memory extraction containing extracted memories.
     """
     memories: List['ExtractedMemory']
-    linking_pairs: List[LinkingPair] = Field(
-        default_factory=list,
-        description="Pairs of memory indices with bond descriptors for relationship evaluation"
-    )
 
 
 class MemoryLink(BaseModel):
@@ -339,7 +277,7 @@ class MemoryLink(BaseModel):
     target_id: UUID
     link_type: RelationshipType
     reasoning: str
-    extraction_bond: str = ""  # 3-word bond from extraction LLM (e.g., "caused diet change")
+    extraction_bond: str = ""  # 3-word relationship descriptor carried from extraction
     created_at: datetime
 
 
@@ -461,52 +399,6 @@ class ExtractionBatch(BaseModel):
     processing_time_ms: Optional[int] = None
     tokens_used: Optional[int] = None
 
-
-
-class PostProcessingBatch(BaseModel):
-    """
-    Post-processing batch tracking for relationship classification.
-
-    Represents a row in post_processing_batches table.
-    """
-    id: Optional[UUID] = None  # Generated by database
-    batch_id: str  # Anthropic batch ID
-    batch_type: Literal['relationship_classification', 'consolidation', 'entity_gc']
-    user_id: UUID
-    request_payload: Dict[str, Any]
-    input_data: Dict[str, Any]
-    status: BatchStatus
-    created_at: datetime
-    submitted_at: datetime
-    completed_at: Optional[datetime] = None
-    expires_at: Optional[datetime] = None
-    result_payload: Optional[Dict[str, Any]] = None
-    items_submitted: int
-    items_completed: int = 0
-    items_failed: int = 0
-    error_message: Optional[str] = None
-    retry_count: int = 0
-    processing_time_ms: Optional[int] = None
-    tokens_used: Optional[int] = None
-    links_created: int = 0
-    conflicts_flagged: int = 0
-    memories_consolidated: int = 0
-
-
-
-class ConsolidationCluster(BaseModel):
-    """Cluster of similar memories identified by connected-components for consolidation."""
-    cluster_id: str
-    memory_ids: List[UUID]
-    memory_texts: List[str]
-
-    @field_validator('memory_ids')
-    @classmethod
-    def validate_min_cluster_size(cls, v: List[UUID]) -> List[UUID]:
-        """Ensure cluster has at least 2 memories."""
-        if len(v) < 2:
-            raise ValueError("ConsolidationCluster must contain at least 2 memories")
-        return v
 
 
 class PendingManualMemory(BaseModel):

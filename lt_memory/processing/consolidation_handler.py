@@ -157,7 +157,6 @@ class ConsolidationHandler:
         consolidated_memory = ExtractedMemory(
             text=consolidated_text,
             importance_score=median_importance,
-            consolidates_memory_ids=list(old_memory_ids),
             source_segment_id=earliest_segment_id,
         )
 
@@ -244,43 +243,3 @@ class ConsolidationHandler:
         )
 
         return new_memory_id
-
-    def validate_consolidation_cluster(
-        self,
-        memory_ids: List[UUID],
-        user_id: str
-    ) -> bool:
-        """
-        Validate that a consolidation cluster is valid.
-
-        Checks:
-        - At least 2 memories (can't consolidate 1)
-        - All memories exist and belong to user
-        - Memories are not already archived
-
-        Args:
-            memory_ids: List of memory UUIDs to consolidate
-            user_id: User ID
-
-        Returns:
-            True if cluster is valid, False otherwise
-        """
-        if len(memory_ids) < 2:
-            logger.warning(f"Consolidation cluster too small: {len(memory_ids)} memories")
-            return False
-
-        memories = self.db.get_memories_by_ids(memory_ids, user_id=user_id)
-
-        if len(memories) != len(memory_ids):
-            logger.warning(
-                f"Some memories not found: expected {len(memory_ids)}, got {len(memories)}"
-            )
-            return False
-
-        # Check for archived memories
-        archived = [m for m in memories if getattr(m, 'archived', False)]
-        if archived:
-            logger.warning(f"Cluster contains {len(archived)} archived memories")
-            return False
-
-        return True

@@ -8,7 +8,6 @@ Consolidates all response processing logic into a single, focused module:
 - Memory field validation and sanitization
 - Duplicate detection (fuzzy + vector)
 - Index remapping for filtered memories
-- Linking pair construction
 
 This module is pure data processing with no side effects.
 """
@@ -19,7 +18,7 @@ from uuid import UUID
 
 from rapidfuzz import fuzz
 
-from lt_memory.models import ExtractedMemory, ExtractionResult, LinkingPair, MemoryContext, VALID_RELATIONSHIP_TYPES
+from lt_memory.models import ExtractedMemory, ExtractionResult, MemoryContext
 from lt_memory.vector_ops import VectorOps
 
 logger = logging.getLogger(__name__)
@@ -42,10 +41,7 @@ class RawMemoryDict(TypedDict, total=False):
     importance_score: float
     expires_at: str | None
     happens_at: str | None
-    relationship_type: str | None
     related_memory_ids: list[dict[str, str]]
-    consolidates_memory_ids: list[str]
-    linking_hints: list[dict[str, Any]]
     entities: list[dict[str, str]]
 
 
@@ -53,7 +49,7 @@ class MemoryProcessor:
     """
     Process LLM extraction responses into validated ExtractedMemory objects.
 
-    Single Responsibility: Transform raw LLM text → validated memories + linking pairs
+    Single Responsibility: Transform raw LLM text → validated memories
 
     No side effects - pure data processing that can be tested independently.
     """
@@ -70,7 +66,7 @@ class MemoryProcessor:
         """
         Process batch extraction result from LLM response.
 
-        Complete pipeline: Parse → Remap IDs → Validate → Deduplicate → Build linking pairs
+        Complete pipeline: Parse → Remap IDs → Validate → Deduplicate
 
         Args:
             response_text: LLM response text (JSON format)
@@ -78,7 +74,7 @@ class MemoryProcessor:
             memory_context: Memory context used during extraction (for deduplication)
 
         Returns:
-            ExtractionResult containing validated memories and linking pairs
+            ExtractionResult containing validated memories
 
         Raises:
             ValueError: If response parsing fails catastrophically
@@ -119,10 +115,7 @@ class MemoryProcessor:
                 importance_score=DEFAULT_IMPORTANCE_SCORE,
                 expires_at=memory_dict.get("expires_at"),
                 happens_at=memory_dict.get("happens_at"),
-                relationship_type=memory_dict.get("relationship_type"),
                 related_memory_ids=memory_dict.get("related_memory_ids", []),
-                consolidates_memory_ids=memory_dict.get("consolidates_memory_ids", []),
-                linking_hints=memory_dict.get("linking_hints", []),
                 entities=memory_dict.get("entities", [])
             )
 
@@ -131,20 +124,12 @@ class MemoryProcessor:
             original_to_filtered_idx[original_idx] = filtered_idx
             extracted_memories.append(extracted_memory)
 
-        # Step 4: Build linking pairs from hints with index remapping
-        linking_pairs = self._build_linking_pairs(
-            extracted_memories,
-            original_to_filtered_idx
-        )
-
         logger.info(
-            f"Processed extraction response: {len(extracted_memories)} memories, "
-            f"{len(linking_pairs)} linking hints"
+            f"Processed extraction response: {len(extracted_memories)} memories"
         )
 
         return ExtractionResult(
-            memories=extracted_memories,
-            linking_pairs=linking_pairs
+            memories=extracted_memories
         )
 
     def _parse_extraction_response(self, response_text: str) -> List[Dict[str, Any]]:
@@ -340,19 +325,6 @@ class MemoryProcessor:
                             valid_refs.append(ref)
                     memory_dict["related_memory_ids"] = valid_refs
 
-            # Remap consolidates_memory_ids (short str → full UUID)
-            if "consolidates_memory_ids" in memory_dict:
-                consolidate_ids = memory_dict["consolidates_memory_ids"]
-                if isinstance(consolidate_ids, list):
-                    full_ids = []
-                    for short_id in consolidate_ids:
-                        full_str = short_to_full.get(short_id, short_id)
-                        try:
-                            full_ids.append(UUID(full_str))
-                        except ValueError:
-                            logger.warning(f"Invalid UUID in consolidates_memory_ids after remap: {full_str}")
-                    memory_dict["consolidates_memory_ids"] = full_ids
-
         return memories_data
 
     def _validate_extracted_memory(self, memory_dict: Dict[str, Any]) -> bool:
@@ -388,20 +360,6 @@ class MemoryProcessor:
             logger.warning(f"Rejecting memory: text too short ({len(text)} chars): {text}")
             return False
 
-        # FIX: Normalize relationship type
-        relationship_type = memory_dict.get("relationship_type")
-        if relationship_type:
-            if relationship_type not in VALID_RELATIONSHIP_TYPES:
-                logger.warning(f"Fixing invalid relationship_type '{relationship_type}' -> null")
-                memory_dict["relationship_type"] = None
-
-        # FIX: Ensure consolidates_memory_ids is valid UUID list
-        if "consolidates_memory_ids" in memory_dict:
-            uuid_list = memory_dict["consolidates_memory_ids"]
-            if not isinstance(uuid_list, list):
-                logger.warning(f"Fixing consolidates_memory_ids: converting {type(uuid_list)} to empty list")
-                memory_dict["consolidates_memory_ids"] = []
-
         # REJECT: Validate related_memory_ids as list of ExtractionRef dicts
         if "related_memory_ids" in memory_dict:
             refs = memory_dict["related_memory_ids"]
@@ -413,26 +371,6 @@ class MemoryProcessor:
                     logger.error(
                         f"Rejecting memory: malformed related_memory_ids entry {ref!r}. "
                         f"Expected {{'id': str, 'bond': str}}"
-                    )
-                    return False
-
-        # REJECT: Validate linking_hints as list of LinkingHint dicts
-        if "linking_hints" in memory_dict:
-            hints = memory_dict["linking_hints"]
-            if not isinstance(hints, list):
-                logger.error(f"Rejecting memory: linking_hints is {type(hints)}, not list")
-                return False
-            for hint in hints:
-                if not isinstance(hint, dict) or "idx" not in hint or "bond" not in hint:
-                    logger.error(
-                        f"Rejecting memory: malformed linking_hints entry {hint!r}. "
-                        f"Expected {{'idx': int, 'bond': str}}"
-                    )
-                    return False
-                if not isinstance(hint["idx"], int) or hint["idx"] < 0:
-                    logger.error(
-                        f"Rejecting memory: linking_hints idx must be non-negative int, "
-                        f"got {hint['idx']!r}"
                     )
                     return False
 
@@ -488,10 +426,6 @@ class MemoryProcessor:
         Returns:
             Tuple of (is_duplicate, similarity_score, duplicate_id)
         """
-        # Consolidation memories intentionally mirror existing memories
-        if memory_dict.get("consolidates_memory_ids"):
-            return DuplicateCheckResult(False, None, None)
-
         memory_text = memory_dict.get("text", "").strip()
         if not memory_text:
             return DuplicateCheckResult(False, None, None)
@@ -544,59 +478,3 @@ class MemoryProcessor:
                 best_memory_id = similar_memories[0].id
 
         return DuplicateCheckResult(True, best_score, best_memory_id)
-
-    def _build_linking_pairs(
-        self,
-        extracted_memories: List[ExtractedMemory],
-        original_to_filtered_idx: Dict[int, int]
-    ) -> List[LinkingPair]:
-        """
-        Build linking pairs from extraction hints with index remapping.
-
-        Handles memories that were filtered out during validation/deduplication.
-
-        Args:
-            extracted_memories: List of validated ExtractedMemory objects
-            original_to_filtered_idx: Mapping from original LLM index to filtered index
-
-        Returns:
-            List of LinkingPair dicts with source_idx, target_idx, and bond
-        """
-        linking_pairs: List[LinkingPair] = []
-        seen_pairs: set[tuple[int, int]] = set()
-
-        for filtered_idx, memory in enumerate(extracted_memories):
-            for hint in memory.linking_hints:
-                original_hint_idx = hint["idx"]
-                bond = hint.get("bond", "")
-
-                # Check if hinted memory survived filtering
-                if original_hint_idx not in original_to_filtered_idx:
-                    logger.debug(
-                        f"Ignoring linking hint to filtered memory: "
-                        f"memory[{filtered_idx}] -> original[{original_hint_idx}]"
-                    )
-                    continue
-
-                target_filtered_idx = original_to_filtered_idx[original_hint_idx]
-
-                # Prevent self-references
-                if target_filtered_idx == filtered_idx:
-                    logger.warning(
-                        f"Ignoring self-referencing linking hint: memory[{filtered_idx}]"
-                    )
-                    continue
-
-                # Deduplicate by pair
-                pair_key = (filtered_idx, target_filtered_idx)
-                if pair_key in seen_pairs:
-                    continue
-                seen_pairs.add(pair_key)
-
-                linking_pairs.append(LinkingPair(
-                    source_idx=filtered_idx,
-                    target_idx=target_filtered_idx,
-                    bond=bond
-                ))
-
-        return linking_pairs

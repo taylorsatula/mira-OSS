@@ -12,9 +12,7 @@ from clients.vault_client import get_api_key
 from lt_memory.db_access import LTMemoryDB
 from lt_memory.vector_ops import VectorOps
 from lt_memory.linking import LinkingService
-from lt_memory.refinement import RefinementService
 from lt_memory.proactive import ProactiveService
-from lt_memory.entity_gc import EntityGCService
 from lt_memory.hub_discovery import HubDiscoveryService
 from lt_memory.processing.memory_processor import MemoryProcessor
 from lt_memory.processing.extraction_engine import ExtractionEngine
@@ -22,14 +20,7 @@ from lt_memory.processing.execution_strategy import create_execution_strategy, I
 from lt_memory.processing.orchestrator import ExtractionOrchestrator
 from lt_memory.processing.batch_coordinator import BatchCoordinator
 from lt_memory.processing.consolidation_handler import ConsolidationHandler
-from lt_memory.processing.post_processing_orchestrator import PostProcessingOrchestrator
-from lt_memory.batch_result_handlers import (
-    ExtractionBatchResultHandler,
-    RelationshipBatchResultHandler,
-    ConsolidationBatchResultHandler,
-    EntityGCBatchResultHandler,
-    PostProcessingBatchDispatcher
-)
+from lt_memory.batch_result_handlers import ExtractionBatchResultHandler
 from utils.database_session_manager import LTMemorySessionManager, get_shared_session_manager
 
 logger = logging.getLogger(__name__)
@@ -66,6 +57,13 @@ class LTMemoryFactory:
         self._embeddings_provider = embeddings_provider
         self._llm_provider = llm_provider
         self._conversation_repo = conversation_repo
+
+        # Late-registered CNS callback: invoked by store_and_tend_extraction
+        # after memories are stored, so the SegmentCollapseHandler (which owns
+        # tool_repo + event_bus) can spawn the MemoryCuratorAgent in integration
+        # mode. None until registered; store_and_tend_extraction is None-safe.
+        # lt_memory never imports from agents/ — the callback is the seam.
+        self.on_memories_stored = None
 
         # Dedicated Anthropic client for Batch API (isolated rate limits and cost tracking)
         batch_api_key = get_api_key(BATCH_API_KEY_NAME)
@@ -118,16 +116,6 @@ class LTMemoryFactory:
             self._service_init_order.append(self.linking)
         except Exception as e:
             raise RuntimeError(f"Failed to initialize LinkingService: {e}") from e
-
-        try:
-            logger.debug("Initializing RefinementService...")
-            self.refinement = RefinementService(
-                vector_ops=self.vector_ops,
-                db=self.db
-            )
-            self._service_init_order.append(self.refinement)
-        except Exception as e:
-            raise RuntimeError(f"Failed to initialize RefinementService: {e}") from e
 
         try:
             # Layer 3.5: New processing components (depend on db + vector_ops)
@@ -210,47 +198,8 @@ class LTMemoryFactory:
             )
             self._service_init_order.append(self.extraction_result_handler)
 
-            self.relationship_result_handler = RelationshipBatchResultHandler(
-                anthropic_client=self._batch_anthropic_client,
-                linking_service=self.linking,
-                db=self.db
-            )
-            self._service_init_order.append(self.relationship_result_handler)
-
-            # Consolidation result handler
-            self.consolidation_result_handler = ConsolidationBatchResultHandler(
-                anthropic_client=self._batch_anthropic_client,
-                db=self.db,
-                consolidation_handler=self.consolidation_handler,
-            )
-            self._service_init_order.append(self.consolidation_result_handler)
-
-            # Unified dispatcher for all post-processing batch types
-            logger.debug("Initializing PostProcessingBatchDispatcher...")
-            self.post_processing_dispatcher = PostProcessingBatchDispatcher()
-            self.post_processing_dispatcher.register(
-                'relationship_classification', self.relationship_result_handler
-            )
-            self.post_processing_dispatcher.register(
-                'consolidation', self.consolidation_result_handler
-            )
-            self._service_init_order.append(self.post_processing_dispatcher)
         except Exception as e:
             raise RuntimeError(f"Failed to initialize processing components: {e}") from e
-
-        try:
-            # Layer 4: Higher-level services (depend on multiple services)
-            logger.debug("Initializing PostProcessingOrchestrator...")
-            self.post_processing_orchestrator = PostProcessingOrchestrator(
-                refinement=self.refinement,
-                batch_coordinator=self.batch_coordinator,
-                consolidation_handler=self.consolidation_handler,
-                db=self.db,
-                llm_provider=self._llm_provider
-            )
-            self._service_init_order.append(self.post_processing_orchestrator)
-        except Exception as e:
-            raise RuntimeError(f"Failed to initialize PostProcessingOrchestrator: {e}") from e
 
         try:
             logger.debug("Initializing ProactiveService...")
@@ -263,30 +212,6 @@ class LTMemoryFactory:
             self._service_init_order.append(self.proactive)
         except Exception as e:
             raise RuntimeError(f"Failed to initialize ProactiveService: {e}") from e
-
-        try:
-            logger.debug("Initializing EntityGCService...")
-            self.entity_gc = EntityGCService(
-                db=self.db,
-                llm_provider=self._llm_provider,
-                batch_coordinator=self.batch_coordinator,
-            )
-            self._service_init_order.append(self.entity_gc)
-
-            # Entity GC result handler (registered with post-processing dispatcher below)
-            self.entity_gc_result_handler = EntityGCBatchResultHandler(
-                anthropic_client=self._batch_anthropic_client,
-                db=self.db,
-                entity_gc_service=self.entity_gc,
-            )
-            self._service_init_order.append(self.entity_gc_result_handler)
-
-            # Register with post-processing dispatcher for polling
-            self.post_processing_dispatcher.register(
-                'entity_gc', self.entity_gc_result_handler
-            )
-        except Exception as e:
-            raise RuntimeError(f"Failed to initialize EntityGCService: {e}") from e
 
         logger.debug("All LT_Memory services initialized")
 
@@ -313,10 +238,9 @@ class LTMemoryFactory:
     def __repr__(self) -> str:
         """String representation for debugging."""
         return (
-            f"LTMemoryFactory(services=[db, vector_ops, linking, refinement, "
+            f"LTMemoryFactory(services=[db, vector_ops, linking, "
             f"memory_processor, extraction_engine, execution_strategy, extraction_orchestrator, "
-            f"batch_coordinator, consolidation_handler, hub_discovery, post_processing_orchestrator, "
-            f"proactive, entity_gc])"
+            f"batch_coordinator, consolidation_handler, hub_discovery, proactive])"
         )
 
 
