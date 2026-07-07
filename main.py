@@ -18,13 +18,14 @@ setup_anthropic_sdk_logging(log_dir="/opt/mira/logs")
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
 
 from config.config_manager import config
 from config.announcement import load_announcement
-from cns.api import data, actions, health, tool_config, trigger_rules, update
+from cns.api import data, actions, health, websocket_chat, tool_config, trigger_rules, update, federation as federation_api
 from cns.api import chat as chat_api
 from cns.api import files as files_api
 from cns.api import location
@@ -337,6 +338,29 @@ async def lifespan(app: FastAPI):
     if vault_status["status"] != "success":
         logger.warning(f"Vault connection issue: {vault_status['message']}")
 
+    # Register Lattice username resolver for federation
+    # This allows Lattice to resolve usernames to user_ids for inbound message delivery
+    try:
+        from lattice.username_resolver import set_username_resolver
+        from clients.postgres_client import PostgresClient
+        from typing import Optional
+
+        def mira_resolve_username(username: str) -> Optional[str]:
+            """Resolve username to user_id for Lattice federation."""
+            db = PostgresClient("mira_service")
+            result = db.execute_single(
+                "SELECT user_id FROM global_usernames WHERE username = %(username)s AND active = true",
+                {"username": username.lower()}
+            )
+            return str(result["user_id"]) if result else None
+
+        set_username_resolver(mira_resolve_username)
+        logger.info("Lattice username resolver registered")
+    except ImportError:
+        logger.warning("Lattice package not available - federation disabled")
+    except Exception as e:
+        logger.warning(f"Failed to register Lattice username resolver: {e}")
+
 
     logger.info("MIRA startup complete")
     
@@ -345,7 +369,11 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.info("Shutting down MIRA...")
     scheduler_service.stop()
-    
+
+    # Close all active WebSocket connections
+    from cns.api.websocket_chat import close_all_connections
+    await close_all_connections()
+    logger.info("WebSocket connections closed")
     
     # Shutdown event bus
     if orchestrator.event_bus:
@@ -523,11 +551,12 @@ def create_app() -> FastAPI:
     app.include_router(trigger_rules.router, prefix="/v0/api", tags=["trigger_rules"])
     app.include_router(files_api.router, prefix="/v0/api", tags=["files"])
     app.include_router(location.router, prefix="/v0/api", tags=["location"])
+    app.include_router(websocket_chat.router, prefix="/v0", tags=["websocket"])  # /v0/ws/chat
+    app.include_router(federation_api.router, prefix="/v0/api", tags=["federation"])
 
-    # OSS simple chat UI (activates when full web UI is absent)
-    if not Path("web/chat").exists():
-        from cns.api import oss_ui
-        app.include_router(oss_ui.router, tags=["oss-ui"])
+    # OSS browser-auth + asset routes (always-on; /oss-auth/token feeds the web UI's Bearer-key login)
+    from cns.api import oss_ui
+    app.include_router(oss_ui.router, tags=["oss-ui"])
 
     # Billing routes (skipped in OSS mode)
     try:
@@ -543,7 +572,50 @@ def create_app() -> FastAPI:
     register_perf_routes(app)
     install_db_instrumentation()
 
-    
+    # Full web UI — de-auth-gated page routes (OSS single-user: no session dependency).
+    # Serves the ported web/ bundle (chat, memories, domaindocs, settings) plus
+    # root meta files and the /assets static mount.
+    if Path("web").exists():
+        @app.get("/", include_in_schema=False)
+        async def serve_root():
+            return RedirectResponse(url="/chat")
+
+        @app.get("/chat", include_in_schema=False)
+        @app.get("/chat/", include_in_schema=False)
+        async def serve_chat():
+            return FileResponse("web/chat/index.html")
+
+        @app.get("/memories", include_in_schema=False)
+        @app.get("/memories/", include_in_schema=False)
+        async def serve_memories():
+            return FileResponse("web/memories/index.html")
+
+        @app.get("/domaindocs", include_in_schema=False)
+        @app.get("/domaindocs/", include_in_schema=False)
+        async def serve_domaindocs():
+            return FileResponse("web/domaindocs/index.html")
+
+        @app.get("/settings", include_in_schema=False)
+        @app.get("/settings/", include_in_schema=False)
+        async def serve_settings():
+            return FileResponse("web/settings/index.html")
+
+        # Browser-expected static files from root
+        @app.get("/apple-touch-icon.png", include_in_schema=False)
+        async def serve_apple_touch_icon():
+            return FileResponse("web/apple-touch-icon.png")
+
+        @app.get("/favicon.ico", include_in_schema=False)
+        async def serve_favicon():
+            return FileResponse("web/favicon.ico")
+
+        @app.get("/manifest.json", include_in_schema=False)
+        async def serve_manifest():
+            return FileResponse("web/manifest.json")
+
+        # Static assets (JS/CSS/fonts/images) — mounted after page routes
+        app.mount("/assets", StaticFiles(directory="web/assets"), name="assets")
+
     return app
 
 

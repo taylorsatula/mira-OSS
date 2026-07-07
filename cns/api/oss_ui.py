@@ -1,33 +1,23 @@
 """
-OSS Chat UI — minimal self-contained web interface.
+OSS browser-auth + minimal asset routes.
 
-Serves a simple chat page that uses the existing /v0/api/chat and
-/v0/api/data endpoints. Activated only when the hosted web UI
-(web/chat/) is absent from the OSS build.
+Always-on routes that support the full web UI (web/): exposes the
+single-user API key at /oss-auth/token for browser auto-login, and
+serves vendored JS assets. The / and /chat page routes are owned by
+main.py (de-auth-gated FileResponse routes over web/*/index.html).
 """
 
 from pathlib import Path
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import JSONResponse, Response
 
 router = APIRouter()
 
 # Read and cache assets at import time — no disk I/O per request
 _oss_ui_dir = Path(__file__).resolve().parent.parent.parent / "deploy" / "oss_ui"
-_chat_html = (_oss_ui_dir / "chat.html").read_text()
 _marked_js = (_oss_ui_dir / "marked.min.js").read_text()
 _purify_js = (_oss_ui_dir / "purify.min.js").read_text()
-
-
-@router.get("/", include_in_schema=False)
-async def root_redirect():
-    return RedirectResponse(url="/chat")
-
-
-@router.get("/chat", include_in_schema=False)
-async def chat_page():
-    return HTMLResponse(_chat_html)
 
 
 @router.get("/oss-assets/marked.min.js", include_in_schema=False)
