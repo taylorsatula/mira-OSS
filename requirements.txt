@@ -75,6 +75,14 @@ openpyxl         # (optional) XLSX text extraction - document_processing.py
 # Web scraping - enables JavaScript-rendered page capture
 playwright       # (optional) Headless browser - web_tool.py
 
+# Lattice federation - enables cross-server pager messaging (username@server)
+# ImportError-guarded: MIRA runs fine without it (federation simply disabled).
+# Not on PyPI. Install from the sibling repo, then run the discovery daemon:
+#   git clone https://github.com/taylorsatula/lattice && pip install -e ./lattice
+#   uvicorn lattice.discovery_daemon:app --port 1113
+# Used by: main.py (username resolver), cns/api/federation.py, tools/implementations/pager_tool.py
+# lattice      # (optional) Federation daemon client
+
 # == PACKAGES TO REVIEW/CONSIDER REMOVING ==
 # These packages have limited usage and may be removable:
 # - pytz (could potentially use zoneinfo from Python 3.9+ instead)
