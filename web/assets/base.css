@@ -1,0 +1,395 @@
+/* ========================================
+   MIRA — base.css
+   Shared design foundation used by every page on the site.
+   Load order: base.css FIRST, then any page-specific stylesheet.
+   The landing deck (index.html) additionally loads landing.css
+   on top of base.css to reassert deck-specific overrides.
+   ======================================== */
+
+/* Font Declarations */
+@font-face {
+   font-family: 'IBM Plex Mono';
+   src: url('assets/fonts/IBM_Plex_Mono.woff2') format('woff2');
+   font-weight: 100 700;
+   font-style: normal;
+   font-display: swap;
+}
+
+@font-face {
+   font-family: 'Roboto';
+   src: url('assets/fonts/Roboto.woff2') format('woff2');
+   font-weight: 100 900;
+   font-style: normal;
+   font-display: swap;
+}
+
+/* ========================================
+   RESET & BASE
+   ======================================== */
+
+*, *::before, *::after {
+   box-sizing: border-box;
+   margin: 0;
+   padding: 0;
+}
+
+html {
+   font-size: 16px;
+   scroll-behavior: smooth;
+}
+
+:root {
+   --accent: #0f0;
+   --accent-rgb: 0 255 0;
+   --accent-transition: 0.9s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+body {
+   background-color: #000;
+   color: #faf6ee;
+   font-family: 'Roboto', 'Avenir Next', 'Segoe UI', 'Helvetica', 'Arial', sans-serif;
+   font-weight: 100;
+   line-height: 1.75;
+   overflow-x: hidden;
+   overflow-y: auto;
+   min-height: 100vh;
+}
+
+/* Body-level accent — every page hardcodes data-accent in HTML,
+   and this cascade drives frame, furniture, header, button glows, etc. */
+body[data-accent="magenta"] { --accent: #c0f; --accent-rgb: 204 0 255; }
+body[data-accent="cyan"]    { --accent: #0ff; --accent-rgb: 0 255 255; }
+body[data-accent="lime"]    { --accent: #0f0; --accent-rgb: 0 255 0; }
+body[data-accent="yellow"]  { --accent: #ff0; --accent-rgb: 255 255 0; }
+body[data-accent="pink"]    { --accent: #f0a; --accent-rgb: 255 0 170; }
+
+/* ========================================
+   AMBIENT LAYERS
+   Grain (film) + dot grid (architecture) + accent vignette (atmosphere).
+   Three coordinated substrates behind all content.
+   ======================================== */
+
+.ambient-grain,
+.ambient-grid,
+.ambient-vignette {
+   position: fixed;
+   inset: 0;
+   pointer-events: none;
+}
+
+.ambient-grain {
+   z-index: 1;
+   opacity: 0.06;
+   mix-blend-mode: overlay;
+   background-image: url("data:image/svg+xml;utf8,<svg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix type='saturate' values='0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+   background-size: 200px 200px;
+   animation: grain-drift 8s steps(6) infinite;
+}
+
+@keyframes grain-drift {
+   0%   { transform: translate(0, 0); }
+   20%  { transform: translate(-2%, 1%); }
+   40%  { transform: translate(1%, -2%); }
+   60%  { transform: translate(-1%, -1%); }
+   80%  { transform: translate(2%, 1%); }
+   100% { transform: translate(0, 0); }
+}
+
+.ambient-grid {
+   z-index: 2;
+   opacity: 0.5;
+   background-image: radial-gradient(
+      circle at 1px 1px,
+      rgba(250, 246, 238, 0.08) 1px,
+      transparent 0
+   );
+   background-size: 32px 32px;
+}
+
+.ambient-vignette {
+   z-index: 3;
+   background: radial-gradient(
+      ellipse 75% 65% at 50% 50%,
+      transparent 0%,
+      transparent 48%,
+      rgb(var(--accent-rgb) / 0.07) 78%,
+      rgb(var(--accent-rgb) / 0.14) 100%
+   );
+   transition: background var(--accent-transition);
+}
+
+/* ========================================
+   SKIP NAVIGATION
+   ======================================== */
+
+.skip-nav {
+   position: absolute;
+   left: -9999px;
+   top: auto;
+   z-index: 200;
+   padding: 8px 16px;
+   background: var(--accent);
+   color: #000;
+   font-weight: 600;
+   text-decoration: none;
+   border-radius: 4px;
+}
+
+.skip-nav:focus {
+   left: 10px;
+   top: 10px;
+}
+
+/* ========================================
+   SITE HEADER
+   Logo + auth buttons. Fixed to the top, spans the viewport.
+   ======================================== */
+
+.site-header {
+   position: fixed;
+   top: 0;
+   left: 0;
+   right: 0;
+   z-index: 15;
+   display: flex;
+   align-items: flex-start;
+   justify-content: space-between;
+   padding: 48px 56px;
+   pointer-events: none;
+}
+
+.site-logo {
+   pointer-events: auto;
+}
+
+.site-logo img {
+   height: 28px;
+   width: auto;
+}
+
+.site-auth {
+   display: flex;
+   align-items: center;
+   gap: 12px;
+   pointer-events: auto;
+}
+
+.site-auth-btn {
+   display: inline-flex;
+   align-items: center;
+   justify-content: center;
+   height: 40px;
+   padding: 0 24px;
+   font-family: 'IBM Plex Mono', monospace;
+   font-size: 0.78rem;
+   font-weight: 500;
+   letter-spacing: 0.2em;
+   text-transform: uppercase;
+   text-decoration: none;
+   border-radius: 2px;
+   transition: background 0.25s ease,
+               color 0.25s ease,
+               border-color 0.25s ease,
+               box-shadow 0.3s ease,
+               transform 0.15s ease;
+}
+
+.site-auth-btn--secondary {
+   color: rgba(250, 246, 238, 0.88);
+   background: transparent;
+   border: 1px solid rgba(250, 246, 238, 0.32);
+}
+
+.site-auth-btn--secondary:hover {
+   color: #000;
+   background: rgba(250, 246, 238, 0.92);
+   border-color: rgba(250, 246, 238, 0.92);
+}
+
+.site-auth-btn--primary {
+   color: #000;
+   background: var(--accent);
+   border: 1px solid var(--accent);
+   box-shadow: 0 0 20px rgb(var(--accent-rgb) / 0.35);
+}
+
+.site-auth-btn--primary:hover {
+   transform: translateY(-1px);
+   box-shadow: 0 0 32px rgb(var(--accent-rgb) / 0.6);
+}
+
+.site-auth-btn:active {
+   transform: translateY(0);
+}
+
+.site-auth-btn:focus-visible {
+   outline: 2px solid #fff;
+   outline-offset: 3px;
+}
+
+.site-auth-btn--ghost {
+   color: rgba(250, 246, 238, 0.95);
+   background: transparent;
+   border: 1px solid transparent;
+   padding: 0 16px;
+   opacity: 0.5;
+   transition: opacity 0.25s ease;
+}
+
+.site-auth-btn--ghost:hover {
+   opacity: 1;
+}
+
+/* ========================================
+   PAGE FRAME
+   5px accent-colored border hugging the viewport edge.
+   Used by most pages (landing, auth, errors, docs).
+   Blog pages intentionally omit this element.
+   ======================================== */
+
+.page-frame {
+   position: fixed;
+   inset: 0;
+   border: 5px solid var(--accent);
+   pointer-events: none;
+   z-index: 10;
+   transition: border-color var(--accent-transition);
+}
+
+/* ========================================
+   FRAME FURNITURE
+   L-shaped corner registration marks + optional slide numeral.
+   Paints positional language onto the frame.
+   ======================================== */
+
+.frame-furniture {
+   position: fixed;
+   inset: 0;
+   z-index: 11;
+   pointer-events: none;
+   font-family: 'IBM Plex Mono', monospace;
+   font-size: 0.65rem;
+   text-transform: uppercase;
+   letter-spacing: 0.2em;
+   color: rgb(var(--accent-rgb) / 0.55);
+   transition: color var(--accent-transition);
+}
+
+.frame-mark {
+   position: absolute;
+   width: 18px;
+   height: 18px;
+   border: 1px solid currentColor;
+}
+
+.frame-mark--tl { top: 20px;    left: 20px;    border-right: 0; border-bottom: 0; }
+.frame-mark--tr { top: 20px;    right: 20px;   border-left: 0;  border-bottom: 0; }
+.frame-mark--bl { bottom: 20px; left: 20px;    border-right: 0; border-top: 0; }
+.frame-mark--br { bottom: 20px; right: 20px;   border-left: 0;  border-top: 0; }
+
+.frame-position {
+   position: absolute;
+   bottom: 48px;
+   left: 56px;
+   display: flex;
+   align-items: baseline;
+   gap: 0.55rem;
+   line-height: 1;
+}
+
+.frame-numeral {
+   font-family: 'Roboto', sans-serif;
+   font-size: 5rem;
+   font-weight: 100;
+   line-height: 1;
+   letter-spacing: -0.025em;
+   color: rgb(var(--accent-rgb) / 0.32);
+   font-variant-numeric: tabular-nums;
+   transition: color var(--accent-transition);
+}
+
+.frame-total {
+   font-family: 'IBM Plex Mono', monospace;
+   font-size: 0.72rem;
+   letter-spacing: 0.14em;
+   color: rgb(var(--accent-rgb) / 0.48);
+   font-variant-numeric: tabular-nums;
+   transition: color var(--accent-transition);
+}
+
+/* ========================================
+   REDUCED MOTION
+   Kill ambient drift and hover transitions for motion-sensitive users.
+   Page-specific CSS may extend this block with page-specific selectors.
+   ======================================== */
+
+@media (prefers-reduced-motion: reduce) {
+   .ambient-grain,
+   .ambient-vignette,
+   .site-auth-btn,
+   .page-frame,
+   .frame-furniture,
+   .frame-numeral,
+   .frame-total {
+      transition: none !important;
+      animation: none !important;
+   }
+}
+
+/* ========================================
+   MOBILE: shared page chrome overrides
+   ======================================== */
+
+@media (max-width: 768px) {
+   /* Frame and furniture drop on mobile — too visually heavy on phones */
+   .page-frame,
+   .frame-furniture,
+   .ambient-vignette {
+      display: none;
+   }
+
+   .site-header {
+      padding: 16px 20px;
+      align-items: center;
+   }
+
+   .site-logo img {
+      height: 20px;
+   }
+
+   .site-auth {
+      gap: 8px;
+   }
+
+   .site-auth-btn {
+      height: 36px;
+      padding: 0 16px;
+      font-size: 0.7rem;
+      letter-spacing: 0.16em;
+   }
+
+   /* GitHub link hides on mobile — prioritize Log in / Sign up for narrow screens */
+   .site-auth-btn--ghost {
+      display: none;
+   }
+}
+
+/* ========================================
+   LARGE DESKTOP
+   ======================================== */
+
+@media (min-width: 1400px) {
+   .frame-numeral {
+      font-size: 5.75rem;
+   }
+
+   .frame-mark {
+      width: 22px;
+      height: 22px;
+   }
+
+   .frame-position {
+      bottom: 54px;
+      left: 64px;
+   }
+}

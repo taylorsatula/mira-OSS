@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>MIRA Chat</title>
+    <script>
+    /* Theme bootstrap: resolve Appearance preference before paint to avoid FOUC.
+       theme.js (loaded below) takes over for matchMedia subscription + setter. */
+    (function(){try{var m=localStorage.getItem('mira-theme');var t=(m==='light'||m==='dark')?m:(window.matchMedia&&window.matchMedia('(prefers-color-scheme: light)').matches?'light':'dark');document.documentElement.setAttribute('data-theme',t);}catch(e){}})();
+    </script>
+    <script src="../assets/javascript/theme.js?v=20260524-2"></script>
+    <link rel="stylesheet" href="../assets/style.css?v=20260524-theme2" />
+	<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content">
+	<link rel="apple-touch-icon" href="apple-touch-icon.png">
+	<meta name="apple-mobile-web-app-title" content="MIRA">
+	<meta name="apple-mobile-web-app-status-bar-style" content="black">
+	<meta name="apple-mobile-web-app-capable" content="yes">
+	<meta name="theme-color" content="#000000">
+	<link rel="manifest" href="../manifest.json?v=lightmode-20260508">
+
+	<!-- CONSIDER MAKING A BASE TRUTH STYLESHEET THAT EVERY PAGE CAN PULL FROM AND THEN HAVE A PER-PAGE STYLESHEET THAT CAN MODIFY THE STYLES. NOT EVERY CHAT STYLE NEEDS TO BE REPLICATED BUT AT THE SAME TIME CONSISTANCY IS KEY. FWIW NOT EVERY PAGE HAS THE FONTS ENABLED YET. BEWARE. -->
+
+	<link rel="preload"
+		  href="/assets/fonts/IBM_Plex_Mono.woff2"
+		  as="font"
+		  type="font/woff2"
+		  crossorigin>
+
+	<link rel="preload"
+		  href="/assets/fonts/Roboto.woff2"
+		  as="font"
+		  type="font/woff2"
+		  crossorigin>
+
+	<link rel="preload"
+		  href="/assets/fonts/Noto_Emoji.woff2"
+		  as="font"
+		  type="font/woff2"
+		  crossorigin>
+
+	<link rel="preload"
+		  href="/assets/fonts/Minni.woff2"
+		  as="font"
+		  type="font/woff2"
+		  crossorigin>
+
+	<!-- Bagel Fat One: balloon-letter italic for the Repulsed! indicator -->
+	<link rel="preconnect" href="https://fonts.googleapis.com">
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link href="https://fonts.googleapis.com/css2?family=Bagel+Fat+One&display=swap" rel="stylesheet">
+
+</head>
+<body>
+    <!-- Loading Screen -->
+    <div id="loading-screen">
+        <div class="ascii-container" id="ascii-container"></div>
+    </div>
+	<a href="#response_box" class="skip-nav">Skip to content</a>
+	<button id="sidebar-toggle" aria-label="Open navigation" aria-expanded="false" aria-controls="app-sidebar"><img src="../assets/images/icons/menubar_chevron.png" alt="" class="sidebar-chevron-icon"></button>
+	<div id="sidebar-backdrop" aria-hidden="true"></div>
+	<nav id="app-sidebar" aria-label="Main navigation">
+		<div class="sidebar-header">
+			<div class="sidebar-brand"><img src="../assets/images/logo.png" alt="MIRA"></div>
+			<button id="sidebar-collapse-toggle" aria-label="Collapse sidebar">
+				<img src="../assets/images/icons/menubar_chevron.png" alt="" class="sidebar-chevron-icon">
+			</button>
+		</div>
+		<ul class="sidebar-nav" role="list">
+			<li><a href="/chat" class="sidebar-nav-item active" aria-current="page">
+				<img src="../assets/images/icons/chat.png?v=8SSMG8w" alt="">
+				<span class="nav-label">Chat</span>
+			</a></li>
+			<li><a href="/domaindocs" class="sidebar-nav-item">
+				<img src="../assets/images/icons/book.png?v=8SSMG8w" alt="">
+				<span class="nav-label">Docs</span>
+			</a></li>
+			<li><a href="/memories" class="sidebar-nav-item">
+				<img src="../assets/images/icons/memory.png?v=8SSMG8w" alt="">
+				<span class="nav-label">Memories</span>
+			</a></li>
+			<li><a href="/settings" class="sidebar-nav-item">
+				<img src="../assets/images/icons/settings.png?v=8SSMG8w" alt="">
+				<span class="nav-label">Settings</span>
+			</a></li>
+		</ul>
+		<div class="sidebar-divider" role="separator"></div>
+		<div class="sidebar-actions">
+			<button class="sidebar-action-pill magenta" id="sidebar-history-btn">Show Chat History</button>
+			<button class="sidebar-action-pill lime" id="sidebar-pause-btn" style="display: none">
+				<span id="sidebar-pause-label">Pause</span>
+			</button>
+			<button class="sidebar-action-pill red" id="sidebar-collapse-btn">Wrap Up</button>
+		</div>
+	</nav>
+	<button id="sidebar-expand-toggle" aria-label="Expand sidebar">
+		<img src="../assets/images/icons/menubar_chevron.png" alt="" class="sidebar-chevron-icon">
+	</button>
+
+	<!-- Notifications center (above response_box, pushed with content) -->
+	<div id="notifications-center">
+		<!-- Announcement Banner: manually controlled via config/announcement.json -->
+		<div class="system-alert alert" id="announcement-banner" style="display:none;">
+			<div class="system-alert-content" style="border-color: cyan; animation: blink 0.5s 1 forwards;">
+<style>
+@keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+</style>
+				<p id="announcement-text" style="color: cyan;"></p>
+			</div>
+			<button type="button" style="color: cyan; border-color: cyan;" class="system-alert-dismiss" aria-label="Dismiss" onclick="this.parentElement.classList.add('dismissing');this.parentElement.addEventListener('animationend',()=>this.parentElement.style.display='none',{once:true})">D I S M I S S</button>
+		</div>
+	</div>
+	<section id="response_box" tabindex="-1">
+		<!-- Inline history container -->
+		<div id="inline-history-container" class="inline-history-container hidden">
+			<div id="inline-history-sentinel" class="inline-history-scroll-sentinel"></div>
+		</div>
+
+		<!-- New message toast -->
+		<div id="new-message-toast" class="new-message-toast hidden">
+			<span>New message</span>
+			<button type="button" id="toast-scroll-btn">Jump to latest</button>
+		</div>
+
+		<div id="response_content">
+			<!-- Content will be loaded dynamically -->
+		</div>
+	</section>
+	<section id="compose_bar" aria-label="Compose Bar">
+		<form>
+			<div class="input-wrapper">
+				<textarea id="chat_field" placeholder="&lt;(^_^)&gt;" autocomplete="off" rows="1" autofocus></textarea>
+				<input type="file" id="file-input" accept="image/*,application/pdf,.pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.xlsx,text/plain,.txt,text/csv,.csv" class="hidden">
+				<button type="submit" class="send-button" id="send-button" aria-label="Send message">
+					<img src="../assets/images/icons/send.png?v=8SSMG8w" alt="Send">
+				</button>
+			</div>
+
+			<div class="ghost-text" id="ghost-text"></div>
+		</form>
+
+
+		<div id="toolbar">
+			<div class="leftside">
+				<div class="attachment-container">
+					<button class="indicator magenta active" data-indicator="attachment_btn" data-priority="4"><img src="../assets/images/icons/attachment.png?v=8SSMG8w"></button>
+					<div class="popover attachment-popover" id="attachment-popover">
+						<button type="button" class="popover-close" aria-label="Close">×</button>
+						<div class="popover-header">Attachments</div>
+						<div class="attachment-list" id="attachment-list"></div>
+						<div class="domain-item" id="preserve-resolution-option">
+							<input type="checkbox" id="preserve-resolution">
+							<label for="preserve-resolution">Preserve resolution</label>
+						</div>
+						<div class="attachment-actions">
+							<button type="button" class="attachment-add-btn" id="attachment-add-btn">Add Attachment</button>
+						</div>
+					</div>
+				</div>
+				<div class="thinking-container">
+					<button class="indicator cyan standby" data-indicator="tier_btn" data-priority="3" id="thinking-indicator"><img src="../assets/images/icons/think.png?v=8SSMG8w"><span class="indicator-label"></span></button>
+					<div class="popover tier-popover" id="tier-popover">
+						<button type="button" class="popover-close" aria-label="Close">×</button>
+						<div class="popover-header">Model Tier</div>
+						<div class="tier-options" id="tier-options">
+							<!-- Populated dynamically by TierManager -->
+						</div>
+						<div id="tier-upgrade-message" class="tier-upgrade-message" style="display: none;"></div>
+					</div>
+				</div>
+				<div class="repulsion-container">
+					<button class="indicator pink" data-indicator="repulsion_btn" data-priority="2" type="button" aria-label="Repulsed!" style="display: none;"><span class="indicator-label indicator-label--repulsion">Repulsed!</span></button>
+				</div>
+			</div>
+
+			<div class="rightside">
+				<div class="toolcall-container">
+					<button class="indicator lime" style="filter: drop-shadow(0px -1px 35px #0f05)" data-indicator="toolcall_btn" data-priority="1"><img src="../assets/images/icons/toolicons/default.png?v=8SSMG8w"><span class="indicator-label"></span></button>
+				</div>
+				<div class="queue-container">
+					<button type="button" class="retry-indicator hidden" id="queue-indicator" aria-label="View queued messages">
+						<span class="retry-count">Retry Send: 0</span>
+						<img src="../assets/images/icons/cloud-error.png?v=8SSMG8w" width="16" height="16" alt="Connection error">
+					</button>
+					<div class="popover retry-popover" id="queue-popover" role="tooltip">
+						<button type="button" class="popover-close" aria-label="Close">×</button>
+						<div class="popover-header">Queued Messages</div>
+						<div id="queue-messages"></div>
+					</div>
+				</div>
+				<div class="domain-container">
+					<button class="indicator yellow standby" data-indicator="domain_btn" data-priority="2" title="Domain Knowledge"><img src="../assets/images/icons/book.png?v=8SSMG8w"><span class="indicator-label"></span></button>
+					<div class="popover domain-popover" id="domain-popover">
+						<button type="button" class="popover-close" aria-label="Close">×</button>
+						<div class="popover-header">Domain Knowledge</div>
+						<div class="domain-list" id="domain-list"></div>
+						<div class="domain-actions">
+							<button type="button" class="domain-manage-btn" onclick="window.open('/domaindocs', '_blank')">Manage Domains</button>
+						</div>
+					</div>
+				</div>
+				<div class="balance-container" id="low-balance-warning" style="display: none;">
+					<button class="indicator red active" data-indicator="balance_btn" data-priority="1" title="Low Balance"><span class="balance-icon">⚠</span><span class="indicator-label">Low Balance</span></button>
+					<div class="popover balance-popover" id="balance-popover">
+						<button type="button" class="popover-close" aria-label="Close">×</button>
+						<div class="popover-header">Low Balance</div>
+						<div class="drip-timer" id="header-drip-timer"></div>
+						<div class="balance-popover-actions">
+							<button class="quick-deposit-btn" id="header-quick-deposit" title="Add $5 to your balance">Quick Add $5</button>
+							<a href="/settings#billing" class="balance-settings-link">Billing Settings</a>
+						</div>
+					</div>
+				</div>
+			</div>
+		</div>
+
+	</section>
+
+	<!-- JavaScript Libraries -->
+	<script src="../assets/javascript/marked.min.js?v=8SSMG8w"></script>
+	<script src="../assets/javascript/purify.min.js?v=8SSMG8w"></script>
+
+	<!-- Infrastructure Layer -->
+	<script src="../assets/javascript/api-client.js?v=8SSMG8w"></script>
+
+	<!-- Application Foundation -->
+	<script src="../assets/javascript/core.js?v=8SSMG8w"></script>
+
+	<!-- Feature Modules -->
+	<script src="../assets/javascript/ui.js?v=wave-speed-20260525"></script>
+	<script src="../assets/javascript/sidebar.js?v=8SSMG8w"></script>
+	<script src="../assets/javascript/messaging.js?v=8SSMG8w"></script>
+	<script src="../assets/javascript/history.js?v=8SSMG8w"></script>
+	<script src="../assets/javascript/events.js?v=8SSMG8w"></script>
+
+	<!-- Optional Features -->
+	<script src="../assets/javascript/settings.js?v=8SSMG8w"></script>
+	<script src="../assets/javascript/domain-knowledge.js?v=8SSMG8w"></script>
+	<script src="../assets/javascript/thinking-budget.js?v=8SSMG8w"></script>
+	<script src="../assets/javascript/collapse-animation.js?v=8SSMG8w"></script>
+	<script src="../assets/javascript/location.js?v=8SSMG8w"></script>
+	<script src="../assets/javascript/repulsion-feedback.js?v=8SSMG8w"></script>
+
+	<!-- Repulsion feedback popover -->
+	<div id="repulsion-popover-overlay" class="repulsion-popover-overlay" aria-hidden="true">
+		<div id="repulsion-popover-card" class="repulsion-popover-card" role="dialog" aria-modal="true" aria-labelledby="repulsion-popover-kicker">
+			<span class="repulsion-frame-mark repulsion-frame-mark--tl" aria-hidden="true"></span>
+			<span class="repulsion-frame-mark repulsion-frame-mark--tr" aria-hidden="true"></span>
+			<span class="repulsion-frame-mark repulsion-frame-mark--bl" aria-hidden="true"></span>
+			<span class="repulsion-frame-mark repulsion-frame-mark--br" aria-hidden="true"></span>
+			<button type="button" id="repulsion-close" class="repulsion-popover-close" aria-label="Close">&times;</button>
+			<p id="repulsion-popover-kicker" class="repulsion-popover-kicker">What was repulsive?</p>
+			<div id="repulsion-snippets" class="repulsion-snippets"></div>
+			<p class="repulsion-popover-body">Tell us what about this response broke the immersion. Be specific. The data feeds future fine-tuning.</p>
+			<textarea id="repulsion-reason" class="repulsion-popover-textarea" rows="6" placeholder="The em-dashes. The fake enthusiasm. The way it..." autocomplete="off"></textarea>
+			<p id="repulsion-error" class="repulsion-popover-error" role="alert"></p>
+			<button type="button" id="repulsion-send" class="repulsion-popover-send">SEND</button>
+		</div>
+	</div>
+
+	<!-- Insufficient Balance Modal -->
+	<div id="insufficient-balance-modal" class="modal-overlay" style="display: none;">
+		<div class="modal-dialog">
+			<button class="modal-close" id="insufficient-balance-close" aria-label="Close">&times;</button>
+			<div class="modal-icon">💳</div>
+			<h2>Insufficient Balance</h2>
+			<p>Your balance is <strong class="balance-amount" id="modal-balance">$0.00</strong></p>
+			<div class="countdown-section">
+				<p>Next free credit in:</p>
+				<div class="countdown" id="drip-countdown">--:--:--</div>
+			</div>
+			<div class="modal-actions">
+				<button class="btn-action btn-primary" id="modal-quick-deposit">Quick Add $5</button>
+				<a href="/settings#billing" class="btn-action btn-secondary">More Options</a>
+				<button class="btn-action btn-secondary" id="close-balance-modal">Wait for Credit</button>
+			</div>
+		</div>
+	</div>
+
+	<!-- Location consent modal -->
+	<div id="location-consent-modal" class="modal-overlay" style="display: none;">
+		<div class="modal-dialog">
+			<button class="modal-close" id="location-consent-close" aria-label="Close">&times;</button>
+			<div class="modal-icon">📍</div>
+			<h2>Location Access</h2>
+			<p>MIRA can use your location to provide geographically relevant context — like current weather and local awareness. Your coordinates are used to fetch a forecast and are not stored permanently.</p>
+			<div class="modal-actions">
+				<button class="btn-action btn-primary" id="location-consent-allow">Allow</button>
+				<button class="btn-action btn-secondary" id="location-consent-deny">No thanks</button>
+			</div>
+		</div>
+	</div>
+
+	<!-- Billing UI Scripts -->
+	<script>
+	(function() {
+		// Check balance and show/hide low balance indicator in dock toolbar
+		let _balanceCheckRetries = 0;
+		let _hasPaymentMethod = false;
+		let _dripTimerInterval = null;
+
+		function getSecondsUntilDrip() {
+			const now = new Date();
+			const target = new Date(now);
+			target.setUTCHours(0, 5, 0, 0);
+			if (target <= now) target.setUTCDate(target.getUTCDate() + 1);
+			return Math.floor((target - now) / 1000);
+		}
+
+		function updateHeaderDripTimer() {
+			const el = document.getElementById('header-drip-timer');
+			if (!el) return;
+			const secs = getSecondsUntilDrip();
+			const hours = Math.floor(secs / 3600);
+			const minutes = Math.floor((secs % 3600) / 60);
+			if (hours > 0) {
+				el.textContent = 'Next credit in ' + hours + 'h ' + minutes.toString().padStart(2, '0') + 'm';
+			} else {
+				el.textContent = 'Next credit in ' + minutes + 'm';
+			}
+		}
+
+		function startHeaderDripTimer() {
+			if (_dripTimerInterval) return;
+			updateHeaderDripTimer();
+			_dripTimerInterval = setInterval(updateHeaderDripTimer, 60000);
+		}
+
+		function stopHeaderDripTimer() {
+			if (_dripTimerInterval) {
+				clearInterval(_dripTimerInterval);
+				_dripTimerInterval = null;
+			}
+			const el = document.getElementById('header-drip-timer');
+			if (el) el.textContent = '';
+		}
+
+		async function checkLowBalance() {
+			try {
+				if (!window.miraAPI?.billing?.getBalance) {
+					if (_balanceCheckRetries++ < 5) {
+						setTimeout(checkLowBalance, 300);
+					}
+					return;
+				}
+				_balanceCheckRetries = 0;
+				const data = await window.miraAPI.billing.getBalance();
+				_hasPaymentMethod = data.has_payment_method || false;
+				const warningEl = document.getElementById('low-balance-warning');
+				if (warningEl && data.balance_usd !== undefined) {
+					const balance = parseFloat(data.balance_usd);
+					if (balance < 1) {
+						warningEl.style.display = 'flex';
+						startHeaderDripTimer();
+					} else {
+						warningEl.style.display = 'none';
+						stopHeaderDripTimer();
+						// Close popover if balance recovered
+						const popover = document.getElementById('balance-popover');
+						if (popover) popover.classList.remove('active');
+					}
+					// Recalculate toolbar layout after showing/hiding indicator
+					requestAnimationFrame(() => {
+						if (window.ToolbarPriorityManager) {
+							window.ToolbarPriorityManager.updateCompactLevel();
+						}
+					});
+					// Only show quick deposit button if card on file
+					const quickBtn = document.getElementById('header-quick-deposit');
+					if (quickBtn) quickBtn.style.display = _hasPaymentMethod ? 'flex' : 'none';
+				}
+			} catch (e) {
+				// Silently ignore - billing may not be available (OSS mode)
+			}
+		}
+
+		// Lazy-load Stripe.js and initialize
+		let _stripe = null;
+		async function ensureStripe() {
+			if (_stripe) return _stripe;
+			// Load Stripe.js if not present
+			if (typeof Stripe === 'undefined') {
+				await new Promise((resolve, reject) => {
+					const script = document.createElement('script');
+					script.src = 'https://js.stripe.com/v3/';
+					script.onload = resolve;
+					script.onerror = reject;
+					document.head.appendChild(script);
+				});
+			}
+			// Get publishable key
+			const response = await fetch('/v0/api/billing/stripe-config', { credentials: 'include' });
+			if (!response.ok) return null;
+			const data = await response.json();
+			const config = data.data || data;
+			if (!config.publishable_key) return null;
+			_stripe = Stripe(config.publishable_key);
+			return _stripe;
+		}
+
+		// One-tap quick deposit: creates PaymentIntent and confirms with saved card
+		async function quickDeposit(button) {
+			if (!window.miraAPI?.billing?.createDeposit) return;
+			const originalText = button.textContent;
+			button.disabled = true;
+			button.textContent = '...';
+
+			try {
+				const stripe = await ensureStripe();
+				if (!stripe) throw new Error('Stripe not available');
+
+				const depositData = await window.miraAPI.billing.createDeposit(5);
+				const { error, paymentIntent } = await stripe.confirmCardPayment(depositData.client_secret);
+
+				if (error) {
+					// 3DS required or card error — redirect to settings
+					if (error.type === 'card_error' || error.code === 'authentication_required') {
+						window.location.href = '/settings#billing';
+						return;
+					}
+					console.error('Quick deposit failed:', error.message);
+					button.textContent = 'Error';
+					setTimeout(() => { button.textContent = originalText; button.disabled = false; }, 2000);
+					return;
+				}
+
+				if (paymentIntent.status === 'succeeded') {
+					button.textContent = 'Paid!';
+					closeInsufficientBalanceModal();
+					// Poll until webhook credits the balance
+					for (let i = 0; i < 15; i++) {
+						await new Promise(r => setTimeout(r, 2000));
+						await checkLowBalance();
+						// If warning is hidden, balance recovered
+						const warningEl = document.getElementById('low-balance-warning');
+						if (warningEl && warningEl.style.display === 'none') break;
+					}
+					button.textContent = originalText;
+					button.disabled = false;
+				}
+			} catch (e) {
+				console.error('Quick deposit error:', e);
+				button.textContent = originalText;
+				button.disabled = false;
+				// Fall back to settings page
+				window.location.href = '/settings#billing';
+			}
+		}
+
+		// Show insufficient balance modal
+		function showInsufficientBalanceModal(errorData) {
+			const modal = document.getElementById('insufficient-balance-modal');
+			if (!modal) return;
+
+			const balanceEl = document.getElementById('modal-balance');
+			if (balanceEl) {
+				balanceEl.textContent = `$${errorData.balance || '0.00'}`;
+			}
+
+			// Show/hide quick deposit based on payment method
+			const quickBtn = document.getElementById('modal-quick-deposit');
+			if (quickBtn) quickBtn.style.display = _hasPaymentMethod ? 'inline-flex' : 'none';
+
+			if (errorData.seconds_until_drip) {
+				startDripCountdown(errorData.seconds_until_drip);
+			}
+
+			modal.style.display = 'flex';
+		}
+
+		function startDripCountdown(totalSeconds) {
+			const countdownEl = document.getElementById('drip-countdown');
+			if (!countdownEl) return;
+
+			let remaining = totalSeconds;
+			const updateCountdown = () => {
+				const hours = Math.floor(remaining / 3600);
+				const minutes = Math.floor((remaining % 3600) / 60);
+				const seconds = remaining % 60;
+				countdownEl.textContent =
+					`${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+				if (remaining > 0) {
+					remaining--;
+					setTimeout(updateCountdown, 1000);
+				}
+			};
+			updateCountdown();
+		}
+
+		function closeInsufficientBalanceModal() {
+			const modal = document.getElementById('insufficient-balance-modal');
+			if (modal) modal.style.display = 'none';
+		}
+
+		// Balance popover toggle
+		function toggleBalancePopover() {
+			const popover = document.getElementById('balance-popover');
+			if (popover) popover.classList.toggle('active');
+		}
+
+		// Wire up close buttons, quick deposit, and balance popover
+		document.addEventListener('DOMContentLoaded', () => {
+			const closeBtn = document.getElementById('close-balance-modal');
+			if (closeBtn) closeBtn.addEventListener('click', closeInsufficientBalanceModal);
+
+			const modalClose = document.getElementById('insufficient-balance-close');
+			if (modalClose) modalClose.addEventListener('click', closeInsufficientBalanceModal);
+
+			const modal = document.getElementById('insufficient-balance-modal');
+			if (modal) {
+				modal.addEventListener('click', (e) => {
+					if (e.target === modal) closeInsufficientBalanceModal();
+				});
+			}
+
+			// Balance indicator popover toggle
+			const balanceBtn = document.querySelector('button[data-indicator="balance_btn"]');
+			const balancePopover = document.getElementById('balance-popover');
+			if (balanceBtn && balancePopover) {
+				balanceBtn.addEventListener('click', (e) => {
+					e.stopPropagation();
+					toggleBalancePopover();
+				});
+
+				const balancePopoverClose = balancePopover.querySelector('.popover-close');
+				if (balancePopoverClose) {
+					balancePopoverClose.addEventListener('click', (e) => {
+						e.stopPropagation();
+						balancePopover.classList.remove('active');
+					});
+				}
+
+				// Click-outside-to-close
+				document.addEventListener('click', (e) => {
+					if (balancePopover.classList.contains('active') &&
+						!balancePopover.contains(e.target) &&
+						!balanceBtn.contains(e.target)) {
+						balancePopover.classList.remove('active');
+					}
+				});
+			}
+
+			// Quick deposit buttons
+			const headerQuickBtn = document.getElementById('header-quick-deposit');
+			if (headerQuickBtn) {
+				headerQuickBtn.addEventListener('click', (e) => {
+					e.stopPropagation();
+					quickDeposit(headerQuickBtn);
+				});
+			}
+
+			const modalQuickBtn = document.getElementById('modal-quick-deposit');
+			if (modalQuickBtn) {
+				modalQuickBtn.addEventListener('click', () => quickDeposit(modalQuickBtn));
+			}
+
+			checkLowBalance();
+		});
+
+		// Expose for external use
+		window.showInsufficientBalanceModal = showInsufficientBalanceModal;
+		window.checkLowBalance = checkLowBalance;
+
+		// Hook into WebSocket error handling for insufficient balance errors
+		function setupBalanceErrorListener() {
+			if (!window.miraAPI?.eventHandlers?.onMessage) {
+				setTimeout(setupBalanceErrorListener, 100);
+				return;
+			}
+			window.miraAPI.eventHandlers.onMessage.push((data) => {
+				if ((data.type === 'error' || data.type === 'interrupted') && data.error_type === 'insufficient_balance') {
+					showInsufficientBalanceModal({
+						balance: data.balance || '0.00',
+						seconds_until_drip: data.seconds_until_drip || 0
+					});
+					checkLowBalance();
+				}
+			});
+		}
+
+		document.addEventListener('DOMContentLoaded', () => {
+			setupBalanceErrorListener();
+		});
+	})();
+	</script>
+</body>
+</html>

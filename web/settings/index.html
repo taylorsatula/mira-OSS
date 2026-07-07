@@ -1,0 +1,1469 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>MIRA Settings</title>
+    <script>
+    /* Theme bootstrap: resolve Appearance preference before paint to avoid FOUC.
+       theme.js (loaded below) takes over for matchMedia subscription + setter. */
+    (function(){try{var m=localStorage.getItem('mira-theme');var t=(m==='light'||m==='dark')?m:(window.matchMedia&&window.matchMedia('(prefers-color-scheme: light)').matches?'light':'dark');document.documentElement.setAttribute('data-theme',t);}catch(e){}})();
+    </script>
+    <script src="../assets/javascript/theme.js?v=20260524-2"></script>
+    <link rel="stylesheet" href="../assets/style.css?v=20260524-theme2" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content">
+    <link rel="apple-touch-icon" href="../chat/apple-touch-icon.png">
+    <meta name="apple-mobile-web-app-title" content="MIRA">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="theme-color" content="#000000">
+    <link rel="manifest" href="../manifest.json">
+
+    <link rel="preload" href="/assets/fonts/IBM_Plex_Mono.woff2" as="font" type="font/woff2" crossorigin>
+    <link rel="preload" href="/assets/fonts/Roboto.woff2"       as="font" type="font/woff2" crossorigin>
+    <link rel="preload" href="/assets/fonts/Noto_Emoji.woff2"   as="font" type="font/woff2" crossorigin>
+    <link rel="preload" href="/assets/fonts/Minni.woff2"        as="font" type="font/woff2" crossorigin>
+
+</head>
+<body>
+<!-- Infrastructure Layer -->
+<script src="../assets/javascript/api-client.js?v=igddHsI"></script>
+
+<!-- Optional Features -->
+<script src="../assets/javascript/tool-config.js?v=igddHsI"></script>
+
+<!-- Navigation -->
+<script src="../assets/javascript/sidebar.js?v=igddHsI"></script>
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+	const defaultHash = '#profile';
+	const navLinks = document.querySelectorAll('.page-tab');
+
+	// Registry of page loaders - add new lazy-loaded pages here
+	const pageLoaders = {};
+
+	const showPage = (hash) => {
+		document.querySelectorAll('.page-section').forEach(page => {
+			page.classList.remove('active');
+		});
+
+		navLinks.forEach(link => {
+			link.classList.toggle('active', link.getAttribute('href') === hash);
+		});
+
+		const target = document.querySelector(hash);
+		if (target) {
+			target.classList.add('active');
+		}
+	};
+
+	// Unified navigation: shows page AND triggers content loader if registered
+	const navigateToPage = (hash) => {
+		const validHash = document.querySelector(hash) ? hash : defaultHash;
+		showPage(validHash);
+		if (pageLoaders[validHash]) {
+			pageLoaders[validHash]();
+		}
+	};
+
+	navLinks.forEach(link => {
+		link.addEventListener('click', (event) => {
+			event.preventDefault();
+			const hash = link.getAttribute('href') || defaultHash;
+			window.history.pushState(null, null, hash);
+			navigateToPage(hash);
+		});
+	});
+
+	window.addEventListener('popstate', () => {
+		const hash = window.location.hash || defaultHash;
+		navigateToPage(hash);
+	});
+
+	const backBtn = document.getElementById('nav-back');
+	if (backBtn) {
+		backBtn.addEventListener('click', (event) => {
+			event.preventDefault();
+			if (window.history.length > 1) {
+				window.history.back();
+			} else {
+				window.location.href = '/';
+			}
+		});
+	}
+
+	if (!window.miraAPI && window.MiraAPIClient) {
+		window.miraAPI = new window.MiraAPIClient({ baseURL: window.location.origin });
+	}
+
+	let currentUserId = null;
+
+	async function ensureCurrentUser() {
+		if (!window.miraAPI?.auth?.validateToken) return null;
+		try {
+			const session = await window.miraAPI.auth.validateToken();
+			if (session?.user_id) {
+				currentUserId = session.user_id;
+			}
+		} catch (error) {
+			console.warn('Session validation failed:', error);
+		}
+		return currentUserId;
+	}
+
+	async function csrfHeaders() {
+		if (!window.miraAPI?._ensureCsrfToken) return {};
+		const csrfToken = await window.miraAPI._ensureCsrfToken();
+		return { 'X-CSRF-Token': csrfToken };
+	}
+
+	ensureCurrentUser();
+
+	// Initialize tool config manager
+	let toolConfigManager = null;
+	if (window.ToolConfigManager) {
+		toolConfigManager = new ToolConfigManager();
+		// Check for OAuth callback results (success/error from redirect)
+		toolConfigManager.checkOAuthCallback();
+	}
+
+	// Register tools page loader
+	if (toolConfigManager) {
+		pageLoaders['#tools'] = async () => {
+			const toolsList = document.getElementById('tools-list');
+			if (toolsList) {
+				await toolConfigManager.renderToolsPage(toolsList);
+			}
+		};
+	}
+
+	// ---- Trigger Rules (Automations) ----
+
+	async function loadTriggerRules() {
+		const list = document.getElementById('trigger-rules-list');
+		if (!list || !window.miraAPI) return;
+
+		try {
+			const response = await window.miraAPI._httpRequest('/v0/api/triggers/rules');
+			const rules = response?.rules || [];
+
+			if (rules.length === 0) {
+				list.innerHTML = '<p style="color: var(--text-inline-dim);">No rules configured. Add one above to start automating.</p>';
+				return;
+			}
+
+			list.innerHTML = rules.map(rule => {
+				const promptPreview = rule.prompt
+					? `<div class="rule-prompt-preview" style="margin-top: 4px; color: var(--text-inline-muted); font-size: 12px; max-height: 40px; overflow: hidden; text-overflow: ellipsis; cursor: pointer;" title="Click to edit">${escapeHtml(rule.prompt.substring(0, 120))}${rule.prompt.length > 120 ? '...' : ''}</div>`
+					: `<div class="rule-prompt-preview" style="margin-top: 4px; color: var(--text-inline-muted); font-size: 12px; font-style: italic; cursor: pointer;" title="Click to add prompt">No prompt (uses default)</div>`;
+				return `
+				<div class="token-item" data-rule-id="${rule.id}" style="display: flex; align-items: flex-start; gap: 12px;">
+					<div class="token-info" style="flex: 1;">
+						<span class="token-name" style="color: ${rule.enabled ? '#0f0' : '#666'};">
+							${rule.field.toUpperCase()} matches <code style="color: #0bf;">${escapeHtml(rule.pattern)}</code>
+						</span>
+						<span class="token-meta">in ${escapeHtml(rule.scope)} · ${rule.enabled ? 'active' : 'disabled'}</span>
+						${promptPreview}
+						<div class="rule-prompt-editor" style="display: none; margin-top: 8px;">
+							<textarea class="rule-prompt-textarea" rows="6" style="width: 100%; resize: vertical; font-size: 12px;">${rule.prompt ? escapeHtml(rule.prompt) : ''}</textarea>
+							<div style="margin-top: 6px; display: flex; gap: 8px;">
+								<button class="btn btn-primary btn-sm save-prompt-btn" data-rule-id="${rule.id}">Save</button>
+								<button class="btn btn-ghost btn-sm cancel-prompt-btn">Cancel</button>
+								${rule.prompt ? `<button class="btn btn-danger btn-sm clear-prompt-btn" data-rule-id="${rule.id}">Clear</button>` : ''}
+							</div>
+						</div>
+					</div>
+					<div style="display: flex; flex-direction: column; gap: 4px; padding-top: 2px;">
+						<button class="btn btn-sm toggle-rule-btn" data-rule-id="${rule.id}" data-enabled="${rule.enabled}">
+							${rule.enabled ? 'Disable' : 'Enable'}
+						</button>
+						<button class="btn btn-danger btn-sm delete-rule-btn" data-rule-id="${rule.id}">Delete</button>
+					</div>
+				</div>`;
+			}).join('');
+
+			// Wire prompt edit (click preview to expand editor)
+			list.querySelectorAll('.rule-prompt-preview').forEach(preview => {
+				preview.addEventListener('click', () => {
+					const item = preview.closest('.token-item');
+					preview.style.display = 'none';
+					item.querySelector('.rule-prompt-editor').style.display = 'block';
+					item.querySelector('.rule-prompt-textarea').focus();
+				});
+			});
+
+			// Wire save prompt
+			list.querySelectorAll('.save-prompt-btn').forEach(btn => {
+				btn.addEventListener('click', async () => {
+					const ruleId = btn.dataset.ruleId;
+					const editor = btn.closest('.rule-prompt-editor');
+					const newPrompt = editor.querySelector('.rule-prompt-textarea').value.trim();
+					try {
+						await window.miraAPI._httpRequest(`/v0/api/triggers/rules/${ruleId}`, {
+							method: 'PUT',
+							body: JSON.stringify({ prompt: newPrompt || null }),
+						});
+						loadTriggerRules();
+					} catch (err) {
+						alert(`Failed to save prompt: ${err.message}`);
+					}
+				});
+			});
+
+			// Wire cancel prompt edit
+			list.querySelectorAll('.cancel-prompt-btn').forEach(btn => {
+				btn.addEventListener('click', () => {
+					const item = btn.closest('.token-item');
+					item.querySelector('.rule-prompt-editor').style.display = 'none';
+					item.querySelector('.rule-prompt-preview').style.display = '';
+				});
+			});
+
+			// Wire clear prompt
+			list.querySelectorAll('.clear-prompt-btn').forEach(btn => {
+				btn.addEventListener('click', async () => {
+					const ruleId = btn.dataset.ruleId;
+					try {
+						await window.miraAPI._httpRequest(`/v0/api/triggers/rules/${ruleId}`, {
+							method: 'PUT',
+							body: JSON.stringify({ prompt: null }),
+						});
+						loadTriggerRules();
+					} catch (err) {
+						alert(`Failed to clear prompt: ${err.message}`);
+					}
+				});
+			});
+
+			// Wire toggle buttons
+			list.querySelectorAll('.toggle-rule-btn').forEach(btn => {
+				btn.addEventListener('click', async () => {
+					const ruleId = btn.dataset.ruleId;
+					const currentlyEnabled = btn.dataset.enabled === 'true';
+					try {
+						await window.miraAPI._httpRequest(`/v0/api/triggers/rules/${ruleId}`, {
+							method: 'PUT',
+							body: JSON.stringify({ enabled: !currentlyEnabled }),
+						});
+						loadTriggerRules();
+					} catch (err) {
+						alert(`Failed to update rule: ${err.message}`);
+					}
+				});
+			});
+
+			// Wire delete buttons
+			list.querySelectorAll('.delete-rule-btn').forEach(btn => {
+				btn.addEventListener('click', async () => {
+					const ruleId = btn.dataset.ruleId;
+					if (!confirm('Delete this rule?')) return;
+					try {
+						await window.miraAPI._httpRequest(`/v0/api/triggers/rules/${ruleId}`, {
+							method: 'DELETE',
+						});
+						loadTriggerRules();
+					} catch (err) {
+						alert(`Failed to delete rule: ${err.message}`);
+					}
+				});
+			});
+		} catch (e) {
+			console.error('Error loading trigger rules:', e);
+			list.innerHTML = '<p style="color: #f66;">Error loading rules</p>';
+		}
+	}
+
+	function escapeHtml(str) {
+		const div = document.createElement('div');
+		div.textContent = str;
+		return div.innerHTML;
+	}
+
+	// Add rule button
+	const addRuleBtn = document.getElementById('add-rule-btn');
+	if (addRuleBtn) {
+		addRuleBtn.addEventListener('click', async () => {
+			const scope = document.getElementById('rule-scope')?.value?.trim() || 'INBOX';
+			const field = document.getElementById('rule-field')?.value;
+			const pattern = document.getElementById('rule-pattern')?.value?.trim();
+			const status = document.getElementById('rule-add-status');
+
+			if (!pattern) {
+				if (status) { status.textContent = 'Pattern is required'; status.style.color = '#f66'; }
+				return;
+			}
+
+			try {
+				// Validate regex client-side
+				new RegExp(pattern);
+			} catch (e) {
+				if (status) { status.textContent = `Invalid regex: ${e.message}`; status.style.color = '#f66'; }
+				return;
+			}
+
+			try {
+				const prompt = document.getElementById('rule-prompt')?.value?.trim() || null;
+				await window.miraAPI._httpRequest('/v0/api/triggers/rules', {
+					method: 'POST',
+					body: JSON.stringify({
+						trigger_id: 'imap_email',
+						scope,
+						field,
+						pattern,
+						...(prompt ? { prompt } : {}),
+					}),
+				});
+
+				// Clear form and reload
+				document.getElementById('rule-pattern').value = '';
+				document.getElementById('rule-prompt').value = '';
+				if (status) { status.textContent = 'Rule added'; status.style.color = '#0f0'; }
+				setTimeout(() => { if (status) status.textContent = ''; }, 2000);
+				loadTriggerRules();
+			} catch (err) {
+				if (status) { status.textContent = `Error: ${err.message}`; status.style.color = '#f66'; }
+			}
+		});
+	}
+
+	async function loadTriggerConflicts() {
+		const list = document.getElementById('trigger-conflicts-list');
+		if (!list || !window.miraAPI) return;
+
+		try {
+			const response = await window.miraAPI._httpRequest('/v0/api/triggers/conflicts');
+			const conflicts = response?.conflicts || [];
+
+			if (conflicts.length === 0) {
+				list.innerHTML = '<p style="color: var(--text-inline-dim);">No conflicts.</p>';
+				return;
+			}
+
+			list.innerHTML = conflicts.map(c => `
+				<div style="padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.05);">
+					<span style="color: #f66; font-size: 13px;">${escapeHtml(c.summary)}</span>
+					<span style="color: var(--text-inline-muted); font-size: 11px; margin-left: 8px;">${escapeHtml(c.updated_at)}</span>
+				</div>
+			`).join('');
+		} catch (e) {
+			console.error('Error loading trigger conflicts:', e);
+			list.innerHTML = '<p style="color: #f66;">Error loading conflicts</p>';
+		}
+	}
+
+	// Register automations page loader
+	pageLoaders['#automations'] = () => { loadTriggerRules(); loadTriggerConflicts(); };
+
+	// HTTP Credential Management
+	async function loadCredentials() {
+		const list = document.getElementById('credentials-list');
+		if (!list || !window.miraAPI) return;
+
+		try {
+			const response = await window.miraAPI.actions.executeAction('user', 'list_http_credentials', {});
+			const creds = response.credentials || [];
+
+			if (creds.length === 0) {
+				list.innerHTML = '<p style="color: var(--text-inline-dim);">No credentials stored yet.</p>';
+				return;
+			}
+
+			list.innerHTML = creds.map(cred => `
+				<div class="token-item">
+					<div class="token-info">
+						<span class="token-name">${escapeHtml(cred.name)}</span>
+						<span class="token-meta">Added ${cred.created_at ? new Date(cred.created_at).toLocaleDateString() : 'recently'}</span>
+						<span class="token-meta">Allowed: ${escapeHtml((cred.allowed_domains || []).join(', ') || 'none')}</span>
+					</div>
+					<button class="btn btn-danger btn-sm" data-cred-name="${escapeHtml(cred.name)}">Delete</button>
+				</div>
+			`).join('');
+
+			// Wire up delete buttons
+			list.querySelectorAll('.btn-danger').forEach(btn => {
+				btn.addEventListener('click', async (e) => {
+					const name = e.target.dataset.credName;
+					if (!confirm(`Delete credential "${name}"?`)) return;
+
+					try {
+						await window.miraAPI.actions.executeAction('user', 'delete_http_credential', { name });
+						loadCredentials();
+					} catch (err) {
+						alert(`Failed to delete: ${err.message}`);
+					}
+				});
+			});
+		} catch (e) {
+			console.error('Error loading credentials:', e);
+			list.innerHTML = '<p style="color: #f66;">Error loading credentials</p>';
+		}
+	}
+
+	// Add credential button handler
+	const addCredBtn = document.getElementById('add-cred-btn');
+	if (addCredBtn) {
+		addCredBtn.addEventListener('click', async () => {
+			const nameInput = document.getElementById('new-cred-name');
+			const valueInput = document.getElementById('new-cred-value');
+			const domainsInput = document.getElementById('new-cred-domains');
+
+			const name = nameInput.value.trim();
+			const value = valueInput.value;
+			const allowed_domains = domainsInput.value
+				.split(',')
+				.map(domain => domain.trim())
+				.filter(Boolean);
+
+			if (!name || !value || allowed_domains.length === 0) {
+				alert('Please enter a name, value, and at least one allowed domain');
+				return;
+			}
+
+			// Disable button during save
+			addCredBtn.disabled = true;
+			addCredBtn.textContent = 'Saving...';
+
+			try {
+				await window.miraAPI.actions.executeAction('user', 'store_http_credential', { name, value, allowed_domains });
+				nameInput.value = '';
+				valueInput.value = '';
+				domainsInput.value = '';
+				loadCredentials();
+				// Brief success feedback
+				addCredBtn.textContent = 'Saved!';
+				setTimeout(() => {
+					addCredBtn.textContent = 'Add';
+					addCredBtn.disabled = false;
+				}, 1500);
+			} catch (e) {
+				alert(`Failed to store credential: ${e.message}`);
+				addCredBtn.textContent = 'Add';
+				addCredBtn.disabled = false;
+			}
+		});
+	}
+
+	// Register credentials page loader
+	pageLoaders['#credentials'] = loadCredentials;
+
+	// Profile Management
+	async function loadProfile() {
+		if (!window.miraAPI) return;
+
+		const firstNameInput = document.getElementById('profile-first-name');
+		const lastNameInput = document.getElementById('profile-last-name');
+		const timezoneSelect = document.getElementById('profile-timezone');
+		const statusSpan = document.getElementById('profile-status');
+
+		try {
+			const response = await window.miraAPI.actions.executeAction('user', 'get_profile', {});
+
+			if (response.profile) {
+				if (firstNameInput) firstNameInput.value = response.profile.first_name || '';
+				if (lastNameInput) lastNameInput.value = response.profile.last_name || '';
+				if (timezoneSelect && response.profile.timezone) {
+					timezoneSelect.value = response.profile.timezone;
+				}
+				if (response.profile.temperature_unit) {
+					const tempUnitSelect = document.getElementById('profile-temperature-unit');
+					if (tempUnitSelect) tempUnitSelect.value = response.profile.temperature_unit;
+				}
+			}
+		} catch (e) {
+			console.error('Error loading profile:', e);
+			if (statusSpan) {
+				statusSpan.textContent = 'Error loading profile';
+				statusSpan.style.color = '#f66';
+			}
+		}
+	}
+
+	// Save profile button handler
+	const saveProfileBtn = document.getElementById('save-profile-btn');
+	if (saveProfileBtn) {
+		saveProfileBtn.addEventListener('click', async () => {
+			const firstNameInput = document.getElementById('profile-first-name');
+			const lastNameInput = document.getElementById('profile-last-name');
+			const timezoneSelect = document.getElementById('profile-timezone');
+			const statusSpan = document.getElementById('profile-status');
+
+			// Build data object with only non-empty values
+			const data = {};
+			if (firstNameInput?.value.trim()) data.first_name = firstNameInput.value.trim();
+			if (lastNameInput?.value.trim()) data.last_name = lastNameInput.value.trim();
+			if (timezoneSelect?.value) data.timezone = timezoneSelect.value;
+			const tempUnitSelect = document.getElementById('profile-temperature-unit');
+			if (tempUnitSelect?.value) data.temperature_unit = tempUnitSelect.value;
+
+			if (Object.keys(data).length === 0) {
+				if (statusSpan) {
+					statusSpan.textContent = 'Please fill in at least one field';
+					statusSpan.style.color = '#f66';
+				}
+				return;
+			}
+
+			// Disable button during save
+			saveProfileBtn.disabled = true;
+			saveProfileBtn.textContent = 'Saving...';
+
+			try {
+				await window.miraAPI.actions.executeAction('user', 'update_profile', data);
+
+				if (statusSpan) {
+					statusSpan.textContent = 'Profile saved!';
+					statusSpan.style.color = '#0f0';
+					setTimeout(() => {
+						statusSpan.textContent = '';
+					}, 3000);
+				}
+			} catch (e) {
+				console.error('Error saving profile:', e);
+				if (statusSpan) {
+					statusSpan.textContent = `Error: ${e.message}`;
+					statusSpan.style.color = '#f66';
+				}
+			} finally {
+				saveProfileBtn.disabled = false;
+				saveProfileBtn.textContent = 'Save Profile';
+			}
+		});
+	}
+
+	// ============================================================
+	// Portrait Management
+	// ============================================================
+
+	let currentPreviewId = null;
+
+	async function loadPortrait() {
+		const textEl = document.getElementById('portrait-text');
+		const noPortraitEl = document.getElementById('portrait-no-portrait');
+		const currentEl = document.getElementById('portrait-current');
+		const refineForm = document.getElementById('portrait-refine-form');
+		if (!textEl || !window.miraAPI) return;
+
+		try {
+			const response = await window.miraAPI.actions.executeAction('portrait', 'get', {});
+
+			if (response.has_portrait && response.portrait) {
+				textEl.textContent = response.portrait;
+				if (noPortraitEl) noPortraitEl.style.display = 'none';
+				if (currentEl) currentEl.style.display = '';
+				if (refineForm) refineForm.style.display = '';
+			} else {
+				if (noPortraitEl) noPortraitEl.style.display = '';
+				if (currentEl) currentEl.style.display = 'none';
+				if (refineForm) refineForm.style.display = 'none';
+			}
+		} catch (e) {
+			console.error('Error loading portrait:', e);
+			textEl.textContent = 'Error loading portrait.';
+		}
+
+		hidePortraitPreview();
+	}
+
+	function showPortraitPreview(proposed, previewId) {
+		const previewEl = document.getElementById('portrait-preview');
+		const previewTextEl = document.getElementById('portrait-preview-text');
+		const refineForm = document.getElementById('portrait-refine-form');
+		if (!previewEl || !previewTextEl) return;
+
+		currentPreviewId = previewId;
+		previewTextEl.textContent = proposed;
+		previewEl.style.display = '';
+		if (refineForm) refineForm.style.display = 'none';
+	}
+
+	function hidePortraitPreview() {
+		const previewEl = document.getElementById('portrait-preview');
+		const refineForm = document.getElementById('portrait-refine-form');
+		if (previewEl) previewEl.style.display = 'none';
+		if (refineForm) refineForm.style.display = '';
+		currentPreviewId = null;
+	}
+
+	function setPortraitStatus(msg, isError) {
+		const statusEl = document.getElementById('portrait-status');
+		if (!statusEl) return;
+		statusEl.textContent = msg;
+		statusEl.style.color = isError ? '#f66' : 'var(--text-inline-muted)';
+		if (msg && !isError) {
+			setTimeout(() => { statusEl.textContent = ''; }, 4000);
+		}
+	}
+
+	// Refine button
+	const refineBtn = document.getElementById('portrait-refine-btn');
+	if (refineBtn) {
+		refineBtn.addEventListener('click', async () => {
+			const instructionsEl = document.getElementById('portrait-instructions');
+			const instructions = instructionsEl?.value?.trim();
+			if (!instructions) {
+				setPortraitStatus('Please enter refinement instructions.', true);
+				return;
+			}
+
+			refineBtn.disabled = true;
+			refineBtn.textContent = 'Generating…';
+			setPortraitStatus('Generating revised portrait…', false);
+
+			try {
+				const response = await window.miraAPI.actions.executeAction('portrait', 'refine', { instructions });
+				showPortraitPreview(response.proposed, response.preview_id);
+				instructionsEl.value = '';
+				setPortraitStatus('', false);
+			} catch (e) {
+				console.error('Error refining portrait:', e);
+				setPortraitStatus(e.message || 'Refinement failed.', true);
+			} finally {
+				refineBtn.disabled = false;
+				refineBtn.textContent = 'Refine Portrait';
+			}
+		});
+	}
+
+	// Accept button
+	const acceptBtn = document.getElementById('portrait-accept-btn');
+	if (acceptBtn) {
+		acceptBtn.addEventListener('click', async () => {
+			if (!currentPreviewId) return;
+
+			acceptBtn.disabled = true;
+			acceptBtn.textContent = 'Saving…';
+
+			try {
+				await window.miraAPI.actions.executeAction('portrait', 'accept', { preview_id: currentPreviewId });
+
+				// Update displayed portrait
+				const previewTextEl = document.getElementById('portrait-preview-text');
+				const textEl = document.getElementById('portrait-text');
+				if (previewTextEl && textEl) textEl.textContent = previewTextEl.textContent;
+
+				hidePortraitPreview();
+				setPortraitStatus('Portrait updated!', false);
+			} catch (e) {
+				console.error('Error accepting portrait:', e);
+				setPortraitStatus(e.message || 'Failed to accept.', true);
+			} finally {
+				acceptBtn.disabled = false;
+				acceptBtn.textContent = 'Accept';
+			}
+		});
+	}
+
+	// Decline button
+	const declineBtn = document.getElementById('portrait-decline-btn');
+	if (declineBtn) {
+		declineBtn.addEventListener('click', async () => {
+			if (!currentPreviewId) return;
+
+			declineBtn.disabled = true;
+
+			try {
+				await window.miraAPI.actions.executeAction('portrait', 'decline', { preview_id: currentPreviewId });
+				hidePortraitPreview();
+				setPortraitStatus('Revision discarded.', false);
+			} catch (e) {
+				// Even if the server-side decline fails (expired key), just hide the preview
+				console.warn('Decline returned error (may have expired):', e);
+				hidePortraitPreview();
+			} finally {
+				declineBtn.disabled = false;
+			}
+		});
+	}
+
+	// Redo button
+	const redoBtn = document.getElementById('portrait-redo-btn');
+	if (redoBtn) {
+		redoBtn.addEventListener('click', async () => {
+			// Decline the current preview (best-effort) and show refine form
+			if (currentPreviewId) {
+				try {
+					await window.miraAPI.actions.executeAction('portrait', 'decline', { preview_id: currentPreviewId });
+				} catch (e) {
+					// Expired key — doesn't matter
+				}
+			}
+			hidePortraitPreview();
+			const instructionsEl = document.getElementById('portrait-instructions');
+			if (instructionsEl) instructionsEl.focus();
+		});
+	}
+
+	// ============================================================
+	// LoRA (User Model) Management
+	// ============================================================
+
+	let currentLoraPreviewId = null;
+
+	async function loadLora() {
+		const textEl = document.getElementById('lora-text');
+		const noModelEl = document.getElementById('lora-no-model');
+		const currentEl = document.getElementById('lora-current');
+		const refineForm = document.getElementById('lora-refine-form');
+		if (!textEl || !window.miraAPI) return;
+
+		try {
+			const response = await window.miraAPI.actions.executeAction('lora', 'get', {});
+
+			if (response.has_synthesis && response.xml) {
+				textEl.textContent = response.xml;
+				if (noModelEl) noModelEl.style.display = 'none';
+				if (currentEl) currentEl.style.display = '';
+				if (refineForm) refineForm.style.display = '';
+			} else {
+				if (noModelEl) noModelEl.style.display = '';
+				if (currentEl) currentEl.style.display = 'none';
+				if (refineForm) refineForm.style.display = 'none';
+			}
+		} catch (e) {
+			console.error('Error loading user model:', e);
+			textEl.textContent = 'Error loading user model.';
+		}
+
+		hideLoraPreview();
+	}
+
+	function showLoraPreview(proposed, previewId) {
+		const previewEl = document.getElementById('lora-preview');
+		const previewTextEl = document.getElementById('lora-preview-text');
+		const refineForm = document.getElementById('lora-refine-form');
+		if (!previewEl || !previewTextEl) return;
+
+		currentLoraPreviewId = previewId;
+		previewTextEl.textContent = proposed;
+		previewEl.style.display = '';
+		if (refineForm) refineForm.style.display = 'none';
+	}
+
+	function hideLoraPreview() {
+		const previewEl = document.getElementById('lora-preview');
+		const refineForm = document.getElementById('lora-refine-form');
+		if (previewEl) previewEl.style.display = 'none';
+		if (refineForm) refineForm.style.display = '';
+		currentLoraPreviewId = null;
+	}
+
+	function setLoraStatus(msg, isError) {
+		const statusEl = document.getElementById('lora-status');
+		if (!statusEl) return;
+		statusEl.textContent = msg;
+		statusEl.style.color = isError ? '#f66' : 'var(--text-inline-muted)';
+		if (msg && !isError) {
+			setTimeout(() => { statusEl.textContent = ''; }, 4000);
+		}
+	}
+
+	// LoRA Refine button
+	const loraRefineBtn = document.getElementById('lora-refine-btn');
+	if (loraRefineBtn) {
+		loraRefineBtn.addEventListener('click', async () => {
+			const instructionsEl = document.getElementById('lora-instructions');
+			const instructions = instructionsEl?.value?.trim();
+			if (!instructions) {
+				setLoraStatus('Please enter refinement instructions.', true);
+				return;
+			}
+
+			loraRefineBtn.disabled = true;
+			loraRefineBtn.textContent = 'Generating…';
+			setLoraStatus('Generating revised user model…', false);
+
+			try {
+				const response = await window.miraAPI.actions.executeAction('lora', 'refine', { instructions });
+				showLoraPreview(response.proposed, response.preview_id);
+				instructionsEl.value = '';
+				setLoraStatus('', false);
+			} catch (e) {
+				console.error('Error refining user model:', e);
+				setLoraStatus(e.message || 'Refinement failed.', true);
+			} finally {
+				loraRefineBtn.disabled = false;
+				loraRefineBtn.textContent = 'Refine User Model';
+			}
+		});
+	}
+
+	// LoRA Accept button
+	const loraAcceptBtn = document.getElementById('lora-accept-btn');
+	if (loraAcceptBtn) {
+		loraAcceptBtn.addEventListener('click', async () => {
+			if (!currentLoraPreviewId) return;
+
+			loraAcceptBtn.disabled = true;
+			loraAcceptBtn.textContent = 'Saving…';
+
+			try {
+				await window.miraAPI.actions.executeAction('lora', 'accept', { preview_id: currentLoraPreviewId });
+
+				// Update displayed model
+				const previewTextEl = document.getElementById('lora-preview-text');
+				const textEl = document.getElementById('lora-text');
+				if (previewTextEl && textEl) textEl.textContent = previewTextEl.textContent;
+
+				hideLoraPreview();
+				setLoraStatus('User model updated!', false);
+			} catch (e) {
+				console.error('Error accepting user model:', e);
+				setLoraStatus(e.message || 'Failed to accept.', true);
+			} finally {
+				loraAcceptBtn.disabled = false;
+				loraAcceptBtn.textContent = 'Accept';
+			}
+		});
+	}
+
+	// LoRA Decline button
+	const loraDeclineBtn = document.getElementById('lora-decline-btn');
+	if (loraDeclineBtn) {
+		loraDeclineBtn.addEventListener('click', async () => {
+			if (!currentLoraPreviewId) return;
+
+			loraDeclineBtn.disabled = true;
+
+			try {
+				await window.miraAPI.actions.executeAction('lora', 'decline', { preview_id: currentLoraPreviewId });
+				hideLoraPreview();
+				setLoraStatus('Revision discarded.', false);
+			} catch (e) {
+				// Even if the server-side decline fails (expired key), just hide the preview
+				console.warn('Decline returned error (may have expired):', e);
+				hideLoraPreview();
+			} finally {
+				loraDeclineBtn.disabled = false;
+			}
+		});
+	}
+
+	// LoRA Redo button
+	const loraRedoBtn = document.getElementById('lora-redo-btn');
+	if (loraRedoBtn) {
+		loraRedoBtn.addEventListener('click', async () => {
+			// Decline the current preview (best-effort) and show refine form
+			if (currentLoraPreviewId) {
+				try {
+					await window.miraAPI.actions.executeAction('lora', 'decline', { preview_id: currentLoraPreviewId });
+				} catch (e) {
+					// Expired key — doesn't matter
+				}
+			}
+			hideLoraPreview();
+			const instructionsEl = document.getElementById('lora-instructions');
+			if (instructionsEl) instructionsEl.focus();
+		});
+	}
+
+	// Register profile page loader
+	pageLoaders['#profile'] = async () => {
+		await loadProfile();
+		await loadPortrait();
+		await loadLora();
+	};
+
+	// API Token Management
+	async function loadTokens() {
+		const tokenList = document.getElementById('token-list');
+		if (!tokenList || !window.miraAPI) return;
+
+		try {
+			const response = await fetch('/v0/auth/api-tokens', {
+				credentials: 'include'
+			});
+			const data = await response.json();
+
+			if (data.error) {
+				tokenList.innerHTML = '<p style="color: #f66;">Error loading tokens</p>';
+				return;
+			}
+
+			const tokens = data.data?.tokens || [];
+			if (tokens.length === 0) {
+				tokenList.innerHTML = '<p style="color: var(--text-inline-dim);">No API tokens created yet.</p>';
+				return;
+			}
+
+			tokenList.innerHTML = tokens.map(token => {
+				const createdStr = new Date(token.created_at).toLocaleDateString();
+				const expiresStr = token.expires_at ? new Date(token.expires_at).toLocaleDateString() : 'Never';
+				return `
+					<div class="token-item">
+						<div class="token-info">
+							<span class="token-name">${token.name}</span>
+							<span class="token-meta">Created ${createdStr} · Expires ${expiresStr}</span>
+						</div>
+						<button class="btn btn-danger btn-sm" data-token-id="${token.id}">Revoke</button>
+					</div>
+				`;
+			}).join('');
+
+			// Wire up revoke buttons
+			tokenList.querySelectorAll('.btn-danger').forEach(btn => {
+				btn.addEventListener('click', async (e) => {
+					const tokenId = e.target.dataset.tokenId;
+					if (!confirm('Revoke this token? This cannot be undone.')) return;
+
+					try {
+						const response = await fetch(`/v0/auth/api-tokens/${tokenId}`, {
+							method: 'DELETE',
+							credentials: 'include',
+							headers: await csrfHeaders()
+						});
+
+						if (response.ok) {
+							loadTokens(); // Reload the list
+						} else {
+							alert('Failed to revoke token');
+						}
+					} catch (e) {
+						console.error('Error revoking token:', e);
+						alert('Error revoking token');
+					}
+				});
+			});
+
+			// Wire up copy buttons for visible keys
+			tokenList.querySelectorAll('.copy-key-btn').forEach(btn => {
+				btn.addEventListener('click', (e) => {
+					const tokenValue = e.target.dataset.token;
+					navigator.clipboard.writeText(tokenValue);
+					e.target.textContent = 'Copied!';
+					setTimeout(() => e.target.textContent = 'Copy', 2000);
+				});
+			});
+		} catch (e) {
+			console.error('Error loading tokens:', e);
+			tokenList.innerHTML = '<p style="color: #f66;">Error loading tokens</p>';
+		}
+	}
+
+	// Create new token
+	const expiresCheckbox = document.getElementById('new-token-expires');
+	const daysInput = document.getElementById('new-token-days');
+	const daysLabel = document.getElementById('new-token-days-label');
+
+	if (expiresCheckbox) {
+		expiresCheckbox.addEventListener('change', () => {
+			const show = expiresCheckbox.checked;
+			daysInput.style.display = show ? 'block' : 'none';
+			daysLabel.style.display = show ? 'inline' : 'none';
+		});
+	}
+
+	const createTokenBtn = document.getElementById('create-token-btn');
+	if (createTokenBtn) {
+		createTokenBtn.addEventListener('click', async () => {
+			const nameInput = document.getElementById('new-token-name');
+			const newTokenDisplay = document.getElementById('new-token-display');
+			const newTokenValue = document.getElementById('new-token-value');
+
+			const name = nameInput.value.trim();
+			const expires_in_days = expiresCheckbox.checked ? (parseInt(daysInput.value) || 90) : null;
+
+			if (!name) {
+				alert('Please enter a token name');
+				return;
+			}
+
+			try {
+				const response = await fetch('/v0/auth/api-tokens', {
+					method: 'POST',
+					credentials: 'include',
+					headers: {
+						'Content-Type': 'application/json',
+						...(await csrfHeaders())
+					},
+					body: JSON.stringify({ name, expires_in_days })
+				});
+
+				const data = await response.json();
+
+				if (data.error) {
+					alert(`Error creating token: ${data.error.message}`);
+					return;
+				}
+
+				// Show the new token
+				newTokenValue.value = data.data.token;
+				newTokenDisplay.style.display = 'block';
+
+				// Clear inputs
+				nameInput.value = '';
+				expiresCheckbox.checked = false;
+				daysInput.value = '90';
+				daysInput.style.display = 'none';
+				daysLabel.style.display = 'none';
+
+				// Reload token list
+				loadTokens();
+
+				// Hide the token display after 60 seconds
+				setTimeout(() => {
+					newTokenDisplay.style.display = 'none';
+				}, 60000);
+			} catch (e) {
+				console.error('Error creating token:', e);
+				alert('Error creating token');
+			}
+		});
+	}
+
+	// Copy token button
+	const copyTokenBtn = document.getElementById('copy-token-btn');
+	if (copyTokenBtn) {
+		copyTokenBtn.addEventListener('click', () => {
+			const newTokenValue = document.getElementById('new-token-value');
+			newTokenValue.select();
+			document.execCommand('copy');
+			copyTokenBtn.textContent = 'Copied!';
+			setTimeout(() => {
+				copyTokenBtn.textContent = 'Copy';
+			}, 2000);
+		});
+	}
+
+	// Developer page loader removed for OSS (API-token management uses /v0/auth/* which is hosted-only)
+
+	// Initial navigation - load the page from URL hash (after all loaders registered)
+	let initialHash = window.location.hash || defaultHash;
+	if (!document.querySelector(initialHash)) {
+		initialHash = defaultHash;
+		window.history.replaceState(null, null, defaultHash);
+	}
+	navigateToPage(initialHash);
+
+	const appearanceSelect = document.getElementById('appearance-theme');
+	if (appearanceSelect && window.miraGetTheme) {
+		appearanceSelect.value = window.miraGetTheme();
+		appearanceSelect.addEventListener('change', () => {
+			window.miraSetTheme(appearanceSelect.value);
+		});
+	}
+
+	const editMemBtn = document.getElementById('btn-edit-memories');
+	if (editMemBtn) {
+		editMemBtn.addEventListener('click', () => {
+			window.location.href = '/memories';
+		});
+	}
+
+	const deleteHistoryBtn = document.getElementById('btn-delete-history');
+	if (deleteHistoryBtn) {
+		deleteHistoryBtn.addEventListener('click', async () => {
+			if (!window.miraAPI?.search?.clearSearchConversation) {
+				alert('Conversation history controls are not available yet.');
+				return;
+			}
+			if (!confirm('Delete your saved conversation history? This cannot be undone.')) {
+				return;
+			}
+			try {
+				await window.miraAPI.search.clearSearchContinuum();
+				alert('Conversation history cleared.');
+			} catch (error) {
+				console.error('Failed to clear history:', error);
+				alert('Could not clear conversation history. Please try again.');
+			}
+		});
+	}
+
+	const logoutBtn = document.getElementById('btn-logout');
+	if (logoutBtn) {
+		logoutBtn.addEventListener('click', async () => {
+			if (!confirm('Log out of this device?')) return;
+			await performLogout(false);
+		});
+	}
+
+	const logoutAllBtn = document.getElementById('btn-logout-all');
+	if (logoutAllBtn) {
+		logoutAllBtn.addEventListener('click', async () => {
+			if (!confirm('Log out from all devices?')) return;
+			await performLogout(true);
+		});
+	}
+
+	// Feedback controls commented out until consolidated elsewhere.
+	// const feedbackTextarea = document.getElementById('feedback-text');
+	// const feedbackButton = document.getElementById('btn-submit-feedback');
+	// const feedbackStatus = document.getElementById('feedback-status');
+	//
+	// function setFeedbackStatus(message, tone = 'info') {
+	// 	if (!feedbackStatus) return;
+	// 	feedbackStatus.textContent = message;
+	// 	feedbackStatus.style.color = tone === 'error' ? '#f66' : tone === 'success' ? '#0f0' : '#c1d1d6';
+	// }
+	//
+	// if (feedbackButton && feedbackTextarea) {
+	// 	feedbackButton.addEventListener('click', () => {
+	// 		const message = feedbackTextarea.value.trim();
+	// 		if (!message) {
+	// 			setFeedbackStatus('Please add details before saving feedback.', 'error');
+	// 			return;
+	// 		}
+	// 		try {
+	// 			const stored = localStorage.getItem('mira-feedback-drafts');
+	// 			const drafts = stored ? JSON.parse(stored) : [];
+	// 			drafts.push({
+	// 				message,
+	// 				created_at: new Date().toISOString()
+	// 			});
+	// 			localStorage.setItem('mira-feedback-drafts', JSON.stringify(drafts));
+	// 			feedbackTextarea.value = '';
+	// 			setFeedbackStatus('Feedback saved locally. We will sync this once the backend is ready.', 'success');
+	// 		} catch (error) {
+	// 			console.error('Failed to store feedback locally:', error);
+	// 			setFeedbackStatus('Could not save feedback locally. Copy it somewhere safe.', 'error');
+	// 		}
+	// 	});
+	// }
+
+	async function performLogout(allDevices) {
+		try {
+			if (allDevices) {
+				const userId = currentUserId || await ensureCurrentUser();
+				if (!userId) {
+					throw new Error('Missing user identifier for logout-all.');
+				}
+				const response = await fetch('/v0/auth/logout-all', {
+					method: 'POST',
+					credentials: 'include',
+					headers: {
+						'Content-Type': 'application/json',
+						...(await csrfHeaders())
+					},
+					body: JSON.stringify({ user_id: userId })
+				});
+				if (!response.ok) {
+					const errorBody = await response.json().catch(() => ({}));
+					throw new Error(errorBody?.error?.message || 'Failed to log out from all devices.');
+				}
+			} else {
+				const token = window.miraAPI?.auth?.getToken?.() || '';
+				await fetch('/v0/auth/logout', {
+					method: 'POST',
+					credentials: 'include',
+					headers: {
+						...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+						...(await csrfHeaders())
+					}
+				});
+			}
+		} catch (error) {
+			console.error('Logout failed:', error);
+		} finally {
+			window.miraAPI?.auth?.clearToken?.();
+			window.location.href = '/login';
+		}
+	}
+});
+</script>
+    <div id="loading-screen">
+        <div class="ascii-container" id="ascii-container"></div>
+    </div>
+    <a href="#main-content" class="skip-nav">Skip to content</a>
+    <button id="sidebar-toggle" aria-label="Open navigation" aria-expanded="false" aria-controls="app-sidebar"><img src="../assets/images/icons/menubar_chevron.png" alt="" class="sidebar-chevron-icon"></button>
+    <div id="sidebar-backdrop" aria-hidden="true"></div>
+    <nav id="app-sidebar" aria-label="Main navigation">
+        <div class="sidebar-header">
+            <div class="sidebar-brand"><img src="../assets/images/logo.png" alt="MIRA"></div>
+            <button id="sidebar-collapse-toggle" aria-label="Collapse sidebar">
+                <img src="../assets/images/icons/menubar_chevron.png" alt="" class="sidebar-chevron-icon">
+            </button>
+        </div>
+        <ul class="sidebar-nav" role="list">
+            <li><a href="/chat" class="sidebar-nav-item">
+                <img src="../assets/images/icons/chat.png?v=igddHsI" alt="">
+                <span class="nav-label">Chat</span>
+            </a></li>
+            <li><a href="/domaindocs" class="sidebar-nav-item">
+                <img src="../assets/images/icons/book.png?v=igddHsI" alt="">
+                <span class="nav-label">Docs</span>
+            </a></li>
+            <li><a href="/memories" class="sidebar-nav-item">
+                <img src="../assets/images/icons/memory.png?v=igddHsI" alt="">
+                <span class="nav-label">Memories</span>
+            </a></li>
+            <li><a href="/settings" class="sidebar-nav-item active" aria-current="page">
+                <img src="../assets/images/icons/settings.png?v=igddHsI" alt="">
+                <span class="nav-label">Settings</span>
+            </a></li>
+        </ul>
+        <div class="sidebar-divider" role="separator"></div>
+        <div class="sidebar-actions">
+            <button class="sidebar-action-pill magenta" id="sidebar-history-btn">Show Chat History</button>
+            <button class="sidebar-action-pill lime" id="sidebar-pause-btn" style="display: none">
+                <span id="sidebar-pause-label">Pause</span>
+            </button>
+            <button class="sidebar-action-pill red" id="sidebar-collapse-btn">Wrap Up</button>
+        </div>
+    </nav>
+    <button id="sidebar-expand-toggle" aria-label="Expand sidebar">
+        <img src="../assets/images/icons/menubar_chevron.png" alt="" class="sidebar-chevron-icon">
+    </button>
+
+    <main id="main-content" class="page-main" tabindex="-1">
+        <header class="page-header">
+            <h1 class="page-title">Settings</h1>
+        </header>
+        <nav class="page-tabs" aria-label="Settings sections">
+            <a href="#profile"     class="page-tab active">Profile</a>
+            <a href="#general"     class="page-tab">General</a>
+            <a href="#credentials" class="page-tab">API Credentials</a>
+            <a href="#tools"       class="page-tab">Tools</a>
+            <a href="#automations" class="page-tab">Automations</a>
+        </nav>
+        <div class="page-content">
+			<div id="profile" class="page-section active">
+				<h1>Profile</h1>
+				<p style="margin-bottom: 20px; color: var(--text-inline-muted);">Update your profile information. MIRA uses this to personalize your experience.</p>
+
+				<table class="settings-table">
+					<tbody>
+						<tr>
+							<td class="setting-label">First Name</td>
+							<td class="setting-value">
+								<input type="text" id="profile-first-name" placeholder="Your first name" style="width: 300px;">
+							</td>
+						</tr>
+						<tr>
+							<td class="setting-label">Last Name</td>
+							<td class="setting-value">
+								<input type="text" id="profile-last-name" placeholder="Your last name" style="width: 300px;">
+							</td>
+						</tr>
+						<tr>
+							<td class="setting-label">Timezone</td>
+							<td class="setting-value">
+								<select id="profile-timezone" style="width: 300px;">
+									<option value="">Select timezone...</option>
+									<option value="America/New_York">Eastern Time (America/New_York)</option>
+									<option value="America/Chicago">Central Time (America/Chicago)</option>
+									<option value="America/Denver">Mountain Time (America/Denver)</option>
+									<option value="America/Los_Angeles">Pacific Time (America/Los_Angeles)</option>
+									<option value="America/Anchorage">Alaska Time (America/Anchorage)</option>
+									<option value="Pacific/Honolulu">Hawaii Time (Pacific/Honolulu)</option>
+									<option value="UTC">UTC</option>
+									<option value="Europe/London">London (Europe/London)</option>
+									<option value="Europe/Paris">Paris (Europe/Paris)</option>
+									<option value="Europe/Berlin">Berlin (Europe/Berlin)</option>
+									<option value="Asia/Tokyo">Tokyo (Asia/Tokyo)</option>
+									<option value="Asia/Shanghai">Shanghai (Asia/Shanghai)</option>
+									<option value="Asia/Singapore">Singapore (Asia/Singapore)</option>
+									<option value="Australia/Sydney">Sydney (Australia/Sydney)</option>
+								</select>
+							</td>
+						</tr>
+						<tr>
+							<td class="setting-label">Temperature</td>
+							<td class="setting-value">
+								<select id="profile-temperature-unit" style="width: 300px;">
+									<option value="fahrenheit">Fahrenheit (°F)</option>
+									<option value="celsius">Celsius (°C)</option>
+								</select>
+							</td>
+						</tr>
+						<tr>
+							<td class="setting-label"></td>
+							<td class="setting-value">
+								<button id="save-profile-btn" class="btn btn-primary">Save Profile</button>
+								<span id="profile-status" style="margin-left: 12px; color: var(--text-inline-muted);"></span>
+							</td>
+						</tr>
+					</tbody>
+				</table>
+
+				<h2 style="margin-top: 32px; margin-bottom: 8px;">Portrait</h2>
+				<p style="margin-bottom: 16px; color: var(--text-inline-muted);">Your portrait is an auto-generated summary of who you are, based on conversation history. You can refine it by providing instructions — the revised portrait is previewed before saving.</p>
+
+				<div id="portrait-container">
+					<div id="portrait-current" style="margin-bottom: 16px;">
+						<div style="font-weight: 600; margin-bottom: 4px; font-size: 13px; color: var(--text-inline-muted);">Current Portrait</div>
+						<div id="portrait-text" style="padding: 12px; border: 1px solid var(--border-subtle); border-radius: 6px; background: var(--surface-raised); min-height: 40px; font-size: 14px; line-height: 1.5; white-space: pre-wrap;">Loading…</div>
+					</div>
+
+					<div id="portrait-preview" style="margin-bottom: 16px; display: none;">
+						<div style="font-weight: 600; margin-bottom: 4px; font-size: 13px; color: var(--text-accent);">Proposed Revision</div>
+						<div id="portrait-preview-text" style="padding: 12px; border: 1px solid var(--border-accent); border-radius: 6px; background: var(--surface-raised); min-height: 40px; font-size: 14px; line-height: 1.5; white-space: pre-wrap;"></div>
+						<div style="margin-top: 8px; display: flex; gap: 8px;">
+							<button id="portrait-accept-btn" class="btn btn-primary btn-sm">Accept</button>
+							<button id="portrait-decline-btn" class="btn btn-danger btn-sm">Decline</button>
+							<button id="portrait-redo-btn" class="btn btn-ghost btn-sm">Redo with different instructions</button>
+						</div>
+					</div>
+
+					<div id="portrait-refine-form" style="margin-bottom: 16px;">
+						<textarea id="portrait-instructions" rows="3" placeholder="Tell MIRA how to adjust your portrait (e.g. &quot;I no longer work in finance — I switched to teaching last year&quot; or &quot;Remove the part about running, I don't do that anymore&quot;)" style="width: 100%; resize: vertical; font-size: 14px;"></textarea>
+						<div style="margin-top: 8px; display: flex; align-items: center; gap: 8px;">
+							<button id="portrait-refine-btn" class="btn btn-primary btn-sm">Refine Portrait</button>
+							<span id="portrait-status" style="color: var(--text-inline-muted); font-size: 13px;"></span>
+						</div>
+					</div>
+
+					<div id="portrait-no-portrait" style="display: none; padding: 12px; border: 1px solid var(--border-subtle); border-radius: 6px; background: var(--surface-raised); font-size: 14px; color: var(--text-inline-muted);">
+						No portrait yet — MIRA generates one automatically based on your conversation history after enough segments have been summarized.
+					</div>
+				</div>
+
+				<h2 style="margin-top: 40px; margin-bottom: 8px;">User Model</h2>
+				<p style="margin-bottom: 16px; color: var(--text-inline-muted);">Your user model is a set of behavioral calibrations that help MIRA adapt to your style. You can refine it by providing instructions — the revised model is previewed and validated before saving.</p>
+
+				<div id="lora-container">
+					<div id="lora-current" style="margin-bottom: 16px;">
+						<div style="font-weight: 600; margin-bottom: 4px; font-size: 13px; color: var(--text-inline-muted);">Current User Model</div>
+						<div id="lora-text" style="padding: 12px; border: 1px solid var(--border-subtle); border-radius: 6px; background: var(--surface-raised); min-height: 40px; font-size: 13px; line-height: 1.5; white-space: pre-wrap; max-height: 400px; overflow-y: auto; font-family: monospace;">Loading…</div>
+					</div>
+
+					<div id="lora-preview" style="margin-bottom: 16px; display: none;">
+						<div style="font-weight: 600; margin-bottom: 4px; font-size: 13px; color: var(--text-accent);">Proposed Revision</div>
+						<div id="lora-preview-text" style="padding: 12px; border: 1px solid var(--border-accent); border-radius: 6px; background: var(--surface-raised); min-height: 40px; font-size: 13px; line-height: 1.5; white-space: pre-wrap; max-height: 400px; overflow-y: auto; font-family: monospace;"></div>
+						<div style="margin-top: 8px; display: flex; gap: 8px;">
+							<button id="lora-accept-btn" class="btn btn-primary btn-sm">Accept</button>
+							<button id="lora-decline-btn" class="btn btn-danger btn-sm">Decline</button>
+							<button id="lora-redo-btn" class="btn btn-ghost btn-sm">Redo with different instructions</button>
+						</div>
+					</div>
+
+					<div id="lora-refine-form" style="margin-bottom: 16px;">
+						<textarea id="lora-instructions" rows="3" placeholder="Tell MIRA how to adjust your user model (e.g. &quot;I prefer concise answers, not detailed step-by-step explanations&quot; or &quot;I'm not defensive about feedback — I actually prefer it blunt&quot;)" style="width: 100%; resize: vertical; font-size: 14px;"></textarea>
+						<div style="margin-top: 8px; display: flex; align-items: center; gap: 8px;">
+							<button id="lora-refine-btn" class="btn btn-primary btn-sm">Refine User Model</button>
+							<span id="lora-status" style="color: var(--text-inline-muted); font-size: 13px;"></span>
+						</div>
+					</div>
+
+					<div id="lora-no-model" style="display: none; padding: 12px; border: 1px solid var(--border-subtle); border-radius: 6px; background: var(--surface-raised); font-size: 14px; color: var(--text-inline-muted);">
+						No user model yet — MIRA builds one automatically based on behavioral observations from your conversations.
+					</div>
+				</div>
+			</div>
+
+			<div id="general" class="page-section">
+				<h1>General Settings</h1>
+				<table class="settings-table">
+						<tbody>
+							<!-- Feedback controls temporarily disabled. -->
+							<!--
+							<tr>
+								<td class="setting-label">Feedback</td>
+								<td class="setting-value">
+									<textarea id="feedback-text" placeholder="Share what's working well or what needs attention..."></textarea>
+									<div style="margin-top: 10px; display: flex; align-items: center; gap: 12px;">
+										<button id="btn-submit-feedback">Save Feedback</button>
+										<span id="feedback-status" style="color: var(--text-inline-muted); font-size: 13px;"></span>
+									</div>
+								</td>
+							</tr>
+							-->
+						<tr>
+							<td class="setting-label">Appearance</td>
+							<td class="setting-value">
+								<select id="appearance-theme" style="width: 300px;">
+									<option value="auto">Auto (match system)</option>
+									<option value="light">Light</option>
+									<option value="dark">Dark</option>
+								</select>
+								<p style="margin-top: 8px; color: var(--text-inline-muted); font-size: 12px;">Auto follows your operating system's light/dark preference and updates when it changes.</p>
+							</td>
+						</tr>
+						<tr>
+							<td class="setting-label">Memories</td>
+							<td class="setting-value">
+								<button id="btn-edit-memories" class="btn">Edit Memories</button>
+							</td>
+						</tr>
+						<tr>
+							<td class="setting-label">Conversation History</td>
+							<td class="setting-value">
+								<button id="btn-delete-history" class="btn btn-danger">Delete Conversation History</button>
+								<p style="margin-top: 8px; color: var(--text-inline-muted); font-size: 12px;">Removes chat history cached for search and review. This does not affect memories.</p>
+							</td>
+						</tr>
+					</tbody>
+				</table>
+			</div>
+
+			<div id="credentials" class="page-section">
+				<h1>API Credentials</h1>
+				<p style="margin-bottom: 20px; color: var(--text-inline-muted);">Store API keys for use with web requests. MIRA can use these credentials without seeing the actual values.</p>
+
+				<div class="api-keys-box">
+					<!-- Add new credential -->
+					<div class="input-row" style="margin-bottom: 20px;">
+						<input type="text" id="new-cred-name" placeholder="Credential name (e.g., 'github_api')" style="flex: 1;">
+						<input type="password" id="new-cred-value" placeholder="API key or token" style="flex: 2;">
+						<input type="text" id="new-cred-domains" placeholder="Allowed domains, comma-separated" style="flex: 2;">
+						<button id="add-cred-btn" class="btn btn-primary">Add</button>
+					</div>
+
+					<!-- Existing credentials list -->
+					<h4 style="margin-top: 20px; margin-bottom: 15px;">Stored Credentials</h4>
+					<div id="credentials-list" style="display: flex; flex-direction: column; gap: 10px;">
+						<p style="color: var(--text-inline-dim);">Loading credentials...</p>
+					</div>
+
+					<!-- Usage hint -->
+					<div style="margin-top: 24px; padding: 16px; background: rgba(0,0,0,0.3); border-radius: 8px;">
+						<p style="color: var(--text-inline-muted); font-size: 13px; margin: 0;">
+							<strong style="color: #00bfff;">Usage:</strong> Tell MIRA to use a credential by name, e.g.,
+							"fetch my GitHub repos using the github_api credential". Credentials only attach to their allowed domains.
+						</p>
+					</div>
+				</div>
+			</div>
+
+			<div id="tools" class="page-section">
+				<h1>Tool Settings</h1>
+				<p style="margin-bottom: 20px; color: var(--text-inline-muted);">Configure tool-specific settings like email accounts, API keys, and service credentials.</p>
+				<div id="tools-list"></div>
+			</div>
+
+			<div id="automations" class="page-section">
+				<h1>Automations</h1>
+				<p style="margin-bottom: 20px; color: var(--text-inline-muted);">Configure rules that determine when sidebar agents activate automatically. Each rule matches a regex pattern against a field in incoming items.</p>
+
+				<div style="margin-bottom: 24px;">
+					<h3 style="margin-bottom: 12px;">Add Rule</h3>
+					<div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end;">
+						<div style="display: flex; flex-direction: column; gap: 4px;">
+							<label style="color: var(--text-inline-muted); font-size: 12px;">Folder</label>
+							<input type="text" id="rule-scope" value="INBOX" placeholder="INBOX" style="width: 120px;">
+						</div>
+						<div style="display: flex; flex-direction: column; gap: 4px;">
+							<label style="color: var(--text-inline-muted); font-size: 12px;">Match Field</label>
+							<select id="rule-field" style="width: 120px;">
+								<option value="from">From</option>
+								<option value="subject">Subject</option>
+								<option value="body">Body</option>
+							</select>
+						</div>
+						<div style="display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 200px;">
+							<label style="color: var(--text-inline-muted); font-size: 12px;">Regex Pattern</label>
+							<input type="text" id="rule-pattern" placeholder="e.g. hello@example\.com" style="width: 100%;">
+						</div>
+						<button id="add-rule-btn" class="btn btn-primary">Add Rule</button>
+					</div>
+					<div style="margin-top: 10px;">
+						<label style="color: var(--text-inline-muted); font-size: 12px;">Agent Prompt <span style="color: var(--text-inline-muted);">(optional — instructions for the agent when this rule matches)</span></label>
+						<textarea id="rule-prompt" rows="4" placeholder="e.g. You are an email assistant for Acme Corp responding to customer inquiries on behalf of Jane..." style="width: 100%; margin-top: 4px; resize: vertical;"></textarea>
+					</div>
+					<span id="rule-add-status" style="margin-top: 8px; display: block; color: var(--text-inline-muted); font-size: 13px;"></span>
+				</div>
+
+				<h3 style="margin-bottom: 12px;">Active Rules</h3>
+				<div id="trigger-rules-list">
+					<p style="color: var(--text-inline-dim);">Loading rules...</p>
+				</div>
+
+				<h3 style="margin-top: 24px; margin-bottom: 12px;">Recent Conflicts</h3>
+				<p style="margin-bottom: 12px; color: var(--text-inline-muted); font-size: 13px;">Emails that matched multiple rules with different prompts. Fix rule overlap to resolve.</p>
+				<div id="trigger-conflicts-list">
+					<p style="color: var(--text-inline-dim);">Loading...</p>
+				</div>
+			</div>
+		</div>
+	</main>
+</body>
+</html>

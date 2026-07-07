@@ -1,0 +1,851 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>MIRA Memories</title>
+    <script>
+    /* Theme bootstrap: resolve Appearance preference before paint to avoid FOUC.
+       theme.js (loaded below) takes over for matchMedia subscription + setter. */
+    (function(){try{var m=localStorage.getItem('mira-theme');var t=(m==='light'||m==='dark')?m:(window.matchMedia&&window.matchMedia('(prefers-color-scheme: light)').matches?'light':'dark');document.documentElement.setAttribute('data-theme',t);}catch(e){}})();
+    </script>
+    <script src="../assets/javascript/theme.js?v=20260524-2"></script>
+    <link rel="stylesheet" href="../assets/style.css?v=20260524-theme2" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content">
+    <link rel="apple-touch-icon" href="../chat/apple-touch-icon.png">
+    <meta name="apple-mobile-web-app-title" content="MIRA">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="theme-color" content="#000000">
+    <link rel="manifest" href="../manifest.json">
+
+    <link rel="preload" href="/assets/fonts/IBM_Plex_Mono.woff2" as="font" type="font/woff2" crossorigin>
+    <link rel="preload" href="/assets/fonts/Roboto.woff2"       as="font" type="font/woff2" crossorigin>
+    <link rel="preload" href="/assets/fonts/Noto_Emoji.woff2"   as="font" type="font/woff2" crossorigin>
+    <link rel="preload" href="/assets/fonts/Minni.woff2"        as="font" type="font/woff2" crossorigin>
+</head>
+<body>
+    <div id="loading-screen">
+        <div class="ascii-container" id="ascii-container"></div>
+    </div>
+    <a href="#main-content" class="skip-nav">Skip to content</a>
+    <button id="sidebar-toggle" aria-label="Open navigation" aria-expanded="false" aria-controls="app-sidebar"><img src="../assets/images/icons/menubar_chevron.png" alt="" class="sidebar-chevron-icon"></button>
+    <div id="sidebar-backdrop" aria-hidden="true"></div>
+    <nav id="app-sidebar" aria-label="Main navigation">
+        <div class="sidebar-header">
+            <div class="sidebar-brand"><img src="../assets/images/logo.png" alt="MIRA"></div>
+            <button id="sidebar-collapse-toggle" aria-label="Collapse sidebar">
+                <img src="../assets/images/icons/menubar_chevron.png" alt="" class="sidebar-chevron-icon">
+            </button>
+        </div>
+        <ul class="sidebar-nav" role="list">
+            <li><a href="/chat" class="sidebar-nav-item">
+                <img src="../assets/images/icons/chat.png?v=igddHsI" alt="">
+                <span class="nav-label">Chat</span>
+            </a></li>
+            <li><a href="/domaindocs" class="sidebar-nav-item">
+                <img src="../assets/images/icons/book.png?v=igddHsI" alt="">
+                <span class="nav-label">Docs</span>
+            </a></li>
+            <li><a href="/memories" class="sidebar-nav-item active" aria-current="page">
+                <img src="../assets/images/icons/memory.png?v=igddHsI" alt="">
+                <span class="nav-label">Memories</span>
+            </a></li>
+            <li><a href="/settings" class="sidebar-nav-item">
+                <img src="../assets/images/icons/settings.png?v=igddHsI" alt="">
+                <span class="nav-label">Settings</span>
+            </a></li>
+        </ul>
+        <div class="sidebar-divider" role="separator"></div>
+        <div class="sidebar-actions">
+            <button class="sidebar-action-pill magenta" id="sidebar-history-btn">Show Chat History</button>
+            <button class="sidebar-action-pill lime" id="sidebar-pause-btn" style="display: none">
+                <span id="sidebar-pause-label">Pause</span>
+            </button>
+            <button class="sidebar-action-pill red" id="sidebar-collapse-btn">Wrap Up</button>
+        </div>
+    </nav>
+    <button id="sidebar-expand-toggle" aria-label="Expand sidebar">
+        <img src="../assets/images/icons/menubar_chevron.png" alt="" class="sidebar-chevron-icon">
+    </button>
+
+    <main id="main-content" class="page-main" tabindex="-1">
+        <header class="page-header">
+            <h1 class="page-title">Memories</h1>
+        </header>
+        <nav class="page-tabs" aria-label="Memories sections">
+            <a href="#memories" class="page-tab active">Memories</a>
+            <a href="#domain-knowledge" class="page-tab">Domain Knowledge</a>
+        </nav>
+        <div class="page-content">
+            <section id="memories" class="page-section active">
+                <div class="controls-row">
+                    <input id="search" class="search-input" type="text" placeholder="Search memories..." />
+                    <span id="mem-count" class="muted">0 items</span>
+                    <span class="spacer"></span>
+                    <label class="muted" style="display:flex;align-items:center;gap:8px;">
+                        <input type="checkbox" id="cb-select-all" /> Select all
+                    </label>
+                    <button type="button" id="btn-bulk-delete" class="btn btn-danger" disabled>Delete Selected</button>
+                    <button type="button" id="btn-refresh" class="btn">Refresh</button>
+                </div>
+                <div class="controls-advanced">
+                    <div class="filter-groups">
+                        <label class="muted">Sort by
+                            <select id="sort-order">
+                                <option value="importance_desc">Importance (high -> low)</option>
+                                <option value="importance_asc">Importance (low -> high)</option>
+                                <option value="created_desc">Created (new -> old)</option>
+                                <option value="created_asc">Created (old -> new)</option>
+                                <option value="last_accessed_desc">Last accessed (new -> old)</option>
+                                <option value="last_accessed_asc">Last accessed (old -> new)</option>
+                            </select>
+                        </label>
+                        <label class="muted">Min importance
+                            <input type="range" id="filter-min-importance" min="0" max="1" step="0.05" value="0" />
+                            <span id="filter-min-importance-value">0.00</span>
+                        </label>
+                        <label class="muted">Expiration
+                            <select id="filter-expiration">
+                                <option value="all">All</option>
+                                <option value="has">With expiration</option>
+                                <option value="none">Without expiration</option>
+                            </select>
+                        </label>
+                        <label class="muted">Links
+                            <select id="filter-links">
+                                <option value="all">All</option>
+                                <option value="with">With links</option>
+                                <option value="without">Without links</option>
+                            </select>
+                        </label>
+                    </div>
+                    <div class="display-options">
+                        <span class="muted">Display fields:</span>
+                        <label><input type="checkbox" class="meta-toggle" value="created_at" checked /> Created</label>
+                        <label><input type="checkbox" class="meta-toggle" value="last_accessed" checked /> Last accessed</label>
+                        <label><input type="checkbox" class="meta-toggle" value="expires_at" checked /> Expires</label>
+                        <label><input type="checkbox" class="meta-toggle" value="access_count" checked /> Accesses</label>
+                        <label><input type="checkbox" class="meta-toggle" value="inbound_links" checked /> Inbound links</label>
+                        <label><input type="checkbox" class="meta-toggle" value="outbound_links" checked /> Outbound links</label>
+                    </div>
+                </div>
+
+                <div class="add-memory-box">
+                    <label class="muted">Add new memory</label>
+                    <textarea id="add-text" placeholder="Type a new memory..."></textarea>
+                    <div class="add-memory-actions">
+                        <label class="muted">Importance <input id="add-importance" type="range" min="0" max="1" step="0.05" value="0.5" /></label>
+                        <button type="button" id="btn-add-save" class="indicator lime active"><img src="../assets/images/icons/check.png" alt="Save"><span>Save</span></button>
+                        <button type="button" id="btn-add-clear" class="indicator red active"><img src="../assets/images/icons/x.png" alt="Clear"><span>Clear</span></button>
+                    </div>
+                </div>
+
+                <ul class="memory-list" id="memory-list"></ul>
+                <ul class="memory-list" style="margin-top:8px;">
+                    <li id="loading-row" class="hidden"><span class="memory-text">Loading...</span></li>
+                    <li id="empty-row" class="hidden"><span class="memory-text">No memories yet</span></li>
+                    <li id="error-row" class="hidden"><span class="memory-text"></span></li>
+                </ul>
+                <div style="margin-top:8px;">
+                    <button type="button" id="btn-load-more" class="btn hidden">Load More</button>
+                </div>
+            </section>
+
+            <section id="domain-knowledge" class="page-section">
+                <div class="domain-section">
+                    <h3>Project Architecture</h3>
+                    <textarea placeholder="Enter domain knowledge about the project architecture..."></textarea>
+                    <button title="Accept" class="indicator lime active"><img src="../assets/images/icons/check.png"><span>Save</span></button>
+                    <button title="Discard" class="indicator red active"><img src="../assets/images/icons/x.png"><span>Discard</span></button>
+                </div>
+                <div class="domain-section">
+                    <h3>Business Logic</h3>
+                    <textarea placeholder="Enter domain knowledge about business logic and rules..."></textarea>
+                    <button title="Accept" class="indicator lime active"><img src="../assets/images/icons/check.png"><span>Save</span></button>
+                    <button title="Discard" class="indicator red active"><img src="../assets/images/icons/x.png"><span>Discard</span></button>
+                </div>
+                <div class="domain-section">
+                    <h3>Technical Stack</h3>
+                    <textarea placeholder="Enter domain knowledge about the technical stack and dependencies..."></textarea>
+                    <button title="Accept" class="indicator lime active"><img src="../assets/images/icons/check.png"><span>Save</span></button>
+                    <button title="Discard" class="indicator red active"><img src="../assets/images/icons/x.png"><span>Discard</span></button>
+                </div>
+                <div class="domain-section">
+                    <h3>User Preferences</h3>
+                    <textarea placeholder="Enter domain knowledge about user preferences and patterns..."></textarea>
+                    <button title="Accept" class="indicator lime active"><img src="../assets/images/icons/check.png"><span>Save</span></button>
+                    <button title="Discard" class="indicator red active"><img src="../assets/images/icons/x.png"><span>Discard</span></button>
+                </div>
+            </section>
+        </div>
+    </main>
+
+    <!-- Infrastructure Layer -->
+    <script src="../assets/javascript/api-client.js?v=igddHsI"></script>
+
+    <!-- Navigation -->
+    <script src="../assets/javascript/sidebar.js?v=igddHsI"></script>
+
+    <script>
+document.addEventListener('DOMContentLoaded', () => {
+    const DEFAULT_HASH = '#memories';
+
+    const activateTab = (hash) => {
+        const target = document.querySelector(hash);
+        const validHash = target ? hash : DEFAULT_HASH;
+        document.querySelectorAll('.page-tab').forEach(t =>
+            t.classList.toggle('active', t.getAttribute('href') === validHash));
+        document.querySelectorAll('.page-section').forEach(s =>
+            s.classList.toggle('active', '#' + s.id === validHash));
+    };
+
+    document.querySelectorAll('.page-tab').forEach(tab => {
+        tab.addEventListener('click', (e) => {
+            e.preventDefault();
+            const hash = tab.getAttribute('href');
+            history.pushState(null, '', hash);
+            activateTab(hash);
+        });
+    });
+    window.addEventListener('popstate', () => activateTab(window.location.hash || DEFAULT_HASH));
+    activateTab(window.location.hash || DEFAULT_HASH);
+
+    // Back button behavior (history back with fallback)
+    const backBtn = document.getElementById('nav-back');
+    if (backBtn) {
+        backBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            if (window.history.length > 1) {
+                window.history.back();
+            } else {
+                window.location.href = '/';
+            }
+        });
+    }
+
+    // Initialize API client
+    if (!window.miraAPI && window.MiraAPIClient) {
+        window.miraAPI = new window.MiraAPIClient({ baseURL: window.location.origin });
+        window.miraAPI.auth.validateToken().catch(() => {});
+    }
+
+    // State and elements
+    const listEl = document.getElementById('memory-list');
+    const memCountEl = document.getElementById('mem-count');
+    const loadMoreBtn = document.getElementById('btn-load-more');
+    const refreshBtn = document.getElementById('btn-refresh');
+    const bulkDeleteBtn = document.getElementById('btn-bulk-delete');
+    const selectAllCb = document.getElementById('cb-select-all');
+    const searchInput = document.getElementById('search');
+    const loadingRow = document.getElementById('loading-row');
+    const emptyRow = document.getElementById('empty-row');
+    const errorRow = document.getElementById('error-row');
+    const addText = document.getElementById('add-text');
+    const addImportance = document.getElementById('add-importance');
+    const addSaveBtn = document.getElementById('btn-add-save');
+    const addClearBtn = document.getElementById('btn-add-clear');
+    const sortOrderSelect = document.getElementById('sort-order');
+    const minImportanceInput = document.getElementById('filter-min-importance');
+    const minImportanceValue = document.getElementById('filter-min-importance-value');
+    const expirationSelect = document.getElementById('filter-expiration');
+    const linksSelect = document.getElementById('filter-links');
+    const metaToggleInputs = Array.from(document.querySelectorAll('.meta-toggle'));
+
+    let paging = { limit: 50, offset: 0, hasMore: false };
+    let currentSearch = '';
+    let selected = new Set();
+    let loadedItems = [];
+    let visibleItemIds = [];
+    let lastVisibleCount = 0;
+    let lastTotalCount = 0;
+
+    const initialMinImportance = minImportanceInput ? Number(minImportanceInput.value) : 0;
+    let filters = {
+        minImportance: Number.isFinite(initialMinImportance) ? initialMinImportance : 0,
+        expiration: expirationSelect ? expirationSelect.value : 'all',
+        links: linksSelect ? linksSelect.value : 'all'
+    };
+    let sortOrder = sortOrderSelect ? sortOrderSelect.value : 'importance_desc';
+    let activeMetaFields = new Set();
+
+    function initializeActiveMetaFields() {
+        if (metaToggleInputs.length) {
+            activeMetaFields = new Set(metaToggleInputs.filter(cb => cb.checked).map(cb => cb.value));
+        } else {
+            activeMetaFields = new Set(['created_at', 'last_accessed', 'expires_at', 'access_count', 'inbound_links', 'outbound_links']);
+        }
+    }
+
+    initializeActiveMetaFields();
+    if (minImportanceValue) {
+        minImportanceValue.textContent = filters.minImportance.toFixed(2);
+    }
+
+    function setLoading(isLoading) {
+        if (isLoading) {
+            loadingRow.classList.remove('hidden');
+        } else {
+            loadingRow.classList.add('hidden');
+        }
+    }
+
+    function setError(message) {
+        if (!message) {
+            errorRow.classList.add('hidden');
+            errorRow.querySelector('.memory-text').textContent = '';
+        } else {
+            errorRow.classList.remove('hidden');
+            errorRow.querySelector('.memory-text').textContent = message;
+        }
+    }
+
+    function updateCounters(visibleCount, totalCount, hasMore, visibleIds = []) {
+        if (memCountEl) {
+            const visibleLabel = `${visibleCount} item${visibleCount === 1 ? '' : 's'}`;
+            if (totalCount > visibleCount) {
+                memCountEl.textContent = `${visibleLabel} of ${totalCount} loaded`;
+            } else {
+                memCountEl.textContent = visibleLabel;
+            }
+        }
+
+        if (loadMoreBtn) {
+            loadMoreBtn.classList.toggle('hidden', !hasMore);
+        }
+
+        if (bulkDeleteBtn) {
+            bulkDeleteBtn.disabled = selected.size === 0;
+        }
+
+        if (selectAllCb) {
+            if (!visibleIds.length) {
+                selectAllCb.checked = false;
+                selectAllCb.indeterminate = false;
+            } else {
+                let selectedVisibleCount = 0;
+                visibleIds.forEach(id => {
+                    if (selected.has(id)) selectedVisibleCount += 1;
+                });
+                if (selectedVisibleCount === visibleIds.length) {
+                    selectAllCb.checked = true;
+                    selectAllCb.indeterminate = false;
+                } else if (selectedVisibleCount === 0) {
+                    selectAllCb.checked = false;
+                    selectAllCb.indeterminate = false;
+                } else {
+                    selectAllCb.checked = false;
+                    selectAllCb.indeterminate = true;
+                }
+            }
+        }
+    }
+
+    function formatDateTime(value) {
+        if (!value) return null;
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return null;
+        return date.toLocaleString(undefined, {
+            year: 'numeric',
+            month: 'short',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit'
+        });
+    }
+
+    function formatNumber(value) {
+        if (value === null || value === undefined) return null;
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric)) return null;
+        return numeric.toLocaleString();
+    }
+
+    function normalizeMemory(item) {
+        if (!item || typeof item !== 'object') return item;
+        const memory = { ...item };
+        memory.importance_score = Number(memory.importance_score ?? 0);
+        memory.access_count = Number(memory.access_count ?? 0);
+
+        const inboundArray = Array.isArray(memory.inbound_links) ? memory.inbound_links : [];
+        const outboundArray = Array.isArray(memory.outbound_links) ? memory.outbound_links : [];
+        const inboundCount = Array.isArray(memory.inbound_links) ? inboundArray.length : Number(memory.inbound_links ?? memory.inbound_link_count ?? 0);
+        const outboundCount = Array.isArray(memory.outbound_links) ? outboundArray.length : Number(memory.outbound_links ?? memory.outbound_link_count ?? 0);
+
+        memory.inbound_links = inboundArray;
+        memory.outbound_links = outboundArray;
+        memory.inbound_link_count = Number.isFinite(inboundCount) ? inboundCount : 0;
+        memory.outbound_link_count = Number.isFinite(outboundCount) ? outboundCount : 0;
+
+        return memory;
+    }
+
+    const metadataFieldConfig = {
+        created_at: { label: 'Created', getValue: (m) => formatDateTime(m.created_at) },
+        last_accessed: { label: 'Last accessed', getValue: (m) => formatDateTime(m.last_accessed) },
+        expires_at: { label: 'Expires', getValue: (m) => formatDateTime(m.expires_at) },
+        access_count: { label: 'Accesses', getValue: (m) => formatNumber(m.access_count) },
+        inbound_links: { label: 'Inbound links', getValue: (m) => formatNumber(m.inbound_link_count) },
+        outbound_links: { label: 'Outbound links', getValue: (m) => formatNumber(m.outbound_link_count) }
+    };
+    const metadataFieldOrder = ['created_at', 'last_accessed', 'expires_at', 'access_count', 'inbound_links', 'outbound_links'];
+
+    function applyFilters(items) {
+        return items.filter(m => {
+            const importance = Number(m.importance_score ?? 0);
+            if (importance < filters.minImportance) {
+                return false;
+            }
+            if (filters.expiration === 'has' && !m.expires_at) {
+                return false;
+            }
+            if (filters.expiration === 'none' && m.expires_at) {
+                return false;
+            }
+
+            const inboundCount = Number(m.inbound_link_count ?? 0);
+            const outboundCount = Number(m.outbound_link_count ?? 0);
+            const totalLinks = inboundCount + outboundCount;
+            if (filters.links === 'with' && totalLinks === 0) {
+                return false;
+            }
+            if (filters.links === 'without' && totalLinks > 0) {
+                return false;
+            }
+            return true;
+        });
+    }
+
+    function toTimestamp(value) {
+        if (!value) return null;
+        const time = new Date(value).getTime();
+        return Number.isNaN(time) ? null : time;
+    }
+
+    function normalizeForSort(value, direction) {
+        if (value === null || value === undefined || Number.isNaN(value)) {
+            return direction === 'asc' ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY;
+        }
+        return value;
+    }
+
+    function applySort(items) {
+        const sorted = [...items];
+        const direction = sortOrder.endsWith('_asc') ? 'asc' : 'desc';
+        const fieldKey = sortOrder.replace(/_(asc|desc)$/, '');
+
+        sorted.sort((a, b) => {
+            let aValue;
+            let bValue;
+            switch (fieldKey) {
+                case 'importance':
+                    aValue = Number(a.importance_score ?? 0);
+                    bValue = Number(b.importance_score ?? 0);
+                    break;
+                case 'created':
+                    aValue = toTimestamp(a.created_at);
+                    bValue = toTimestamp(b.created_at);
+                    break;
+                case 'last_accessed':
+                    aValue = toTimestamp(a.last_accessed);
+                    bValue = toTimestamp(b.last_accessed);
+                    break;
+                default:
+                    aValue = Number(a.importance_score ?? 0);
+                    bValue = Number(b.importance_score ?? 0);
+                    break;
+            }
+            aValue = normalizeForSort(aValue, direction);
+            bValue = normalizeForSort(bValue, direction);
+            return direction === 'asc' ? aValue - bValue : bValue - aValue;
+        });
+
+        return sorted;
+    }
+
+    function renderList(items) {
+        if (!listEl) return;
+        listEl.innerHTML = '';
+        const frag = document.createDocumentFragment();
+
+        items.forEach(m => {
+            const li = document.createElement('li');
+            li.innerHTML = `
+                <label style="display:flex;align-items:flex-start;gap:10px;flex:1;">
+                    <input type="checkbox" class="mem-select" data-id="${m.id}">
+                    <div class="memory-details">
+                        <span class="memory-text"></span>
+                        <div class="memory-meta hidden"></div>
+                        <div class="memory-links hidden"></div>
+                    </div>
+                </label>
+                <div class="memory-actions">
+                    <span class="muted">imp: ${(m.importance_score ?? 0).toFixed(2)}</span>
+                    <button type="button" title="Delete" class="indicator red active delete-memory" data-id="${m.id}"><img src="../assets/images/icons/x.png" alt="Delete"></button>
+                </div>
+            `;
+
+            const textEl = li.querySelector('.memory-text');
+            if (textEl) {
+                textEl.textContent = m.text || '(empty)';
+            }
+
+            const metaEl = li.querySelector('.memory-meta');
+            if (metaEl) {
+                metaEl.innerHTML = '';
+                const metaEntries = [];
+                metadataFieldOrder.forEach(fieldKey => {
+                    if (!activeMetaFields.has(fieldKey)) return;
+                    const config = metadataFieldConfig[fieldKey];
+                    if (!config) return;
+                    const value = config.getValue(m);
+                    if (value === null || value === undefined || value === '') return;
+                    metaEntries.push({ label: config.label, value });
+                });
+
+                if (metaEntries.length === 0) {
+                    metaEl.remove();
+                } else {
+                    metaEl.classList.remove('hidden');
+                    metaEntries.forEach(({ label, value }) => {
+                        const itemEl = document.createElement('span');
+                        itemEl.className = 'memory-meta-item';
+
+                        const labelEl = document.createElement('span');
+                        labelEl.className = 'memory-meta-label';
+                        labelEl.textContent = `${label}:`;
+
+                        const valueEl = document.createElement('span');
+                        valueEl.textContent = value;
+
+                        itemEl.appendChild(labelEl);
+                        itemEl.appendChild(valueEl);
+                        metaEl.appendChild(itemEl);
+                    });
+                }
+            }
+
+            const linksContainer = li.querySelector('.memory-links');
+            if (linksContainer) {
+                linksContainer.innerHTML = '';
+                const linkGroups = [];
+
+                const inboundLinks = Array.isArray(m.inbound_links) ? m.inbound_links : [];
+                const outboundLinks = Array.isArray(m.outbound_links) ? m.outbound_links : [];
+
+                const formatLinkItem = (link) => {
+                    if (!link || typeof link !== 'object') return null;
+                    const uuid = link.uuid || link.id || link.target_id;
+                    const type = link.type || link.link_type || 'link';
+                    if (!uuid) return null;
+                    return { uuid, type };
+                };
+
+                if (inboundLinks.length) {
+                    const items = inboundLinks.map(formatLinkItem).filter(Boolean);
+                    if (items.length) {
+                        linkGroups.push({ label: 'Inbound', items });
+                    }
+                }
+
+                if (outboundLinks.length) {
+                    const items = outboundLinks.map(formatLinkItem).filter(Boolean);
+                    if (items.length) {
+                        linkGroups.push({ label: 'Outbound', items });
+                    }
+                }
+
+                if (linkGroups.length) {
+                    linksContainer.classList.remove('hidden');
+                    linkGroups.forEach(group => {
+                        const groupEl = document.createElement('div');
+                        groupEl.className = 'memory-links-group';
+
+                        const labelEl = document.createElement('span');
+                        labelEl.className = 'memory-links-label';
+                        labelEl.textContent = `${group.label} (${group.items.length})`;
+                        groupEl.appendChild(labelEl);
+
+                        const listElLinks = document.createElement('ul');
+                        listElLinks.className = 'memory-links-list';
+                        group.items.forEach(({ uuid, type }) => {
+                            const itemEl = document.createElement('li');
+                            itemEl.innerHTML = `<code>${uuid}</code> <span class="muted">(${type})</span>`;
+                            listElLinks.appendChild(itemEl);
+                        });
+                        groupEl.appendChild(listElLinks);
+
+                        linksContainer.appendChild(groupEl);
+                    });
+                } else {
+                    linksContainer.remove();
+                }
+            }
+
+            const checkbox = li.querySelector('.mem-select');
+            if (checkbox) {
+                const id = checkbox.getAttribute('data-id');
+                if (id) {
+                    checkbox.checked = selected.has(id);
+                }
+            }
+
+            frag.appendChild(li);
+        });
+
+        listEl.appendChild(frag);
+    }
+
+    function renderView() {
+        const filtered = applyFilters(loadedItems);
+        const sorted = applySort(filtered);
+        visibleItemIds = sorted
+            .map(item => item.id)
+            .filter(id => typeof id === 'string' && id.length > 0);
+        lastVisibleCount = sorted.length;
+        lastTotalCount = loadedItems.length;
+
+        renderList(sorted);
+
+        if (emptyRow) {
+            if (loadedItems.length === 0) {
+                emptyRow.classList.remove('hidden');
+                const textEl = emptyRow.querySelector('.memory-text');
+                if (textEl) textEl.textContent = 'No memories yet';
+            } else if (sorted.length === 0) {
+                emptyRow.classList.remove('hidden');
+                const textEl = emptyRow.querySelector('.memory-text');
+                if (textEl) textEl.textContent = 'No memories match current filters';
+            } else {
+                emptyRow.classList.add('hidden');
+            }
+        }
+
+        updateCounters(lastVisibleCount, lastTotalCount, paging.hasMore, visibleItemIds);
+    }
+
+    function refreshSelectionUI() {
+        updateCounters(lastVisibleCount, lastTotalCount, paging.hasMore, visibleItemIds);
+    }
+
+    async function fetchMemories({ append = false } = {}) {
+        if (!window.miraAPI || !listEl) return;
+        setError('');
+        setLoading(true);
+        try {
+            const params = { limit: paging.limit, offset: append ? paging.offset : 0 };
+            if (currentSearch) params.search = currentSearch;
+            const data = await window.miraAPI.data.getData('memories', params);
+            if (data && data.success === false) {
+                const msg = (data.error && (data.error.message || data.error.code)) || 'Failed to load memories';
+                setError(msg);
+                selected.clear();
+                loadedItems = [];
+                paging.hasMore = false;
+                paging.offset = 0;
+                renderView();
+                return;
+            }
+
+            const items = (data.memories || []).map(normalizeMemory);
+            if (!append) {
+                selected.clear();
+                loadedItems = items;
+            } else {
+                const existingIds = new Set(loadedItems.map(item => item.id));
+                items.forEach(item => {
+                    if (item && item.id && !existingIds.has(item.id)) {
+                        loadedItems.push(item);
+                        existingIds.add(item.id);
+                    }
+                });
+            }
+
+            paging.hasMore = !!(data.meta && data.meta.has_more);
+            paging.offset = data.meta && data.meta.next_offset ? data.meta.next_offset : 0;
+
+            renderView();
+        } catch (e) {
+            console.error('Failed to load memories:', e);
+            setError('Failed to load memories');
+        } finally {
+            setLoading(false);
+        }
+    }
+
+    // Events: delegated actions
+    document.getElementById('memories').addEventListener('click', async (e) => {
+        const delBtn = e.target.closest('.delete-memory');
+        if (delBtn) {
+            e.preventDefault();
+            const id = delBtn.getAttribute('data-id');
+            if (!id) return;
+            if (!confirm('Delete this memory?')) return;
+            try {
+                await window.miraAPI.actions.executeAction('memory', 'delete', { id });
+                await fetchMemories({ append: false });
+            } catch (err) {
+                console.error('Delete failed:', err);
+                alert('Failed to delete memory');
+            }
+            return;
+        }
+
+        const cb = e.target.closest('.mem-select');
+        if (cb) {
+            const id = cb.getAttribute('data-id');
+            if (!id) return;
+            if (cb.checked) {
+                selected.add(id);
+            } else {
+                selected.delete(id);
+            }
+            refreshSelectionUI();
+        }
+    });
+
+    // Bulk select
+    selectAllCb.addEventListener('change', () => {
+        const cbs = listEl.querySelectorAll('.mem-select');
+        selected.clear();
+        cbs.forEach(cb => {
+            const id = cb.getAttribute('data-id');
+            if (!id) return;
+            cb.checked = selectAllCb.checked;
+            if (cb.checked) selected.add(id);
+        });
+        refreshSelectionUI();
+    });
+
+    // Bulk delete
+    bulkDeleteBtn.addEventListener('click', async () => {
+        if (selected.size === 0) return;
+        if (!confirm(`Delete ${selected.size} selected memor${selected.size === 1 ? 'y' : 'ies'}?`)) return;
+        try {
+            await window.miraAPI.actions.executeAction('memory', 'bulk_delete', { ids: Array.from(selected) });
+            await fetchMemories({ append: false });
+        } catch (e) {
+            console.error('Bulk delete failed:', e);
+            alert('Failed to delete selected');
+        }
+    });
+
+    // Load more
+    loadMoreBtn.addEventListener('click', () => {
+        if (!paging.hasMore) return;
+        fetchMemories({ append: true });
+    });
+
+    // Refresh
+    refreshBtn.addEventListener('click', () => {
+        paging.offset = 0;
+        paging.hasMore = false;
+        selected.clear();
+        refreshSelectionUI();
+        fetchMemories({ append: false });
+    });
+
+    // Search (debounced)
+    let searchTimer = null;
+    searchInput.addEventListener('input', () => {
+        const val = (searchInput.value || '').trim();
+        currentSearch = val;
+        if (searchTimer) clearTimeout(searchTimer);
+        searchTimer = setTimeout(() => {
+            paging.offset = 0; paging.hasMore = false;
+            fetchMemories({ append: false });
+        }, 300);
+    });
+
+    if (sortOrderSelect) {
+        sortOrderSelect.addEventListener('change', () => {
+            sortOrder = sortOrderSelect.value;
+            renderView();
+        });
+    }
+
+    if (minImportanceInput) {
+        const updateMinImportance = () => {
+            const value = Number(minImportanceInput.value);
+            filters.minImportance = Number.isFinite(value) ? value : 0;
+            if (minImportanceValue) {
+                minImportanceValue.textContent = filters.minImportance.toFixed(2);
+            }
+            renderView();
+        };
+        minImportanceInput.addEventListener('input', updateMinImportance);
+        minImportanceInput.addEventListener('change', updateMinImportance);
+    }
+
+    if (expirationSelect) {
+        expirationSelect.addEventListener('change', () => {
+            filters.expiration = expirationSelect.value;
+            renderView();
+        });
+    }
+
+    if (linksSelect) {
+        linksSelect.addEventListener('change', () => {
+            filters.links = linksSelect.value;
+            renderView();
+        });
+    }
+
+    metaToggleInputs.forEach(cb => {
+        cb.addEventListener('change', () => {
+            if (cb.checked) {
+                activeMetaFields.add(cb.value);
+            } else {
+                activeMetaFields.delete(cb.value);
+            }
+            renderView();
+        });
+    });
+
+    // Add new memory
+    addSaveBtn.addEventListener('click', async () => {
+        const content = (addText.value || '').trim();
+        const importance = Number(addImportance.value || 0.5);
+        if (!content) return;
+        try {
+            await window.miraAPI.actions.executeAction('memory', 'create', { content, importance });
+            addText.value = '';
+            await fetchMemories({ append: false });
+        } catch (e) {
+            console.error('Create failed:', e);
+            alert('Failed to create memory');
+        }
+    });
+    addClearBtn.addEventListener('click', () => { addText.value = ''; });
+
+    // Save/Discard for domain knowledge sections
+    document.querySelectorAll('.domain-section').forEach((section) => {
+        const textarea = section.querySelector('textarea');
+        const saveBtn = section.querySelector('button.indicator.lime');
+        const discardBtn = section.querySelector('button.indicator.red');
+        if (saveBtn && textarea) {
+            saveBtn.addEventListener('click', async () => {
+                const content = (textarea.value || '').trim();
+                if (!content) return;
+                try {
+                    await window.miraAPI.actions.executeAction('memory', 'create', { content, importance: 0.7 });
+                    textarea.value = '';
+                    await fetchMemories({ append: false });
+                } catch (e) {
+                    console.error('Save failed:', e);
+                    alert('Failed to save');
+                }
+            });
+        }
+        if (discardBtn && textarea) {
+            discardBtn.addEventListener('click', () => {
+                textarea.value = '';
+            });
+        }
+    });
+
+    // Initial load
+    fetchMemories({ append: false });
+});
+    </script>
+</body>
+</html>

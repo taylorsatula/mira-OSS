@@ -1,0 +1,782 @@
+/* 
+   ================================================
+   NEON CYBERPUNK STYLESHEET
+   ================================================
+   A traditional CSS file for semantic HTML elements
+   No framework classes - just real CSS for real HTML
+   Version: 1.0
+   Author: Prompt Results HSV - Taylor
+*/
+
+/* ================================================
+   CSS VARIABLES
+   ================================================ */
+:root {
+    /* Core Colors */
+    --bg: #000;
+    --surface: #000000;
+    --text: #faf6ee;
+    --text-dim: rgba(250, 246, 238, 0.4);
+    --text-bright: rgba(250, 246, 238, 0.8);
+    --text-muted: rgba(250, 246, 238, 0.4);
+    
+    /* Neon Colors */
+    --lime: #0f0;
+    --cyan: #0ff;
+    --magenta: #f0f;
+    --yellow: #ff0;
+    --red: #f00;
+    --deepskyblue: #00bfff;
+    
+    /* Glow Colors */
+    --lime-glow: rgba(0, 255, 0, 0.5);
+    --cyan-glow: rgba(0, 255, 255, 0.5);
+    --magenta-glow: rgba(255, 0, 255, 0.5);
+    --yellow-glow: rgba(255, 255, 0, 0.3);
+    --red-glow: rgba(255, 0, 0, 0.5);
+    --blue-glow: rgba(0, 191, 255, 0.3);
+    
+    /* Borders */
+    --border: rgba(255, 255, 255, 0.1);
+    --border-hover: rgba(255, 255, 255, 0.2);
+    --border-active: rgba(255, 255, 255, 0.4);
+}
+
+/* ================================================
+   RESET & BASE
+   ================================================ */
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+html {
+    font-size: 16px;
+}
+
+body {
+    background-color: var(--bg);
+    color: var(--text);
+    font-family: 'Avenir Next', 'Segoe UI', 'Helvetica', 'Arial', sans-serif;
+    font-weight: 100;
+    line-height: 1.6;
+    width: 100%;
+    height: 100%;
+    overflow-x: hidden;
+}
+
+/* ================================================
+   TYPOGRAPHY
+   ================================================ */
+h1 {
+    color: var(--cyan);
+    font-size: 2.5rem;
+    font-weight: 300;
+    margin-bottom: 0.5rem;
+    text-shadow: 0 0 20px var(--cyan-glow);
+}
+
+h2 {
+    color: var(--lime);
+    font-size: 1.8rem;
+    font-weight: 300;
+    margin: 2rem 0 1rem;
+    text-shadow: 0 0 15px var(--lime-glow);
+}
+
+h3 {
+    color: var(--yellow);
+    font-size: 1.3rem;
+    font-weight: 300;
+    margin: 1.5rem 0 0.75rem;
+    text-shadow: 0 0 10px var(--yellow-glow);
+}
+
+h4 {
+    color: var(--text);
+    font-size: 1.1rem;
+    font-weight: 400;
+    margin: 1rem 0 0.5rem;
+}
+
+p {
+    margin: 0.8rem 0;
+    line-height: 1.6;
+    transition: all 0.3s ease;
+}
+
+p:hover {
+    text-shadow: 0 0 5px rgba(250, 246, 238, 0.2);
+}
+
+strong {
+    color: var(--text-bright);
+    font-weight: 600;
+}
+
+em {
+    color: var(--text-bright);
+    font-style: italic;
+}
+
+/* ================================================
+   LINKS
+   ================================================ */
+a {
+    color: var(--cyan);
+    text-decoration: none;
+    border-bottom: 1px dotted var(--cyan);
+    transition: all 0.2s ease;
+}
+
+a:hover {
+    color: var(--yellow);
+    border-bottom-color: var(--yellow);
+    text-shadow: 0 0 10px var(--yellow-glow);
+}
+
+a:active {
+    color: var(--lime);
+}
+
+/* ================================================
+   LISTS
+   ================================================ */
+ul, ol {
+    padding-left: 2rem;
+    margin: 1rem 0;
+}
+
+li {
+    margin: 0.5rem 0;
+    line-height: 1.6;
+}
+
+li::marker {
+    color: var(--cyan);
+}
+
+/* ================================================
+   NAVIGATION
+   ================================================ */
+nav {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1.5rem;
+    background: rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--border);
+}
+
+nav button {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    border: 1px solid var(--magenta);
+    border-radius: 6px;
+    background-color: var(--surface);
+    padding: 10px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    filter: drop-shadow(0 0 15px var(--magenta-glow));
+}
+
+nav button:hover {
+    border-color: var(--deepskyblue);
+    filter: drop-shadow(0 0 15px var(--blue-glow));
+    transform: translateY(-1px);
+}
+
+nav button img {
+    width: 20px;
+    height: 20px;
+    filter: invert(1);
+}
+
+/* ================================================
+   SECTIONS & CONTAINERS
+   ================================================ */
+section {
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 2rem;
+    margin-bottom: 1.5rem;
+    backdrop-filter: blur(5px);
+    transition: all 0.3s ease;
+}
+
+section:hover {
+    border-color: var(--border-hover);
+    box-shadow: 0 0 20px rgba(255, 255, 255, 0.05);
+}
+
+article {
+    margin: 1.5rem 0;
+    padding-left: 1.5rem;
+    border-left: 2px solid var(--deepskyblue);
+    filter: drop-shadow(0 0 10px var(--blue-glow));
+}
+
+header {
+    background: rgba(0, 0, 0, 0.5);
+    border: 1px solid var(--magenta);
+    border-radius: 12px;
+    padding: 2rem;
+    margin-bottom: 2rem;
+    backdrop-filter: blur(10px);
+    filter: drop-shadow(0 0 30px var(--magenta-glow));
+}
+
+footer {
+    text-align: center;
+    margin-top: 3rem;
+    padding: 2rem;
+    color: var(--text-dim);
+    border-top: 1px solid var(--border);
+}
+
+/* ================================================
+   FORMS
+   ================================================ */
+form {
+    display: flex;
+    position: relative;
+    align-items: flex-end;
+    width: 100%;
+    border: 1px solid var(--magenta);
+    border-radius: 12px;
+    background: rgba(0, 0, 0, 0.1);
+    overflow: hidden;
+    filter: drop-shadow(0 0 30px rgba(255, 0, 255, 0.3));
+    transition: all 0.3s ease;
+}
+
+form:hover,
+form:focus-within {
+    filter: drop-shadow(0 0 30px rgba(0, 255, 255, 0.3));
+    border-color: var(--deepskyblue);
+}
+
+fieldset {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.5rem;
+    margin: 1rem 0;
+    backdrop-filter: blur(5px);
+}
+
+legend {
+    color: var(--cyan);
+    padding: 0 1rem;
+    font-weight: 400;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    font-size: 0.9rem;
+}
+
+label {
+    display: block;
+    margin-bottom: 0.5rem;
+    color: var(--text-bright);
+    font-weight: 400;
+    text-transform: uppercase;
+    font-size: 0.9rem;
+    letter-spacing: 1px;
+}
+
+/* ================================================
+   INPUTS & TEXTAREAS
+   ================================================ */
+input[type="text"],
+input[type="email"],
+input[type="password"],
+input[type="number"],
+input[type="tel"],
+input[type="url"],
+input[type="search"],
+textarea {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem;
+    color: var(--text);
+    font-family: inherit;
+    font-size: inherit;
+    width: 100%;
+    transition: all 0.3s ease;
+}
+
+input:focus,
+textarea:focus {
+    outline: none;
+    border-color: var(--lime);
+    background: rgba(0, 255, 0, 0.05);
+    box-shadow: 0 0 20px var(--lime-glow);
+}
+
+input::placeholder,
+textarea::placeholder {
+    color: var(--text-dim);
+}
+
+/* Special textarea styling */
+textarea {
+    resize: vertical;
+    min-height: 3.5rem;
+    font-family: 'IBM Plex Mono', 'Courier New', monospace;
+    line-height: 1.4;
+}
+
+/* Inline inputs */
+input[type="text"][style*="inline"] {
+    background: transparent;
+    border: none;
+    border-bottom: 1px dashed var(--text-dim);
+    border-radius: 0;
+    padding: 0.25rem;
+    width: auto;
+    display: inline-block;
+}
+
+input[type="text"][style*="inline"]:focus {
+    border-bottom-color: var(--cyan);
+    color: var(--cyan);
+    text-shadow: 0 0 10px var(--cyan-glow);
+    background: transparent;
+    box-shadow: none;
+}
+
+/* ================================================
+   SELECT & OPTIONS
+   ================================================ */
+select {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem;
+    color: var(--text);
+    font-family: inherit;
+    font-size: inherit;
+    width: 100%;
+    cursor: pointer;
+    transition: all 0.3s ease;
+}
+
+select:focus {
+    outline: none;
+    border-color: var(--cyan);
+    box-shadow: 0 0 20px var(--cyan-glow);
+}
+
+option {
+    background: var(--bg);
+    color: var(--text);
+}
+
+/* ================================================
+   BUTTONS
+   ================================================ */
+button {
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--lime);
+    border: 1px solid var(--lime);
+    border-radius: 6px;
+    padding: 0.6rem 1.5rem;
+    margin: 0.5rem 0.25rem;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 0.9rem;
+    font-weight: 400;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    transition: all 0.2s ease;
+    filter: drop-shadow(0 0 10px var(--lime-glow));
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+}
+
+button:hover {
+    background: var(--lime);
+    color: var(--bg);
+    box-shadow: 0 0 20px var(--lime-glow);
+    transform: translateY(-1px);
+}
+
+button:active {
+    transform: translateY(0);
+}
+
+/* Button variants based on classes or data attributes */
+button.primary,
+button[type="submit"] {
+    background: var(--lime);
+    color: var(--bg);
+}
+
+button.primary:hover,
+button[type="submit"]:hover {
+    box-shadow: 0 0 30px var(--lime-glow);
+    transform: translateY(-2px);
+}
+
+button.secondary {
+    color: var(--cyan);
+    border-color: var(--cyan);
+    filter: drop-shadow(0 0 10px var(--cyan-glow));
+}
+
+button.secondary:hover {
+    background: var(--cyan);
+    color: var(--bg);
+}
+
+button.danger,
+button.remove {
+    color: var(--red);
+    border-color: var(--red);
+    filter: drop-shadow(0 0 10px var(--red-glow));
+}
+
+button.danger:hover,
+button.remove:hover {
+    background: var(--red);
+    color: var(--bg);
+}
+
+/* Small buttons */
+button.small,
+button[aria-label*="Close"] {
+    padding: 0.4rem 0.8rem;
+    font-size: 0.8rem;
+}
+
+/* Icon buttons */
+button[class*="icon"] {
+    padding: 0.6rem;
+    min-width: 40px;
+}
+
+button img {
+    width: 20px;
+    height: 20px;
+}
+
+/* Disabled state */
+button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    filter: none;
+}
+
+button:disabled:hover {
+    background: rgba(255, 255, 255, 0.1);
+    transform: none;
+}
+
+/* ================================================
+   TABLES
+   ================================================ */
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1.5rem 0;
+    overflow: hidden;
+    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.3);
+}
+
+thead {
+    background: rgba(255, 255, 255, 0.05);
+}
+
+th {
+    color: var(--cyan);
+    font-weight: 400;
+    text-transform: uppercase;
+    font-size: 0.9rem;
+    letter-spacing: 1px;
+    padding: 0.75rem;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+}
+
+td {
+    padding: 0.75rem;
+    border-bottom: 1px solid var(--border);
+}
+
+tr {
+    transition: background 0.2s ease;
+}
+
+tbody tr:hover {
+    background: rgba(255, 255, 255, 0.02);
+}
+
+tbody tr:last-child td {
+    border-bottom: none;
+}
+
+/* ================================================
+   CODE BLOCKS
+   ================================================ */
+code {
+    color: var(--yellow);
+    background: rgba(255, 255, 0, 0.1);
+    padding: 0.2rem 0.4rem;
+    border-radius: 4px;
+    font-family: 'IBM Plex Mono', 'Courier New', monospace;
+    font-size: 0.9em;
+}
+
+pre {
+    background: rgba(0, 0, 0, 0.5);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem;
+    margin: 0.75rem 0;
+    overflow-x: auto;
+    font-family: 'IBM Plex Mono', 'Courier New', monospace;
+    line-height: 1.4;
+    transition: all 0.3s ease;
+}
+
+pre:hover {
+    border-color: var(--cyan);
+    box-shadow: 0 0 20px var(--cyan-glow);
+}
+
+pre code {
+    background: none;
+    padding: 0;
+    color: var(--text);
+}
+
+/* ================================================
+   BLOCKQUOTES
+   ================================================ */
+blockquote {
+    margin: 1rem 0;
+    padding: 1rem;
+    border-left: 3px solid var(--cyan);
+    background: rgba(255, 255, 255, 0.02);
+    font-style: italic;
+    color: var(--text-bright);
+    filter: drop-shadow(0 0 10px var(--cyan-glow));
+}
+
+blockquote cite {
+    display: block;
+    margin-top: 0.5rem;
+    font-size: 0.9rem;
+    color: var(--text-dim);
+    font-style: normal;
+}
+
+/* ================================================
+   HORIZONTAL RULES
+   ================================================ */
+hr {
+    margin: 2rem 0;
+    border: none;
+    border-top: 1px solid var(--border);
+    opacity: 0.5;
+    transition: all 0.3s ease;
+}
+
+hr:hover {
+    opacity: 1;
+    box-shadow: 0 0 10px rgba(255, 255, 255, 0.1);
+}
+
+/* ================================================
+   IMAGES & MEDIA
+   ================================================ */
+img {
+    max-width: 100%;
+    height: auto;
+    border-radius: 8px;
+    transition: all 0.3s ease;
+}
+
+img:hover {
+    transform: scale(1.02);
+    box-shadow: 0 0 20px rgba(255, 255, 255, 0.1);
+}
+
+figure {
+    margin: 1.5rem 0;
+    text-align: center;
+}
+
+figcaption {
+    margin-top: 0.5rem;
+    font-size: 0.9rem;
+    color: var(--text-dim);
+    font-style: italic;
+}
+
+/* ================================================
+   DIALOGS & POPOVERS
+   ================================================ */
+dialog,
+.popover {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.5rem;
+    color: var(--text);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    backdrop-filter: blur(10px);
+}
+
+dialog::backdrop {
+    background: rgba(0, 0, 0, 0.8);
+}
+
+/* ================================================
+   UTILITY CLASSES (kept minimal)
+   ================================================ */
+.hidden {
+    display: none !important;
+}
+
+.active {
+    opacity: 1 !important;
+}
+
+/* Indicator states */
+.indicator {
+    opacity: 0.3;
+    transition: all 0.3s ease;
+}
+
+.indicator.active {
+    opacity: 1;
+}
+
+/* Color-specific glow effects */
+.lime {
+    filter: drop-shadow(0 0 30px var(--lime-glow));
+}
+
+.cyan {
+    filter: drop-shadow(0 0 30px var(--cyan-glow));
+}
+
+.magenta {
+    filter: drop-shadow(0 0 30px var(--magenta-glow));
+}
+
+.yellow {
+    filter: drop-shadow(0 0 30px var(--yellow-glow));
+}
+
+.red {
+    filter: drop-shadow(0 0 30px var(--red-glow));
+}
+
+/* ================================================
+   ANIMATIONS
+   ================================================ */
+@keyframes pulse-glow {
+    0%, 100% { 
+        opacity: 1;
+        filter: drop-shadow(0 0 20px currentColor);
+    }
+    50% { 
+        opacity: 0.7;
+        filter: drop-shadow(0 0 30px currentColor);
+    }
+}
+
+@keyframes flicker {
+    0%, 100% { opacity: 1; }
+    10% { opacity: 0.8; }
+    20% { opacity: 1; }
+    30% { opacity: 0.9; }
+    40% { opacity: 1; }
+    50% { opacity: 0.7; }
+    60% { opacity: 1; }
+    70% { opacity: 0.85; }
+    80% { opacity: 1; }
+    90% { opacity: 0.95; }
+}
+
+/* Apply animations to specific elements */
+.thinking,
+[data-indicator*="thinking"] {
+    animation: pulse-glow 2s infinite;
+}
+
+.loading {
+    animation: flicker 3s infinite;
+}
+
+/* ================================================
+   RESPONSIVE
+   ================================================ */
+@media (max-width: 768px) {
+    body {
+        font-size: 14px;
+    }
+    
+    h1 { font-size: 2rem; }
+    h2 { font-size: 1.5rem; }
+    h3 { font-size: 1.2rem; }
+    
+    section {
+        padding: 1.5rem;
+        margin-bottom: 1rem;
+    }
+    
+    nav {
+        padding: 1rem;
+    }
+    
+    button {
+        padding: 0.5rem 1rem;
+        font-size: 0.8rem;
+    }
+}
+
+/* ================================================
+   PRINT STYLES
+   ================================================ */
+@media print {
+    body {
+        background: white;
+        color: black;
+    }
+    
+    * {
+        box-shadow: none !important;
+        filter: none !important;
+        text-shadow: none !important;
+    }
+    
+    nav, 
+    button,
+    .indicator {
+        display: none !important;
+    }
+    
+    a {
+        color: black;
+        text-decoration: underline;
+    }
+    
+    pre,
+    code,
+    blockquote {
+        background: #f5f5f5;
+        border: 1px solid #ddd;
+        color: black;
+    }
+}

@@ -1,0 +1,1321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>MIRA Domain Docs</title>
+    <script>
+    /* Theme bootstrap: resolve Appearance preference before paint to avoid FOUC.
+       theme.js (loaded below) takes over for matchMedia subscription + setter. */
+    (function(){try{var m=localStorage.getItem('mira-theme');var t=(m==='light'||m==='dark')?m:(window.matchMedia&&window.matchMedia('(prefers-color-scheme: light)').matches?'light':'dark');document.documentElement.setAttribute('data-theme',t);}catch(e){}})();
+    </script>
+    <script src="../assets/javascript/theme.js?v=20260524-2"></script>
+    <link rel="stylesheet" href="../assets/style.css?v=20260524-theme2" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content">
+    <link rel="apple-touch-icon" href="../chat/apple-touch-icon.png">
+    <meta name="apple-mobile-web-app-title" content="MIRA">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="theme-color" content="#000000">
+    <link rel="manifest" href="../manifest.json">
+
+    <link rel="preload" href="/assets/fonts/IBM_Plex_Mono.woff2" as="font" type="font/woff2" crossorigin>
+    <link rel="preload" href="/assets/fonts/Roboto.woff2"       as="font" type="font/woff2" crossorigin>
+    <link rel="preload" href="/assets/fonts/Noto_Emoji.woff2"   as="font" type="font/woff2" crossorigin>
+    <link rel="preload" href="/assets/fonts/Minni.woff2"        as="font" type="font/woff2" crossorigin>
+</head>
+<body>
+<div id="loading-screen">
+    <div class="ascii-container" id="ascii-container"></div>
+</div>
+<a href="#main-content" class="skip-nav">Skip to content</a>
+<button id="sidebar-toggle" aria-label="Open navigation" aria-expanded="false" aria-controls="app-sidebar"><img src="../assets/images/icons/menubar_chevron.png" alt="" class="sidebar-chevron-icon"></button>
+<div id="sidebar-backdrop" aria-hidden="true"></div>
+<nav id="app-sidebar" aria-label="Main navigation">
+    <div class="sidebar-header">
+        <div class="sidebar-brand"><img src="../assets/images/logo.png" alt="MIRA"></div>
+        <button id="sidebar-collapse-toggle" aria-label="Collapse sidebar">
+            <img src="../assets/images/icons/menubar_chevron.png" alt="" class="sidebar-chevron-icon">
+        </button>
+    </div>
+    <ul class="sidebar-nav" role="list">
+        <li><a href="/chat" class="sidebar-nav-item">
+            <img src="../assets/images/icons/chat.png?v=igddHsI" alt="">
+            <span class="nav-label">Chat</span>
+        </a></li>
+        <li><a href="/domaindocs" class="sidebar-nav-item active" aria-current="page">
+            <img src="../assets/images/icons/book.png?v=igddHsI" alt="">
+            <span class="nav-label">Docs</span>
+        </a></li>
+        <li><a href="/memories" class="sidebar-nav-item">
+            <img src="../assets/images/icons/memory.png?v=igddHsI" alt="">
+            <span class="nav-label">Memories</span>
+        </a></li>
+        <li><a href="/settings" class="sidebar-nav-item">
+            <img src="../assets/images/icons/settings.png?v=igddHsI" alt="">
+            <span class="nav-label">Settings</span>
+        </a></li>
+    </ul>
+    <div class="sidebar-divider" role="separator"></div>
+    <div class="sidebar-actions">
+        <button class="sidebar-action-pill magenta" id="sidebar-history-btn">Show Chat History</button>
+        <button class="sidebar-action-pill lime" id="sidebar-pause-btn" style="display: none">
+            <span id="sidebar-pause-label">Pause</span>
+        </button>
+        <button class="sidebar-action-pill red" id="sidebar-collapse-btn">Wrap Up</button>
+    </div>
+</nav>
+<button id="sidebar-expand-toggle" aria-label="Expand sidebar">
+    <img src="../assets/images/icons/menubar_chevron.png" alt="" class="sidebar-chevron-icon">
+</button>
+
+<main id="main-content" class="page-main" tabindex="-1">
+    <header class="page-header">
+        <h1 class="page-title">Domain Docs</h1>
+        <div class="page-header-actions">
+            <select id="domain-selector" onchange="handleSelectDomain(this.value)" disabled>
+                <option value="">Loading...</option>
+            </select>
+            <button class="btn btn-ghost" id="create-domain-btn" onclick="handleCreateDomain()" title="Create new domain">+ New</button>
+            <button class="btn btn-ghost btn-sm" id="archive-toggle-btn" onclick="handleToggleArchived()" title="View archived domains">Archived</button>
+            <span class="page-status-indicator">
+                <span class="status-dot" id="live-dot"></span>
+                <span id="poll-status">Live</span>
+            </span>
+        </div>
+    </header>
+
+    <div class="page-content">
+        <div class="empty-state" id="empty-state">
+            <h2>Select a Domain</h2>
+            <p>Choose a domain from the dropdown above to start collaborating</p>
+        </div>
+
+        <div id="domain-view" style="display: none;">
+            <header class="page-subheader">
+                <div class="page-subheader-left">
+                    <h2 id="domain-title">domain_label</h2>
+                    <div class="domain-status">
+                        <span class="badge" id="domain-status-badge">Enabled</span>
+                    </div>
+                </div>
+                <div class="page-subheader-actions">
+                    <button class="btn btn-ghost" id="toggle-enable-btn" onclick="companion.toggleDomainEnabled()">Disable</button>
+                    <button class="btn btn-ghost" id="reorganize-btn" onclick="companion.toggleReorganizeMode()">Reorganize</button>
+                    <button class="btn btn-ghost" onclick="companion.expandAll()">Expand All</button>
+                    <button class="btn btn-ghost" onclick="companion.collapseAll()">Collapse All</button>
+                    <button class="btn btn-primary" onclick="companion.showCreateSectionModal()">+ Section</button>
+                    <button class="btn btn-ghost" id="archive-btn" onclick="companion.archiveDomain()" title="Archive domain">Archive</button>
+                    <button class="btn btn-danger" onclick="companion.showDeleteDomainModal()" title="Delete domain">Delete</button>
+                </div>
+            </header>
+
+            <div class="sections-container" id="sections-container">
+                <!-- Sections rendered here -->
+            </div>
+
+            <div class="add-section-footer" onclick="companion.showCreateSectionModal()">
+                + Add Section
+            </div>
+        </div>
+    </div>
+</main>
+
+<div id="save-status" class="save-status"></div>
+
+<!-- Create Section Modal -->
+<div class="modal-overlay" id="create-section-modal" style="display: none;" role="dialog" aria-labelledby="create-section-title">
+    <div class="modal-dialog modal-dialog--form modal-dialog--sm">
+        <div class="modal-header">
+            <h2 id="create-section-title">Create Section</h2>
+            <button class="modal-close" onclick="companion.hideModal('create-section-modal')" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body">
+            <p>Add a new section to this domain.</p>
+            <input type="text" id="new-section-name" placeholder="Section name" style="width: 100%; margin-bottom: 12px;">
+            <select id="new-section-parent" style="width: 100%;">
+                <option value="">Top-level section</option>
+            </select>
+        </div>
+        <div class="modal-actions">
+            <button class="btn btn-ghost" onclick="companion.hideModal('create-section-modal')">Cancel</button>
+            <button class="btn btn-primary" onclick="companion.createSection()">Create</button>
+        </div>
+    </div>
+</div>
+
+<!-- Delete Section Modal -->
+<div class="modal-overlay" id="delete-modal" style="display: none;" role="dialog" aria-labelledby="delete-section-title">
+    <div class="modal-dialog modal-dialog--form modal-dialog--sm">
+        <div class="modal-header">
+            <h2 id="delete-section-title">Delete Section</h2>
+            <button class="modal-close" onclick="companion.hideModal('delete-modal')" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body">
+            <p id="delete-modal-message">Are you sure you want to delete this section?</p>
+        </div>
+        <div class="modal-actions">
+            <button class="btn btn-ghost" onclick="companion.hideModal('delete-modal')">Cancel</button>
+            <button class="btn btn-danger" onclick="companion.confirmDelete()">Delete</button>
+        </div>
+    </div>
+</div>
+
+<!-- Conflict Modal -->
+<div class="modal-overlay" id="conflict-modal" style="display: none;" role="dialog" aria-labelledby="conflict-title">
+    <div class="modal-dialog modal-dialog--form modal-dialog--wide">
+        <div class="modal-header">
+            <h2 id="conflict-title">Edit Conflict</h2>
+            <button class="modal-close" onclick="companion.hideModal('conflict-modal')" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body">
+            <p>MIRA modified this section while you were editing. Choose which version to keep:</p>
+            <div class="conflict-versions">
+                <div class="conflict-version yours">
+                    <h3>Your Version</h3>
+                    <pre id="conflict-yours"></pre>
+                </div>
+                <div class="conflict-version mira">
+                    <h3>MIRA's Version</h3>
+                    <pre id="conflict-mira"></pre>
+                </div>
+            </div>
+        </div>
+        <div class="modal-actions">
+            <button class="btn btn-ghost" onclick="companion.resolveConflict('mine')">Keep Mine</button>
+            <button class="btn btn-primary" onclick="companion.resolveConflict('theirs')">Use MIRA's</button>
+        </div>
+    </div>
+</div>
+
+<!-- Create Domain Modal -->
+<div class="modal-overlay" id="create-domain-modal" style="display: none;" role="dialog" aria-labelledby="create-domain-title">
+    <div class="modal-dialog modal-dialog--form">
+        <div class="modal-header">
+            <h2 id="create-domain-title">Create Domain</h2>
+            <button class="modal-close" onclick="companion.hideModal('create-domain-modal')" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body">
+            <p>Create a new domain knowledge document.</p>
+            <input type="text" id="new-domain-label" placeholder="Label (e.g., garden, work_notes)" style="width: 100%; margin-bottom: 12px;">
+            <textarea id="new-domain-description" placeholder="Brief description (e.g., plants, pests, suppliers)" rows="3"></textarea>
+        </div>
+        <div class="modal-actions">
+            <button class="btn btn-ghost" onclick="companion.hideModal('create-domain-modal')">Cancel</button>
+            <button class="btn btn-primary" onclick="companion.createDomain()">Create</button>
+        </div>
+    </div>
+</div>
+
+<!-- Delete Domain Modal -->
+<div class="modal-overlay" id="delete-domain-modal" style="display: none;" role="dialog" aria-labelledby="delete-domain-title">
+    <div class="modal-dialog modal-dialog--form modal-dialog--sm">
+        <div class="modal-header">
+            <h2 id="delete-domain-title">Delete Domain</h2>
+            <button class="modal-close" onclick="companion.hideModal('delete-domain-modal')" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body">
+            <p id="delete-domain-message">Are you sure you want to delete this domain? This cannot be undone.</p>
+        </div>
+        <div class="modal-actions">
+            <button class="btn btn-ghost" onclick="companion.hideModal('delete-domain-modal')">Cancel</button>
+            <button class="btn btn-danger" onclick="companion.confirmDeleteDomain()">Delete</button>
+        </div>
+    </div>
+</div>
+
+<script src="../assets/javascript/api-client.js?v=igddHsI"></script>
+<script src="../assets/javascript/sidebar.js?v=igddHsI"></script>
+<script src="../assets/javascript/domain-knowledge.js?v=igddHsI"></script>
+<script>
+/**
+ * DomaindocsCompanion - Real-time collaborative editing of domain knowledge
+ *
+ * Provides a companion window for viewing and editing domaindocs alongside
+ * MIRA conversations. Features include:
+ * - Real-time polling for MIRA's changes (1-second intervals)
+ * - Inline contenteditable editing with debounced auto-save
+ * - Conflict detection when both user and MIRA edit simultaneously
+ * - Full CRUD operations for sections
+ * - Drag-and-drop reordering
+ */
+class DomaindocsCompanion {
+    constructor(apiClient) {
+        this.apiClient = apiClient;
+        this.domainManager = new DomainKnowledgeManager(apiClient);
+
+        // State
+        this.domains = [];
+        this.selectedDomain = null;
+        this.selectedDomainData = null;
+        this.sections = [];
+        this.sectionTimestamps = new Map();  // section_id -> updated_at
+        this.sectionContents = new Map();    // section_id -> content (for conflict detection)
+        this.lastSectionsHash = '';          // JSON hash for change detection
+
+        // Editing state
+        this.editingSection = null;
+        this.editingContent = null;
+        this.saveDebounceTimer = null;
+        this.lastInputTime = 0;
+        this.INPUT_IDLE_THRESHOLD_MS = 5000;  // Wait 5 seconds after typing stops
+
+        // Polling
+        this.pollInterval = null;
+        this.POLL_DELAY_MS = 1000;
+        this.pollErrorCount = 0;
+
+        // Conflict
+        this.conflictData = null;
+
+        // Delete
+        this.pendingDelete = null;
+
+        // Drag and drop
+        this.draggedSection = null;
+        this.isReorganizeMode = false;
+    }
+
+    async init() {
+        try {
+            // Check for ?archived=true query param
+            const urlParams = new URLSearchParams(window.location.search);
+            this.showArchived = urlParams.get('archived') === 'true';
+
+            await this.loadDomains();
+            this.autoSelectDomain();
+            this.startPolling();
+            console.log('DomaindocsCompanion initialized');
+        } catch (error) {
+            console.error('Failed to initialize:', error);
+            this.showSaveStatus('error', 'Failed to connect');
+        }
+    }
+
+    // =========================================================================
+    // DOMAIN MANAGEMENT
+    // =========================================================================
+
+    async loadDomains() {
+        if (this.showArchived) {
+            const archivedData = await this.apiClient.data.getData('domaindocs', { archived: true });
+            this.domains = (archivedData.domaindocs || []).map(d => ({ ...d, archived: true }));
+        } else {
+            this.domains = await this.domainManager.fetchDomains();
+        }
+        this.renderDomainList();
+    }
+
+    renderDomainList() {
+        const selector = document.getElementById('domain-selector');
+        const placeholder = this.showArchived ? 'Select an archived domain...' : 'Select a domain...';
+        selector.innerHTML = `<option value="">${placeholder}</option>` +
+            this.domains.map(d => {
+                const indicator = d.archived ? '◈ ' : (d.enabled ? '● ' : '○ ');
+                return `<option value="${d.label}" ${this.selectedDomain === d.label ? 'selected' : ''}>${indicator}${this.escapeHtml(d.label)}</option>`;
+            }).join('');
+    }
+
+    autoSelectDomain() {
+        // Auto-select enabled domain, or first domain if only one exists
+        const enabledDomain = this.domains.find(d => d.enabled);
+        if (enabledDomain) {
+            this.selectDomain(enabledDomain.label);
+        } else if (this.domains.length === 1) {
+            this.selectDomain(this.domains[0].label);
+        }
+    }
+
+    async selectDomain(label) {
+        // Handle empty selection
+        if (!label) {
+            this.selectedDomain = null;
+            this.sections = [];
+            this.lastSectionsHash = '';
+            document.getElementById('empty-state').style.display = 'flex';
+            document.getElementById('domain-view').style.display = 'none';
+            return;
+        }
+
+        // Clear editing state when switching domains
+        this.editingSection = null;
+        this.editingContent = null;
+        this.sectionTimestamps.clear();
+        this.sectionContents.clear();
+
+        this.selectedDomain = label;
+        this.renderDomainList();
+
+        await this.refreshDomain();
+
+        document.getElementById('empty-state').style.display = 'none';
+        document.getElementById('domain-view').style.display = 'block';
+    }
+
+    async refreshDomain() {
+        if (!this.selectedDomain) return;
+
+        try {
+            const data = await this.domainManager.getDomainWithSections(this.selectedDomain);
+            this.selectedDomainData = data;
+            this.sections = data.sections || [];
+
+            // Update header
+            document.getElementById('domain-title').textContent = data.label;
+
+            const statusBadge = document.getElementById('domain-status-badge');
+            const toggleBtn = document.getElementById('toggle-enable-btn');
+            const archiveBtn = document.getElementById('archive-btn');
+            const isArchived = data.archived;
+
+            if (isArchived) {
+                statusBadge.className = 'badge disabled';
+                statusBadge.textContent = 'Archived';
+                statusBadge.style.cssText = 'background: rgba(255,165,0,0.15); color: #ffa500; border-color: rgba(255,165,0,0.3);';
+                toggleBtn.style.display = 'none';
+                archiveBtn.textContent = 'Unarchive';
+                archiveBtn.onclick = () => this.unarchiveDomain();
+            } else if (data.enabled) {
+                statusBadge.className = 'badge enabled';
+                statusBadge.textContent = 'Enabled';
+                statusBadge.style.cssText = '';
+                toggleBtn.textContent = 'Disable';
+                toggleBtn.style.display = '';
+                archiveBtn.textContent = 'Archive';
+                archiveBtn.onclick = () => this.archiveDomain();
+            } else {
+                statusBadge.className = 'badge disabled';
+                statusBadge.textContent = 'Disabled';
+                statusBadge.style.cssText = '';
+                toggleBtn.textContent = 'Enable';
+                toggleBtn.style.display = '';
+                archiveBtn.textContent = 'Archive';
+                archiveBtn.onclick = () => this.archiveDomain();
+            }
+
+            // Initialize caches for change detection
+            for (const section of this.sections) {
+                this.sectionTimestamps.set(section.id, section.updated_at);
+                this.sectionContents.set(section.id, section.content || '');
+            }
+            this.lastSectionsHash = JSON.stringify(this.sections);
+
+            this.renderSections();
+        } catch (error) {
+            console.error('Failed to refresh domain:', error);
+        }
+    }
+
+    async toggleDomainEnabled() {
+        if (!this.selectedDomainData) return;
+
+        try {
+            if (this.selectedDomainData.enabled) {
+                await this.domainManager.disableDomain(this.selectedDomain);
+            } else {
+                await this.domainManager.enableDomain(this.selectedDomain);
+            }
+            await this.loadDomains();
+            await this.refreshDomain();
+        } catch (error) {
+            console.error('Failed to toggle domain:', error);
+            this.showSaveStatus('error', 'Failed to toggle');
+        }
+    }
+
+    async archiveDomain() {
+        if (!this.selectedDomain) return;
+        if (!confirm(`Archive "${this.selectedDomain}"? It will be disabled and hidden from normal views.`)) return;
+
+        try {
+            await this.domainManager.archiveDomain(this.selectedDomain);
+            this.showSaveStatus('saved', 'Archived');
+            // Reload — archived doc disappears from non-archived list
+            this.selectedDomain = null;
+            this.selectedDomainData = null;
+            this.sections = [];
+            await this.loadDomains();
+            document.getElementById('empty-state').style.display = 'flex';
+            document.getElementById('domain-view').style.display = 'none';
+        } catch (error) {
+            console.error('Failed to archive domain:', error);
+            const errorMsg = error.response?.data?.error?.message || error.message || 'Archive failed';
+            this.showSaveStatus('error', errorMsg);
+        }
+    }
+
+    async unarchiveDomain() {
+        if (!this.selectedDomain) return;
+
+        try {
+            await this.domainManager.unarchiveDomain(this.selectedDomain);
+            this.showSaveStatus('saved', 'Unarchived (still disabled)');
+            // Redirect to normal view since doc is no longer archived
+            window.location.href = '/domaindocs';
+        } catch (error) {
+            console.error('Failed to unarchive domain:', error);
+            const errorMsg = error.response?.data?.error?.message || error.message || 'Unarchive failed';
+            this.showSaveStatus('error', errorMsg);
+        }
+    }
+
+    // =========================================================================
+    // SECTION RENDERING
+    // =========================================================================
+
+    renderSections() {
+        const container = document.getElementById('sections-container');
+
+        // Organize sections: top-level first, then subsections under parents
+        const topLevel = this.sections.filter(s => !s.parent_section_id)
+            .sort((a, b) => a.sort_order - b.sort_order);
+
+        let html = '';
+        for (const section of topLevel) {
+            html += this.renderSectionCard(section, false);
+
+            // Render subsections
+            const subsections = this.sections
+                .filter(s => s.parent_section_id === section.id)
+                .sort((a, b) => a.sort_order - b.sort_order);
+
+            for (const sub of subsections) {
+                html += this.renderSectionCard(sub, true, section.header);
+            }
+        }
+
+        container.innerHTML = html;
+        this.initDragDrop();
+    }
+
+    renderSectionCard(section, isSubsection = false, parentHeader = null) {
+        const isPinned = section.pinned === true;
+        const charCount = (section.content || '').length;
+        const isLarge = charCount > 3000;
+        // Can't drag pinned sections
+        const canDrag = this.isReorganizeMode && !isPinned;
+        // Can't edit pinned sections (title/delete - content is still editable)
+        const canEdit = !isPinned;
+
+        // Get attribution
+        const attribution = this.getAttribution(section);
+
+        return `
+            <div class="section-card ${isSubsection ? 'subsection' : ''} ${section.collapsed ? 'collapsed' : ''} ${this.isReorganizeMode ? 'reorganize-mode' : ''}"
+                 data-section-id="${section.id}"
+                 data-header="${this.escapeAttr(section.header)}"
+                 data-parent="${this.escapeAttr(parentHeader || '')}"
+                 ${canDrag ? 'draggable="true"' : ''}>
+
+                <div class="section-header" onclick="companion.toggleCollapse(${section.id}, event)">
+                    <div class="section-header-left">
+                        <span class="collapse-icon">${isPinned ? '' : '▶'}</span>
+                        ${canDrag ? `<span class="drag-handle" onmousedown="event.stopPropagation()">⠿</span>` : ''}
+                        <h3 class="section-title"
+                            contenteditable="${canEdit}"
+                            data-section-id="${section.id}"
+                            data-original="${this.escapeAttr(section.header)}"
+                            onclick="event.stopPropagation()"
+                            onblur="companion.handleRename(${section.id}, this)"
+                            onkeydown="companion.handleTitleKeydown(event, ${section.id}, this)"
+                        >${this.escapeHtml(section.header)}</h3>
+                        <div class="section-badges">
+                            ${isPinned ? '<span class="section-badge pinned">pinned</span>' : ''}
+                            ${section.collapsed ? `<span class="section-badge collapsed-badge">collapsed${isLarge ? ` (${Math.round(charCount/1000)}k)` : ''}</span>` : ''}
+                            ${!section.collapsed && isLarge ? '<span class="section-badge large">large</span>' : ''}
+                        </div>
+                    </div>
+                    <div class="section-header-right">
+                        <span class="section-attribution">${attribution}</span>
+                        <div class="section-actions">
+                            ${!isSubsection ? `<button class="action-btn" onclick="event.stopPropagation(); companion.showCreateSectionModal('${this.escapeAttr(section.header)}')" title="Add subsection">+</button>` : ''}
+                            ${canEdit ? `<button class="action-btn danger" onclick="event.stopPropagation(); companion.showDeleteModal(${section.id}, '${this.escapeAttr(section.header)}')" title="Delete">&times;</button>` : ''}
+                        </div>
+                    </div>
+                </div>
+
+                <div class="section-content-wrapper">
+                    <div class="section-content"
+                         contenteditable="true"
+                         data-section-id="${section.id}"
+                         onclick="event.stopPropagation()"
+                         onmousedown="event.stopPropagation()"
+                         onfocus="companion.startEditing(${section.id})"
+                         onblur="companion.stopEditing(${section.id})"
+                         oninput="companion.handleInput(${section.id}, this)"
+                    >${this.escapeHtml(section.content || '')}</div>
+                </div>
+            </div>
+        `;
+    }
+
+    getAttribution(section) {
+        const timestamp = section.updated_at;
+        if (!timestamp) return '';
+
+        const date = new Date(timestamp);
+        const secondsAgo = Math.floor((new Date() - date) / 1000);
+
+        // Only show attribution for edits within the last 5 minutes
+        if (secondsAgo > 300) return '';
+
+        const ago = this.formatTimeAgo(date);
+        return `<span class="attribution-you">edited</span> ${ago}`;
+    }
+
+    formatTimeAgo(date) {
+        const seconds = Math.floor((new Date() - date) / 1000);
+        if (seconds < 10) return 'just now';
+        if (seconds < 60) return `${seconds}s ago`;
+        const minutes = Math.floor(seconds / 60);
+        if (minutes < 60) return `${minutes}m ago`;
+        const hours = Math.floor(minutes / 60);
+        if (hours < 24) return `${hours}h ago`;
+        return `${Math.floor(hours / 24)}d ago`;
+    }
+
+    // =========================================================================
+    // EDITING
+    // =========================================================================
+
+    startEditing(sectionId) {
+        this.editingSection = sectionId;
+        const el = document.querySelector(`.section-content[data-section-id="${sectionId}"]`);
+        if (el) {
+            this.editingContent = el.innerText;
+        }
+    }
+
+    stopEditing(sectionId) {
+        // Small delay to allow save to complete
+        setTimeout(() => {
+            if (this.editingSection === sectionId) {
+                this.editingSection = null;
+                this.editingContent = null;
+            }
+        }, 100);
+    }
+
+    handleInput(sectionId, element) {
+        const content = element.innerText;
+        this.editingContent = content;
+        this.lastInputTime = Date.now();  // Track when user last typed
+
+        this.showSaveStatus('saving', 'Saving...');
+
+        // Debounce save (3.5s to let user finish typing before AI summary triggers)
+        clearTimeout(this.saveDebounceTimer);
+        this.saveDebounceTimer = setTimeout(() => {
+            this.saveSection(sectionId, content);
+        }, 3500);
+    }
+
+    async saveSection(sectionId, content) {
+        const section = this.sections.find(s => s.id === sectionId);
+        if (!section) return;
+
+        const parentHeader = section.parent_section_id
+            ? this.sections.find(s => s.id === section.parent_section_id)?.header
+            : null;
+
+        try {
+            await this.domainManager.updateSection(
+                this.selectedDomain,
+                section.header,
+                content,
+                parentHeader
+            );
+
+            // Update local state to prevent false conflict detection
+            this.sectionTimestamps.set(sectionId, new Date().toISOString());
+            this.sectionContents.set(sectionId, content);
+
+            this.showSaveStatus('saved', 'Saved');
+        } catch (error) {
+            console.error('Save failed:', error);
+            this.showSaveStatus('error', 'Save failed');
+        }
+    }
+
+    handleTitleKeydown(event, sectionId, element) {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            element.blur();
+        } else if (event.key === 'Escape') {
+            element.textContent = element.dataset.original;
+            element.blur();
+        }
+    }
+
+    async handleRename(sectionId, element) {
+        const newName = element.textContent.trim();
+        const originalName = element.dataset.original;
+
+        if (!newName || newName === originalName) {
+            element.textContent = originalName;
+            return;
+        }
+
+        const section = this.sections.find(s => s.id === sectionId);
+        if (!section) return;
+
+        const parentHeader = section.parent_section_id
+            ? this.sections.find(s => s.id === section.parent_section_id)?.header
+            : null;
+
+        try {
+            await this.domainManager.renameSection(
+                this.selectedDomain,
+                originalName,
+                newName,
+                parentHeader
+            );
+
+            element.dataset.original = newName;
+            this.showSaveStatus('saved', 'Renamed');
+            await this.refreshDomain();
+        } catch (error) {
+            console.error('Rename failed:', error);
+            element.textContent = originalName;
+            this.showSaveStatus('error', 'Rename failed');
+        }
+    }
+
+    // =========================================================================
+    // POLLING & CHANGE DETECTION
+    // =========================================================================
+
+    startPolling() {
+        this.pollInterval = setInterval(() => this.pollForChanges(), this.POLL_DELAY_MS);
+    }
+
+    stopPolling() {
+        if (this.pollInterval) {
+            clearInterval(this.pollInterval);
+            this.pollInterval = null;
+        }
+    }
+
+    async pollForChanges() {
+        if (!this.selectedDomain) return;
+
+        try {
+            const data = await this.domainManager.getDomainWithSections(this.selectedDomain);
+            const newSections = data.sections || [];
+
+            // Reset error count on success
+            this.pollErrorCount = 0;
+            document.getElementById('live-dot').classList.remove('disconnected');
+            document.getElementById('poll-status').textContent = 'Live';
+
+            // Simple chokepoint: serialize and compare
+            const newHash = JSON.stringify(newSections);
+            const oldHash = this.lastSectionsHash || '';
+
+            if (newHash !== oldHash) {
+                // Find which sections changed by timestamp
+                const changedSectionIds = [];
+                for (const section of newSections) {
+                    const oldTimestamp = this.sectionTimestamps.get(section.id);
+                    if (oldTimestamp && section.updated_at !== oldTimestamp) {
+                        // Check for conflict if user is editing this section
+                        if (this.editingSection === section.id) {
+                            const oldContent = this.sectionContents.get(section.id);
+                            if ((section.content || '') !== oldContent) {
+                                this.handleConflict(section);
+                            }
+                        } else {
+                            changedSectionIds.push(section.id);
+                        }
+                    }
+                }
+
+                // Update caches
+                this.lastSectionsHash = newHash;
+                for (const section of newSections) {
+                    this.sectionTimestamps.set(section.id, section.updated_at);
+                    this.sectionContents.set(section.id, section.content || '');
+                }
+
+                // Update sections data
+                this.sections = newSections;
+                this.selectedDomainData = data;
+
+                // Wait until user has stopped typing for 5 seconds before refreshing
+                const timeSinceLastInput = Date.now() - this.lastInputTime;
+                if (timeSinceLastInput < this.INPUT_IDLE_THRESHOLD_MS) {
+                    console.log('Skipping render - user typed recently');
+                    return;
+                }
+
+                // Save focus state before render
+                const activeEl = document.activeElement;
+                let restoreFocus = null;
+
+                if (activeEl && activeEl.classList.contains('section-content')) {
+                    const sectionId = activeEl.dataset.sectionId;
+                    const selection = window.getSelection();
+                    const cursorOffset = selection.rangeCount > 0 ? selection.getRangeAt(0).startOffset : 0;
+                    restoreFocus = { sectionId, cursorOffset };
+                }
+
+                // Re-render
+                this.renderSections();
+
+                // Restore focus and cursor position
+                if (restoreFocus) {
+                    setTimeout(() => {
+                        const el = document.querySelector(`.section-content[data-section-id="${restoreFocus.sectionId}"]`);
+                        if (el) {
+                            el.focus();
+                            // Restore cursor position
+                            if (el.firstChild) {
+                                const range = document.createRange();
+                                const sel = window.getSelection();
+                                const offset = Math.min(restoreFocus.cursorOffset, el.textContent.length);
+                                range.setStart(el.firstChild, offset);
+                                range.collapse(true);
+                                sel.removeAllRanges();
+                                sel.addRange(range);
+                            }
+                        }
+                    }, 0);
+                }
+
+                // Apply glow after render
+                if (changedSectionIds.length > 0) {
+                    setTimeout(() => {
+                        for (const sectionId of changedSectionIds) {
+                            this.applyMiraGlow(sectionId);
+                        }
+                    }, 20);
+                }
+            }
+
+        } catch (error) {
+            this.pollErrorCount++;
+            console.error('Poll error:', error);
+            if (this.pollErrorCount >= 3) {
+                document.getElementById('live-dot').classList.add('disconnected');
+                document.getElementById('poll-status').textContent = 'Disconnected';
+            }
+        }
+    }
+
+    applyMiraGlow(sectionId) {
+        const card = document.querySelector(`.section-card[data-section-id="${sectionId}"]`);
+        if (!card) return;
+
+        // Remove existing animation
+        card.classList.remove('mira-editing');
+        void card.offsetWidth; // Force reflow
+
+        // Apply animation
+        card.classList.add('mira-editing');
+
+        // Update attribution to show MIRA
+        const attribution = card.querySelector('.section-attribution');
+        if (attribution) {
+            attribution.innerHTML = `<span class="attribution-mira">MIRA</span> just now`;
+        }
+
+        setTimeout(() => {
+            card.classList.remove('mira-editing');
+        }, 2500);
+    }
+
+    updateSectionContent(sectionId, content) {
+        const el = document.querySelector(`.section-content[data-section-id="${sectionId}"]`);
+        if (el && this.editingSection !== sectionId) {
+            el.textContent = content;
+        }
+    }
+
+    handleConflict(section) {
+        // Pause polling during conflict resolution
+        this.stopPolling();
+
+        this.conflictData = {
+            sectionId: section.id,
+            mine: this.editingContent,
+            theirs: section.content || ''
+        };
+
+        document.getElementById('conflict-yours').textContent = this.conflictData.mine || '(empty)';
+        document.getElementById('conflict-mira').textContent = this.conflictData.theirs || '(empty)';
+
+        this.showModal('conflict-modal');
+    }
+
+    async resolveConflict(choice) {
+        if (!this.conflictData) return;
+
+        const { sectionId, mine, theirs } = this.conflictData;
+
+        if (choice === 'mine') {
+            // Force save user's version
+            await this.saveSection(sectionId, mine);
+        } else {
+            // Accept MIRA's version
+            this.updateSectionContent(sectionId, theirs);
+            this.sectionContents.set(sectionId, theirs);
+        }
+
+        this.editingSection = null;
+        this.editingContent = null;
+        this.conflictData = null;
+
+        this.hideModal('conflict-modal');
+        this.startPolling();
+    }
+
+    // =========================================================================
+    // SECTION OPERATIONS
+    // =========================================================================
+
+    async toggleCollapse(sectionId, event) {
+        // Don't toggle if clicking on title or actions
+        if (event.target.classList.contains('section-title') ||
+            event.target.classList.contains('action-btn') ||
+            event.target.classList.contains('drag-handle')) {
+            return;
+        }
+
+        const section = this.sections.find(s => s.id === sectionId);
+        if (!section || section.pinned) {
+            // Pinned sections can't be collapsed
+            return;
+        }
+
+        const parentHeader = section.parent_section_id
+            ? this.sections.find(s => s.id === section.parent_section_id)?.header
+            : null;
+
+        try {
+            if (section.collapsed) {
+                await this.domainManager.expandSection(this.selectedDomain, section.header, parentHeader);
+            } else {
+                await this.domainManager.collapseSection(this.selectedDomain, section.header, parentHeader);
+            }
+            await this.refreshDomain();
+        } catch (error) {
+            console.error('Toggle collapse failed:', error);
+        }
+    }
+
+    toggleReorganizeMode() {
+        this.isReorganizeMode = !this.isReorganizeMode;
+
+        // Update button appearance
+        const btn = document.getElementById('reorganize-btn');
+        if (this.isReorganizeMode) {
+            btn.textContent = 'Done';
+            btn.classList.add('active');
+        } else {
+            btn.textContent = 'Reorganize';
+            btn.classList.remove('active');
+        }
+
+        // Re-render to show/hide drag handles
+        this.renderSections();
+    }
+
+    async expandAll() {
+        try {
+            // Expand each collapsed section (skip overview which is always expanded)
+            for (const section of this.sections) {
+                if (section.collapsed) {
+                    const parentHeader = section.parent_section_id
+                        ? this.sections.find(s => s.id === section.parent_section_id)?.header
+                        : null;
+                    await this.domainManager.expandSection(this.selectedDomain, section.header, parentHeader);
+                }
+            }
+            await this.refreshDomain();
+        } catch (error) {
+            console.error('Expand all failed:', error);
+        }
+    }
+
+    async collapseAll() {
+        try {
+            // Collapse all sections except pinned ones
+            for (const section of this.sections) {
+                const isPinned = section.pinned === true;
+                if (!section.collapsed && !isPinned) {
+                    const parentHeader = section.parent_section_id
+                        ? this.sections.find(s => s.id === section.parent_section_id)?.header
+                        : null;
+                    await this.domainManager.collapseSection(this.selectedDomain, section.header, parentHeader);
+                }
+            }
+            await this.refreshDomain();
+        } catch (error) {
+            console.error('Collapse all failed:', error);
+        }
+    }
+
+    showCreateSectionModal(parentHeader = null) {
+        // Populate parent dropdown
+        const select = document.getElementById('new-section-parent');
+        const topLevel = this.sections.filter(s => !s.parent_section_id);
+
+        select.innerHTML = '<option value="">Top-level section</option>' +
+            topLevel.map(s => `<option value="${this.escapeAttr(s.header)}" ${parentHeader === s.header ? 'selected' : ''}>Under: ${this.escapeHtml(s.header)}</option>`).join('');
+
+        document.getElementById('new-section-name').value = '';
+        this.showModal('create-section-modal');
+        document.getElementById('new-section-name').focus();
+    }
+
+    async createSection() {
+        const name = document.getElementById('new-section-name').value.trim();
+        const parent = document.getElementById('new-section-parent').value || null;
+
+        if (!name) {
+            this.showSaveStatus('error', 'Name required');
+            return;
+        }
+
+        try {
+            await this.domainManager.createSection(this.selectedDomain, name, '', null, parent);
+            this.hideModal('create-section-modal');
+            await this.refreshDomain();
+            this.showSaveStatus('saved', 'Section created');
+        } catch (error) {
+            console.error('Create section failed:', error);
+            this.showSaveStatus('error', 'Create failed');
+        }
+    }
+
+    showDeleteModal(sectionId, header) {
+        this.pendingDelete = { sectionId, header };
+        document.getElementById('delete-modal-message').textContent =
+            `Are you sure you want to delete "${header}"? This cannot be undone.`;
+        this.showModal('delete-modal');
+    }
+
+    async confirmDelete() {
+        if (!this.pendingDelete) return;
+
+        const { sectionId, header } = this.pendingDelete;
+        const section = this.sections.find(s => s.id === sectionId);
+
+        const parentHeader = section?.parent_section_id
+            ? this.sections.find(s => s.id === section.parent_section_id)?.header
+            : null;
+
+        try {
+            await this.domainManager.deleteSection(this.selectedDomain, header, parentHeader);
+            this.hideModal('delete-modal');
+            this.pendingDelete = null;
+            await this.refreshDomain();
+            this.showSaveStatus('saved', 'Section deleted');
+        } catch (error) {
+            console.error('Delete failed:', error);
+            this.showSaveStatus('error', 'Delete failed');
+        }
+    }
+
+    // =========================================================================
+    // DRAG AND DROP
+    // =========================================================================
+
+    initDragDrop() {
+        const cards = document.querySelectorAll('.section-card[draggable="true"]');
+
+        cards.forEach(card => {
+            card.addEventListener('dragstart', (e) => this.handleDragStart(e, card));
+            card.addEventListener('dragend', (e) => this.handleDragEnd(e, card));
+            card.addEventListener('dragover', (e) => this.handleDragOver(e, card));
+            card.addEventListener('dragleave', (e) => this.handleDragLeave(e, card));
+            card.addEventListener('drop', (e) => this.handleDrop(e, card));
+        });
+    }
+
+    handleDragStart(e, card) {
+        this.draggedSection = {
+            id: parseInt(card.dataset.sectionId),
+            header: card.dataset.header,
+            parent: card.dataset.parent || null
+        };
+        card.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+    }
+
+    handleDragEnd(e, card) {
+        card.classList.remove('dragging');
+        document.querySelectorAll('.section-card.drag-over').forEach(c => c.classList.remove('drag-over'));
+        this.draggedSection = null;
+    }
+
+    handleDragOver(e, card) {
+        e.preventDefault();
+
+        const targetId = parseInt(card.dataset.sectionId);
+        const targetParent = card.dataset.parent || null;
+
+        // Only allow reorder within same parent level
+        if (this.draggedSection && this.draggedSection.parent === targetParent && this.draggedSection.id !== targetId) {
+            card.classList.add('drag-over');
+            e.dataTransfer.dropEffect = 'move';
+        }
+    }
+
+    handleDragLeave(e, card) {
+        card.classList.remove('drag-over');
+    }
+
+    async handleDrop(e, card) {
+        e.preventDefault();
+        card.classList.remove('drag-over');
+
+        if (!this.draggedSection) return;
+
+        const targetId = parseInt(card.dataset.sectionId);
+        const targetParent = card.dataset.parent || null;
+
+        // Can only reorder within same level
+        if (this.draggedSection.parent !== targetParent || this.draggedSection.id === targetId) {
+            return;
+        }
+
+        // Get siblings at this level
+        const siblings = this.sections
+            .filter(s => {
+                if (targetParent) {
+                    const parent = this.sections.find(p => p.header === targetParent);
+                    return s.parent_section_id === parent?.id;
+                }
+                return !s.parent_section_id;
+            })
+            .sort((a, b) => a.sort_order - b.sort_order);
+
+        // Build new order
+        const headers = siblings.map(s => s.header);
+        const sourceIndex = headers.indexOf(this.draggedSection.header);
+        const targetIndex = headers.indexOf(card.dataset.header);
+
+        if (sourceIndex === -1 || targetIndex === -1) return;
+
+        // Move source to target position
+        headers.splice(sourceIndex, 1);
+        headers.splice(targetIndex, 0, this.draggedSection.header);
+
+        try {
+            await this.domainManager.reorderSections(this.selectedDomain, headers, targetParent || null);
+            await this.refreshDomain();
+            this.showSaveStatus('saved', 'Reordered');
+        } catch (error) {
+            console.error('Reorder failed:', error);
+            this.showSaveStatus('error', 'Reorder failed');
+        }
+    }
+
+    // =========================================================================
+    // DOMAIN CRUD
+    // =========================================================================
+
+    showCreateDomainModal() {
+        document.getElementById('new-domain-label').value = '';
+        document.getElementById('new-domain-description').value = '';
+        this.showModal('create-domain-modal');
+        document.getElementById('new-domain-label').focus();
+    }
+
+    async createDomain() {
+        const label = document.getElementById('new-domain-label').value.trim();
+        const description = document.getElementById('new-domain-description').value.trim();
+
+        if (!label) {
+            this.showSaveStatus('error', 'Label required');
+            return;
+        }
+
+        if (!description) {
+            this.showSaveStatus('error', 'Description required');
+            return;
+        }
+
+        try {
+            await this.domainManager.createDomain(label, description);
+            this.hideModal('create-domain-modal');
+            await this.loadDomains();
+            this.selectDomain(label);
+            this.showSaveStatus('saved', 'Domain created');
+        } catch (error) {
+            console.error('Create domain failed:', error);
+            this.showSaveStatus('error', error.message || 'Create failed');
+        }
+    }
+
+    showDeleteDomainModal() {
+        if (!this.selectedDomain) return;
+        document.getElementById('delete-domain-message').textContent =
+            `Are you sure you want to delete "${this.selectedDomain}"? This cannot be undone.`;
+        this.showModal('delete-domain-modal');
+    }
+
+    async confirmDeleteDomain() {
+        if (!this.selectedDomain) return;
+
+        try {
+            await this.domainManager.deleteDomain(this.selectedDomain);
+            this.hideModal('delete-domain-modal');
+            this.selectedDomain = null;
+            this.selectedDomainData = null;
+            await this.loadDomains();
+            document.getElementById('empty-state').style.display = 'flex';
+            document.getElementById('domain-view').style.display = 'none';
+            this.showSaveStatus('saved', 'Domain deleted');
+        } catch (error) {
+            console.error('Delete domain failed:', error);
+            this.showSaveStatus('error', error.message || 'Delete failed');
+        }
+    }
+
+    // =========================================================================
+    // UI HELPERS
+    // =========================================================================
+
+    showModal(id) {
+        document.getElementById(id).style.display = 'flex';
+    }
+
+    hideModal(id) {
+        document.getElementById(id).style.display = 'none';
+    }
+
+    showSaveStatus(state, message) {
+        const status = document.getElementById('save-status');
+        status.className = `save-status ${state} visible`;
+        status.textContent = message;
+
+        if (state === 'saved') {
+            setTimeout(() => {
+                status.classList.remove('visible');
+            }, 2000);
+        } else if (state === 'error') {
+            setTimeout(() => {
+                status.classList.remove('visible');
+            }, 4000);
+        }
+    }
+
+    escapeHtml(str) {
+        if (!str) return '';
+        return str
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
+    escapeAttr(str) {
+        if (!str) return '';
+        return str.replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+    }
+}
+
+// Initialize
+let companion;
+let isReady = false;
+const apiClient = new MiraAPIClient({
+    baseURL: window.location.origin
+});
+
+// Handler functions that guard against uninitialized state
+function handleCreateDomain() {
+    if (!isReady || !companion) {
+        console.log('Still loading, please wait...');
+        return;
+    }
+    companion.showCreateDomainModal();
+}
+
+function handleSelectDomain(value) {
+    if (!isReady || !companion) {
+        console.log('Still loading, please wait...');
+        return;
+    }
+    companion.selectDomain(value);
+}
+
+function handleToggleArchived() {
+    if (!isReady || !companion) return;
+    companion.showArchived = !companion.showArchived;
+    updateArchiveToggleStyle();
+
+    // Update URL without reload
+    const url = new URL(window.location);
+    if (companion.showArchived) {
+        url.searchParams.set('archived', 'true');
+    } else {
+        url.searchParams.delete('archived');
+    }
+    history.replaceState(null, '', url);
+
+    // Clear selection and reload domain list
+    companion.selectedDomain = null;
+    document.getElementById('empty-state').style.display = 'flex';
+    document.getElementById('domain-view').style.display = 'none';
+    companion.loadDomains();
+}
+
+function updateArchiveToggleStyle() {
+    const btn = document.getElementById('archive-toggle-btn');
+    if (!btn || !companion) return;
+    if (companion.showArchived) {
+        btn.textContent = '← Back to Domains';
+        btn.style.color = '#ffa500';
+        btn.style.borderColor = 'rgba(255, 165, 0, 0.5)';
+        btn.style.background = 'rgba(255, 165, 0, 0.1)';
+    } else {
+        btn.textContent = 'Archived';
+        btn.style.color = '#888';
+        btn.style.borderColor = '';
+        btn.style.background = '';
+    }
+}
+
+// Register auth handler
+apiClient.auth.onAuthChange(async (event) => {
+    if (event.type === 'login') {
+        console.log('Authenticated, initializing companion...');
+        companion = new DomaindocsCompanion(apiClient);
+        await companion.init();
+
+        // Enable controls after initialization
+        isReady = true;
+        const selector = document.getElementById('domain-selector');
+        selector.disabled = false;
+        updateArchiveToggleStyle();
+    } else if (event.type === 'logout') {
+        window.location.href = '/login';
+    }
+});
+
+// Validate existing session and connect
+async function initPage() {
+    try {
+        await apiClient.auth.validateToken();
+        // If we get here, we're authenticated - validateToken emits login event
+    } catch (e) {
+        console.log('Not authenticated, redirecting to login');
+        window.location.href = '/login';
+    }
+}
+
+// Cleanup on page unload
+window.addEventListener('beforeunload', () => {
+    if (companion) {
+        companion.stopPolling();
+    }
+});
+
+// Start initialization
+initPage();
+</script>
+
+</body>
+</html>

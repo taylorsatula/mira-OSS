@@ -1,0 +1,124 @@
+/* ========================================
+   MIRA — doc.css
+   Document page chrome. Loaded alongside base.css + prose.css.
+   Used by /learn/*.html pages (policies, ToS, etc.).
+   ======================================== */
+
+.doc-main {
+   min-height: 100vh;
+   padding: 7rem 2rem 4rem;
+   position: relative;
+   z-index: 4;
+}
+
+.doc-header {
+   max-width: 68ch;
+   margin: 0 auto 4rem;
+}
+
+.doc-kicker {
+   display: inline-block;
+   font-family: 'IBM Plex Mono', monospace;
+   font-size: 0.72rem;
+   text-transform: uppercase;
+   letter-spacing: 0.22em;
+   color: rgb(var(--accent-rgb) / 0.72);
+   padding-bottom: 0.75rem;
+   border-bottom: 1px solid rgb(var(--accent-rgb) / 0.3);
+}
+
+.doc-title {
+   font-family: 'Roboto', sans-serif;
+   font-weight: 100;
+   font-size: clamp(2.25rem, 5.5vw, 3.5rem);
+   line-height: 1.1;
+   letter-spacing: -0.025em;
+   color: var(--accent);
+   margin-top: 1.5rem;
+   margin-bottom: 1rem;
+}
+
+.doc-subtitle {
+   font-size: 1.15rem;
+   line-height: 1.65;
+   color: rgba(250, 246, 238, 0.75);
+   margin-bottom: 1.5rem;
+   max-width: 52ch;
+}
+
+.doc-meta {
+   font-family: 'IBM Plex Mono', monospace;
+   font-size: 0.72rem;
+   text-transform: uppercase;
+   letter-spacing: 0.18em;
+   color: rgba(250, 246, 238, 0.5);
+}
+
+.doc-prose {
+   /* Extends .prose — both classes applied to the article */
+}
+
+/* Section anchor offset: when users jump to #section-id, the fixed header
+   shouldn't obscure the heading. scroll-margin-top accounts for that. */
+.doc-prose section {
+   scroll-margin-top: 8rem;
+   margin-bottom: 4rem;
+}
+
+.doc-prose section:last-child {
+   margin-bottom: 0;
+}
+
+.doc-footer {
+   max-width: 68ch;
+   margin: 5rem auto 0;
+   padding-top: 2.5rem;
+   border-top: 1px solid rgb(var(--accent-rgb) / 0.15);
+   font-family: 'IBM Plex Mono', monospace;
+   font-size: 0.75rem;
+   text-transform: uppercase;
+   letter-spacing: 0.18em;
+   color: rgba(250, 246, 238, 0.5);
+   text-align: center;
+}
+
+.doc-footer a {
+   color: rgb(var(--accent-rgb) / 0.72);
+   text-decoration: none;
+   border-bottom: 1px solid rgb(var(--accent-rgb) / 0.3);
+   transition: border-color 0.2s ease, color 0.2s ease;
+}
+
+.doc-footer a:hover {
+   color: var(--accent);
+   border-bottom-color: var(--accent);
+}
+
+/* Mobile */
+@media (max-width: 768px) {
+   .doc-main {
+      padding: 5rem 1.25rem 3rem;
+   }
+
+   .doc-header {
+      margin-bottom: 3rem;
+   }
+
+   .doc-title {
+      font-size: clamp(1.875rem, 7vw, 2.5rem);
+      margin-top: 1.25rem;
+   }
+
+   .doc-subtitle {
+      font-size: 1.05rem;
+   }
+
+   .doc-prose section {
+      scroll-margin-top: 5rem;
+      margin-bottom: 3rem;
+   }
+
+   .doc-footer {
+      margin-top: 4rem;
+   }
+}

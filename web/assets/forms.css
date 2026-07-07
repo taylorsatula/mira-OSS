@@ -1,0 +1,480 @@
+/* ========================================
+   MIRA — forms.css
+   Auth page styling (login, signup).
+   Loaded alongside base.css.
+   ======================================== */
+
+/* Centered viewport shell. z-index: 4 places it above the ambient layers
+   (grain 1, grid 2, vignette 3) and below the page-frame (10). */
+.form-main {
+   min-height: 100vh;
+   display: grid;
+   place-items: center;
+   padding: 7rem 2rem 4rem;
+   position: relative;
+   z-index: 4;
+}
+
+.form-shell {
+   width: 100%;
+   max-width: 28rem;
+   display: flex;
+   flex-direction: column;
+   gap: 1.5rem;
+}
+
+.form-kicker {
+   display: inline-block;
+   align-self: flex-start;
+   font-family: 'IBM Plex Mono', monospace;
+   font-size: 0.72rem;
+   text-transform: uppercase;
+   letter-spacing: 0.22em;
+   color: rgb(var(--accent-rgb) / 0.72);
+   padding-bottom: 0.75rem;
+   border-bottom: 1px solid rgb(var(--accent-rgb) / 0.3);
+   margin-bottom: 0.5rem;
+}
+
+.form-title {
+   font-family: 'Roboto', sans-serif;
+   font-weight: 100;
+   font-size: clamp(2rem, 5vw, 3rem);
+   line-height: 1.1;
+   letter-spacing: -0.02em;
+   color: var(--accent);
+   margin-bottom: 0.5rem;
+}
+
+.form-subtitle {
+   font-size: 1.05rem;
+   line-height: 1.75;
+   color: rgba(250, 246, 238, 0.82);
+   margin-bottom: 1rem;
+}
+
+.form-field {
+   display: flex;
+   flex-direction: column;
+   gap: 0.5rem;
+}
+
+.form-label {
+   font-family: 'IBM Plex Mono', monospace;
+   font-size: 0.68rem;
+   text-transform: uppercase;
+   letter-spacing: 0.22em;
+   color: rgba(250, 246, 238, 0.6);
+}
+
+.form-input {
+   background-color: #0b0b0b;
+   border: 1px solid rgba(250, 246, 238, 0.18);
+   padding: 14px 18px;
+   font-family: 'Roboto', sans-serif;
+   font-weight: 300;
+   font-size: 1rem;
+   color: #faf6ee;
+   border-radius: 2px;
+   outline: none;
+   transition: border-color 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
+}
+
+.form-input::placeholder {
+   color: rgba(250, 246, 238, 0.28);
+}
+
+.form-input:hover {
+   border-color: rgba(250, 246, 238, 0.3);
+}
+
+.form-input:focus {
+   border-color: var(--accent);
+   box-shadow:
+      0 0 0 1px rgb(var(--accent-rgb) / 0.4),
+      0 0 30px rgb(var(--accent-rgb) / 0.35),
+      0 0 60px rgb(var(--accent-rgb) / 0.15);
+   background-color: #101010;
+}
+
+/* :user-invalid only activates after user interaction or submit attempt,
+   unlike :invalid which fires immediately on required-but-empty fields.
+   This prevents the error state from flashing on page load. */
+.form-input:user-invalid {
+   border-color: #c0f;
+   box-shadow: 0 0 0 3px rgba(204, 0, 255, 0.18);
+}
+
+/* Override browser autofill styling. Using a solid opaque color here is
+   critical — a translucent background lets autofill's native highlight
+   bleed through, causing autofilled fields to drift in color against
+   non-autofilled fields. Solid #0b0b0b fully masks the autofill layer. */
+.form-input:-webkit-autofill,
+.form-input:-webkit-autofill:hover,
+.form-input:-webkit-autofill:focus,
+.form-input:-webkit-autofill:active {
+   -webkit-text-fill-color: #faf6ee;
+   -webkit-box-shadow: 0 0 0 1000px #0b0b0b inset;
+   box-shadow: 0 0 0 1000px #0b0b0b inset;
+   caret-color: #faf6ee;
+   transition: background-color 5000s ease-in-out 0s;
+}
+
+/* Textarea: same visual as input, just multi-line */
+textarea.form-input {
+   resize: vertical;
+   min-height: 5rem;
+   font-family: 'Roboto', sans-serif;
+   line-height: 1.6;
+}
+
+/* Select: custom chevron so we can keep the dark theme consistent */
+select.form-input {
+   appearance: none;
+   -webkit-appearance: none;
+   -moz-appearance: none;
+   background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'><path d='M1 1l5 5 5-5' stroke='rgba(228,239,243,0.55)' stroke-width='1.5' fill='none' stroke-linecap='round'/></svg>");
+   background-repeat: no-repeat;
+   background-position: right 18px center;
+   background-size: 12px 8px;
+   padding-right: 46px;
+   cursor: pointer;
+}
+
+select.form-input option {
+   background: #0a0a0a;
+   color: #faf6ee;
+}
+
+select.form-input optgroup {
+   background: #0a0a0a;
+   color: rgb(var(--accent-rgb) / 0.72);
+   font-family: 'IBM Plex Mono', monospace;
+   font-weight: 500;
+   font-size: 0.85em;
+}
+
+/* Small helper text below a field */
+.form-help {
+   display: block;
+   font-family: 'IBM Plex Mono', monospace;
+   font-size: 0.66rem;
+   text-transform: uppercase;
+   letter-spacing: 0.18em;
+   color: rgba(250, 246, 238, 0.45);
+   margin-top: 0.4rem;
+}
+
+/* Inline status banner below the form (success or error) */
+.form-status {
+   display: none;
+   padding: 1rem 1.25rem;
+   border-radius: 2px;
+   font-size: 0.92rem;
+   line-height: 1.6;
+   margin-top: 0.5rem;
+}
+
+.form-status.is-visible {
+   display: block;
+}
+
+.form-status.is-success {
+   background: rgb(var(--accent-rgb) / 0.08);
+   border: 1px solid rgb(var(--accent-rgb) / 0.3);
+   color: rgba(250, 246, 238, 0.92);
+}
+
+.form-status.is-error {
+   background: rgba(204, 0, 255, 0.08);
+   border: 1px solid rgba(204, 0, 255, 0.4);
+   color: rgba(250, 246, 238, 0.92);
+}
+
+.form-status a {
+   color: var(--accent);
+   text-decoration: none;
+   border-bottom: 1px solid rgb(var(--accent-rgb) / 0.4);
+}
+
+.form-status a:hover {
+   border-bottom-color: var(--accent);
+}
+
+/* Label with a faded optional/help annotation inline */
+.form-label-hint {
+   text-transform: none;
+   letter-spacing: 0;
+   color: rgba(250, 246, 238, 0.35);
+   font-weight: 300;
+}
+
+/* Secondary submit button — outlined variant for non-primary actions
+   (e.g., manual token entry "Verify code" button). */
+.form-submit--secondary {
+   background: transparent;
+   color: rgba(250, 246, 238, 0.88);
+   border: 1px solid rgba(250, 246, 238, 0.32);
+   box-shadow: none;
+}
+
+.form-submit--secondary:hover {
+   color: #000;
+   background: rgba(250, 246, 238, 0.92);
+   border-color: rgba(250, 246, 238, 0.92);
+   transform: none;
+   box-shadow: none;
+}
+
+/* Manual token collapsible section (login page fallback).
+   Sits below the primary magic-link form, visually subordinate. */
+.form-manual-token {
+   margin-top: 1rem;
+   padding-top: 1.25rem;
+   border-top: 1px solid rgba(250, 246, 238, 0.1);
+}
+
+.form-manual-token-toggle {
+   display: flex;
+   align-items: center;
+   justify-content: center;
+   gap: 0.5rem;
+   width: 100%;
+   padding: 0.6rem 0;
+   background: transparent;
+   border: none;
+   color: rgba(250, 246, 238, 0.55);
+   font-family: 'IBM Plex Mono', monospace;
+   font-size: 0.72rem;
+   text-transform: uppercase;
+   letter-spacing: 0.18em;
+   cursor: pointer;
+   transition: color 0.2s ease;
+}
+
+.form-manual-token-toggle:hover {
+   color: rgba(250, 246, 238, 0.85);
+}
+
+.form-manual-token-toggle:focus-visible {
+   outline: 2px solid var(--accent);
+   outline-offset: 4px;
+   border-radius: 2px;
+}
+
+.form-manual-token-toggle .toggle-icon {
+   display: inline-block;
+   transition: transform 0.2s ease;
+   font-family: 'Roboto', sans-serif;
+   font-size: 0.85rem;
+}
+
+.form-manual-token-toggle.is-open .toggle-icon {
+   transform: rotate(90deg);
+}
+
+.form-manual-token-wrapper {
+   display: flex;
+   flex-direction: column;
+   gap: 1rem;
+   margin-top: 1rem;
+   padding-top: 1rem;
+   border-top: 1px solid rgba(250, 246, 238, 0.08);
+}
+
+.form-manual-token-wrapper[hidden] {
+   display: none;
+}
+
+/* Token input uses monospace for readability */
+.form-input.form-input--token {
+   font-family: 'IBM Plex Mono', monospace;
+   font-size: 0.95rem;
+   letter-spacing: 0.05em;
+}
+
+/* Auto-auth overlay shown during WebAuthn silent authentication.
+   Replaces the form's interactive state with a spinner + status line. */
+.form-autoauth {
+   display: flex;
+   flex-direction: column;
+   align-items: center;
+   gap: 1rem;
+   padding: 2rem 1rem;
+   margin: 1rem 0;
+   background: rgb(var(--accent-rgb) / 0.04);
+   border: 1px solid rgb(var(--accent-rgb) / 0.2);
+   border-radius: 2px;
+   text-align: center;
+}
+
+.form-autoauth[hidden] {
+   display: none;
+}
+
+.form-autoauth p {
+   font-family: 'IBM Plex Mono', monospace;
+   font-size: 0.78rem;
+   text-transform: uppercase;
+   letter-spacing: 0.2em;
+   color: rgba(250, 246, 238, 0.7);
+   margin: 0;
+}
+
+.form-autoauth-spinner {
+   width: 32px;
+   height: 32px;
+   border: 2px solid rgba(250, 246, 238, 0.12);
+   border-top: 2px solid var(--accent);
+   border-radius: 50%;
+   animation: form-autoauth-spin 1s linear infinite;
+}
+
+@keyframes form-autoauth-spin {
+   0%   { transform: rotate(0deg); }
+   100% { transform: rotate(360deg); }
+}
+
+/* Dimmed form during auto-auth attempt */
+.form-shell.is-dimmed {
+   opacity: 0.4;
+   pointer-events: none;
+   transition: opacity 0.3s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+   .form-autoauth-spinner {
+      animation: none !important;
+   }
+   .form-shell.is-dimmed {
+      transition: none !important;
+   }
+}
+
+.form-submit {
+   display: inline-flex;
+   align-items: center;
+   justify-content: center;
+   height: 56px;
+   padding: 0 32px;
+   background: var(--accent);
+   color: #000;
+   font-family: 'IBM Plex Mono', monospace;
+   font-weight: 500;
+   font-size: 0.88rem;
+   text-transform: uppercase;
+   letter-spacing: 0.22em;
+   text-decoration: none;
+   border: none;
+   border-radius: 2px;
+   cursor: pointer;
+   box-shadow:
+      0 0 0 1px rgb(var(--accent-rgb) / 0.4),
+      0 0 30px rgb(var(--accent-rgb) / 0.3);
+   transition: box-shadow 0.3s ease, transform 0.15s ease;
+   margin-top: 0.5rem;
+}
+
+.form-submit:hover {
+   transform: translateY(-1px);
+   box-shadow:
+      0 0 0 1px var(--accent),
+      0 0 40px rgb(var(--accent-rgb) / 0.5);
+}
+
+.form-submit:active {
+   transform: translateY(0);
+}
+
+.form-submit:focus-visible {
+   outline: 2px solid #fff;
+   outline-offset: 3px;
+}
+
+.form-submit:disabled {
+   opacity: 0.4;
+   cursor: not-allowed;
+   transform: none;
+   box-shadow: 0 0 0 1px rgb(var(--accent-rgb) / 0.3);
+}
+
+.form-meta {
+   display: flex;
+   flex-wrap: wrap;
+   align-items: center;
+   gap: 0.5rem;
+   justify-content: center;
+   font-family: 'IBM Plex Mono', monospace;
+   font-size: 0.72rem;
+   text-transform: uppercase;
+   letter-spacing: 0.18em;
+   margin-top: 1rem;
+}
+
+.form-meta a {
+   color: rgba(250, 246, 238, 0.6);
+   text-decoration: none;
+   transition: color 0.2s ease;
+}
+
+.form-meta a:hover {
+   color: var(--accent);
+}
+
+.form-meta-sep {
+   color: rgba(250, 246, 238, 0.25);
+}
+
+.form-error {
+   font-family: 'IBM Plex Mono', monospace;
+   font-size: 0.72rem;
+   text-transform: uppercase;
+   letter-spacing: 0.18em;
+   color: #c0f;
+   margin-top: 0.25rem;
+}
+
+.form-success {
+   padding: 1.25rem 1.5rem;
+   background: rgb(var(--accent-rgb) / 0.08);
+   border: 1px solid rgb(var(--accent-rgb) / 0.3);
+   border-radius: 2px;
+   color: rgba(250, 246, 238, 0.88);
+   font-size: 0.95rem;
+   line-height: 1.7;
+   margin-top: 1rem;
+}
+
+/* Mobile tweaks */
+@media (max-width: 768px) {
+   .form-main {
+      padding: 5rem 1.25rem 3rem;
+   }
+
+   .form-shell {
+      max-width: 100%;
+      gap: 1.25rem;
+   }
+
+   .form-title {
+      font-size: clamp(1.75rem, 7vw, 2.5rem);
+   }
+
+   .form-input {
+      padding: 13px 16px;
+      font-size: 16px; /* prevents iOS zoom on focus */
+   }
+
+   .form-submit {
+      height: 54px;
+      font-size: 0.82rem;
+   }
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+   .form-input,
+   .form-submit {
+      transition: none !important;
+   }
+}
