@@ -10,6 +10,14 @@ from urllib.parse import urlparse
 
 MAX_REDIRECT_HOPS = 5
 
+# IPv6 transition ranges embedding an IPv4 address in the low 32 bits. CPython's
+# `ipaddress.is_global` returns True for these, so they must be rejected explicitly:
+# `64:ff9b::a9fe:a9fe` (NAT64, RFC 6052) embeds 169.254.169.254 and passes is_global.
+_EMBEDDED_IPV4_V6_NETWORKS = (
+    ipaddress.ip_network("64:ff9b::/96"),  # NAT64 well-known prefix (RFC 6052)
+    ipaddress.ip_network("::/96"),  # deprecated IPv4-compatible (RFC 4291)
+)
+
 _BLOCKED_HOSTNAMES = {
     "localhost",
     "localhost.localdomain",
@@ -25,6 +33,14 @@ class ValidatedURL:
 
     url: str
     hostname: str
+    resolved_ip: str
+    """Validated IP to pin the actual connection to.
+
+    For literal-IP hostnames this is the literal itself; otherwise it is the
+    first address returned by resolution. Callers MUST connect to this IP
+    rather than letting the HTTP client re-resolve DNS, or the validation is
+    vulnerable to DNS rebinding between validation and connection.
+    """
 
 
 def normalize_domain_pattern(pattern: str) -> str:
@@ -93,26 +109,28 @@ def validate_public_http_url(
     if not hostname:
         raise ValueError("URL must include a hostname")
 
-    _validate_public_hostname(hostname)
+    resolved_ip = _validate_public_hostname(hostname)
     validate_domain_filters(hostname, allowed_domains, blocked_domains)
 
-    return ValidatedURL(url=url, hostname=hostname)
+    return ValidatedURL(url=url, hostname=hostname, resolved_ip=resolved_ip)
 
 
-def _validate_public_hostname(hostname: str) -> None:
+def _validate_public_hostname(hostname: str) -> str:
+    """Validate hostname and return the validated IP for connection pinning."""
     if hostname in _BLOCKED_HOSTNAMES or hostname.endswith(".localhost"):
         raise ValueError(f"Blocked private hostname: {hostname}")
 
     try:
         ip = ipaddress.ip_address(hostname)
     except ValueError:
-        _validate_resolved_addresses(hostname)
-        return
+        return _validate_resolved_addresses(hostname)
 
     _validate_public_ip(ip, hostname)
+    return str(ip)
 
 
-def _validate_resolved_addresses(hostname: str) -> None:
+def _validate_resolved_addresses(hostname: str) -> str:
+    """Resolve and validate every returned address; return the first for pinning."""
     try:
         ascii_hostname = hostname.encode("idna").decode("ascii")
         addrinfo = socket.getaddrinfo(ascii_hostname, None, type=socket.SOCK_STREAM)
@@ -122,12 +140,20 @@ def _validate_resolved_addresses(hostname: str) -> None:
     if not addrinfo:
         raise ValueError(f"Cannot resolve hostname: {hostname}")
 
+    resolved_ip: str | None = None
     for family, _, _, _, sockaddr in addrinfo:
         raw_ip = sockaddr[0]
         ip = ipaddress.ip_address(raw_ip)
         _validate_public_ip(ip, hostname)
+        if resolved_ip is None:
+            resolved_ip = str(ip)
+
+    assert resolved_ip is not None
+    return resolved_ip
 
 
 def _validate_public_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address, hostname: str) -> None:
+    if isinstance(ip, ipaddress.IPv6Address) and any(ip in net for net in _EMBEDDED_IPV4_V6_NETWORKS):
+        raise ValueError(f"Blocked IPv6 transition address embedding IPv4 for {hostname}: {ip}")
     if not ip.is_global:
         raise ValueError(f"Blocked non-public network address for {hostname}: {ip}")

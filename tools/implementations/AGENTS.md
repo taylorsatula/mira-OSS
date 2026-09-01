@@ -35,7 +35,7 @@ Every `tool_schema` parameter description is an LLM caller contract. Use exact t
 - `punchclock_tool.py` — Time tracking
 - `reminder_tool.py` — Reminder scheduling and management
 - `weather_tool.py` — Weather data retrieval
-- `web_tool.py` — Web search (Kagi primary, DuckDuckGo fallback), page content extraction (trafilatura; HTTP first, Playwright escalation for JS-heavy pages), and HTTP requests
+- `web_tool.py` — Web search (Kagi primary, DuckDuckGo fallback), page content extraction (trafilatura; HTTP first, Playwright escalation for JS-heavy pages), and HTTP requests. `_request_with_validated_redirects` validates and pins each hop: every redirect target passes `validate_public_http_url`, then connects to `validated.resolved_ip` via `http_client.pinned_request` (no DNS re-resolution — rebinding-proof).
 - `sidebar_tool.py` — Sidebar agent lifecycle: scratchpad (write/read/clear notes) and `complete_task` (writes to `sidebar_activity` SQLite). Disabled (`enabled: False`) — sidebar agents only, not main conversation
 - `sidebaragents_tool.py` — Main conversation tool for managing sidebar activity: `list_activity`, `get_details`, `dismiss`, `resolve`. Reads from same `sidebar_activity`/`scratchpad` tables that `sidebar_tool` writes. Takes `WorkingMemory` for event_bus access
 - `schemas/contacts_tool.sql` — DDL for the contacts SQLite schema owned by `contacts_tool.py`

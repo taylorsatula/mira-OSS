@@ -681,12 +681,15 @@ class WebTool(Tool):
             else:
                 request_kwargs.update(body_kwargs)
 
-            response = {
-                "GET": http_client.get,
-                "POST": http_client.post,
-                "PUT": http_client.put,
-                "DELETE": http_client.delete,
-            }[current_method](current_url, **request_kwargs)
+            # Connect to the exact IP validated above — never re-resolve DNS,
+            # or an attacker can rebind between validation and connection.
+            response = http_client.pinned_request(
+                current_method,
+                current_url,
+                hostname=validated.hostname,
+                ip=validated.resolved_ip,
+                **request_kwargs,
+            )
 
             if response.status_code not in {301, 302, 303, 307, 308}:
                 return response

@@ -21,9 +21,10 @@ Usage:
 import logging
 import random
 import time
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterable, Optional
 from contextlib import contextmanager
 
+import httpcore
 import httpx
 
 # Re-export httpx exceptions so code doesn't need to change
@@ -284,3 +285,76 @@ def stream(method: str, url: str, **kwargs):
     with Client(max_retries=max_retries, http2=http2) as client:
         with client.stream(method, url, **kwargs) as response:
             yield response
+
+
+class _IPPinNetworkBackend(httpcore.NetworkBackend):
+    """Network backend that connects to a pre-validated IP instead of re-resolving DNS.
+
+    Closes the DNS-rebinding TOCTOU in SSRF validation: `utils.url_safety` resolves
+    and validates the hostname once, then callers pass that exact IP here. The TCP
+    connection targets the validated IP while TLS SNI and certificate verification
+    still use the URL hostname. Connections for any other hostname fail loudly
+    rather than silently falling back to fresh DNS resolution.
+    """
+
+    def __init__(self, hostname: str, ip: str):
+        self._hostnames = {
+            hostname.rstrip(".").lower(),
+            hostname.encode("idna").decode("ascii").rstrip(".").lower(),
+        }
+        self._ip = ip
+        self._backend = httpcore.SyncBackend()
+
+    def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: float | None = None,
+        local_address: str | None = None,
+        socket_options: Iterable[httpcore.SOCKET_OPTION] | None = None,
+    ) -> httpcore.NetworkStream:
+        if host.rstrip(".").lower() not in self._hostnames:
+            raise httpcore.ConnectError(
+                f"IP-pinned connection attempted for unvalidated hostname: {host}"
+            )
+        return self._backend.connect_tcp(
+            self._ip,
+            port,
+            timeout=timeout,
+            local_address=local_address,
+            socket_options=socket_options,
+        )
+
+    def connect_unix_socket(
+        self,
+        path: str,
+        timeout: float | None = None,
+        socket_options: Iterable[httpcore.SOCKET_OPTION] | None = None,
+    ) -> httpcore.NetworkStream:
+        return self._backend.connect_unix_socket(path, timeout=timeout, socket_options=socket_options)
+
+    def sleep(self, seconds: float) -> None:
+        self._backend.sleep(seconds)
+
+
+class PinnedHTTPTransport(httpx.HTTPTransport):
+    """HTTP transport pinned to a single pre-validated IP address."""
+
+    def __init__(self, hostname: str, ip: str):
+        super().__init__()
+        self._pool = httpcore.ConnectionPool(
+            network_backend=_IPPinNetworkBackend(hostname, ip)
+        )
+
+
+def pinned_request(method: str, url: str, *, hostname: str, ip: str, **kwargs: Any) -> Response:
+    """Issue an HTTP request whose TCP connection targets a pre-validated IP.
+
+    `hostname` and `ip` must come from a `utils.url_safety.ValidatedURL` so the
+    connection uses the exact address that passed SSRF validation. TLS SNI and
+    certificate verification still use the URL hostname.
+    """
+    max_retries = kwargs.pop('max_retries', DEFAULT_MAX_RETRIES)
+    transport = PinnedHTTPTransport(hostname, ip)
+    with Client(max_retries=max_retries, transport=transport) as client:
+        return client.request(method, url, **kwargs)
